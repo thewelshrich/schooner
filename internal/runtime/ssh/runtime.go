@@ -31,7 +31,60 @@ type Runtime struct {
 	readyTimeout time.Duration
 }
 
+// TerminalIO is the current terminal attached directly to an interactive
+// OpenSSH process.
+type TerminalIO struct {
+	In  io.Reader
+	Out io.Writer
+	Err io.Writer
+}
+
+// ShellResult reports the native OpenSSH exit status. DiagnosticsReported is
+// true when OpenSSH already wrote a connection error to the user's terminal.
+type ShellResult struct {
+	ExitCode            int
+	DiagnosticsReported bool
+}
+
 func New(path string, stderr io.Writer) *Runtime { return &Runtime{Path: path, Stderr: stderr} }
+
+// OpenShell hands the current terminal to system OpenSSH. Unlike the bounded
+// product operations below, it never accepts or appends a remote command.
+func (r *Runtime) OpenShell(ctx context.Context, connection box.Connection, terminal TerminalIO) (ShellResult, error) {
+	path, err := r.executable()
+	if err != nil {
+		return ShellResult{}, err
+	}
+	args := r.shellOptions(connection)
+	args = append(args, connection.Destination)
+	cmd := exec.CommandContext(ctx, path, args...)
+	cmd.Stdin = terminal.In
+	cmd.Stdout = terminal.Out
+	var stderr limitedBuffer
+	if terminal.Err != nil {
+		cmd.Stderr = io.MultiWriter(terminal.Err, &stderr)
+	} else {
+		cmd.Stderr = &stderr
+	}
+	if err = cmd.Run(); err == nil {
+		return ShellResult{}, nil
+	}
+	if ctx.Err() != nil {
+		return ShellResult{}, ctx.Err()
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		return ShellResult{}, err
+	}
+	code := exitErr.ExitCode()
+	if code < 0 {
+		return ShellResult{}, box.NewError("connection_failed", "SSH session terminated without an exit status", err)
+	}
+	if code != 255 {
+		return ShellResult{ExitCode: code}, nil
+	}
+	return ShellResult{ExitCode: code, DiagnosticsReported: len(stderr.Bytes()) > 0}, classify(err, stderr.String())
+}
 
 // WaitReady waits for a newly provisioned machine to accept and authenticate
 // an SSH connection. Only transport-level failures are retried; host identity
@@ -240,6 +293,17 @@ func (r *Runtime) options(connection box.Connection) []string {
 	}
 	if connection.AcceptNewHostKey {
 		args = append(args, "-o", "StrictHostKeyChecking=accept-new")
+	}
+	return args
+}
+
+func (r *Runtime) shellOptions(connection box.Connection) []string {
+	var args []string
+	if connection.IdentityFile != "" {
+		args = append(args, "-i", connection.IdentityFile, "-o", "IdentitiesOnly=yes")
+	}
+	if connection.BatchMode {
+		args = append(args, "-o", "BatchMode=yes")
 	}
 	return args
 }

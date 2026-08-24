@@ -199,6 +199,26 @@ func (s *Service) Status(ctx context.Context, req StatusRequest) (StatusResult, 
 	return StatusResult{Box: record, Observation: observation}, nil
 }
 
+// PrepareSSH loads the authoritative local connection inputs for an
+// interactive system-OpenSSH handoff. It deliberately performs no live probe:
+// OpenSSH owns authentication and host trust for the resulting session.
+func (s *Service) PrepareSSH(ctx context.Context, req SSHRequest) (SSHLaunch, error) {
+	if err := ValidateName(req.Name); err != nil {
+		return SSHLaunch{}, invalid(err)
+	}
+	record, err := s.store.FindByName(ctx, req.Name)
+	if err != nil {
+		return SSHLaunch{}, err
+	}
+	return SSHLaunch{
+		Connection: Connection{
+			Destination:  record.SSHDestination,
+			IdentityFile: record.IdentityFile,
+			BatchMode:    req.BatchMode,
+		},
+	}, nil
+}
+
 func (s *Service) Remove(ctx context.Context, name string) (RemoveResult, error) {
 	if err := ValidateName(name); err != nil {
 		return RemoveResult{}, invalid(err)

@@ -73,6 +73,14 @@ func Run(ctx context.Context, args []string, streams Streams, build BuildInfo) i
 		if errors.As(err, &aborted) {
 			return exitAbort
 		}
+		var status exitStatusError
+		if errors.As(err, &status) {
+			return status.code
+		}
+		var reported reportedExecutionError
+		if errors.As(err, &reported) {
+			return exitFailure
+		}
 		printError(streams.Err, err, options.output)
 		var failure executionError
 		if errors.As(err, &failure) {
@@ -135,6 +143,7 @@ type application struct {
 	boxes       *box.Service
 	credentials *credentials.Manager
 	acquisition *acquisition.Service
+	ssh         *sshRuntime.Runtime
 }
 
 type sshIdentitySource struct{ stateDirectory string }
@@ -158,7 +167,7 @@ func openApplication(ctx context.Context, streams Streams) (*application, func()
 	cloud := digitalOcean.New()
 	credentialManager := credentials.New(store, credentials.KeyringStore{}, cloud)
 	acquisitionService := acquisition.New(boxes, store, credentialManager, cloud, sshIdentitySource{stateDirectory: filepath.Dir(path)}, runtime)
-	return &application{boxes: boxes, credentials: credentialManager, acquisition: acquisitionService}, func() { _ = store.Close() }, nil
+	return &application{boxes: boxes, credentials: credentialManager, acquisition: acquisitionService, ssh: runtime}, func() { _ = store.Close() }, nil
 }
 
 type executionError struct{ cause error }
@@ -175,6 +184,17 @@ type abortError struct{ cause error }
 
 func (e abortError) Error() string { return e.cause.Error() }
 func (e abortError) Unwrap() error { return e.cause }
+
+type exitStatusError struct{ code int }
+
+func (e exitStatusError) Error() string {
+	return fmt.Sprintf("SSH session exited with status %d", e.code)
+}
+
+type reportedExecutionError struct{ cause error }
+
+func (e reportedExecutionError) Error() string { return e.cause.Error() }
+func (e reportedExecutionError) Unwrap() error { return e.cause }
 
 func normalizedStreams(streams Streams) Streams {
 	if streams.In == nil {

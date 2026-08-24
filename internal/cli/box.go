@@ -25,7 +25,7 @@ import (
 
 func newBoxCommand(streams Streams, global *globalOptions) *cobra.Command {
 	cmd := &cobra.Command{Use: "box", Short: "Add and operate development boxes", Args: cobra.NoArgs, RunE: helpRun}
-	cmd.AddCommand(newBoxAddCommand(streams, global), newBoxListCommand(streams, global), newBoxStatusCommand(streams, global), newBoxRemoveCommand(streams, global), newBoxDestroyCommand(streams, global))
+	cmd.AddCommand(newBoxAddCommand(streams, global), newBoxListCommand(streams, global), newBoxStatusCommand(streams, global), newBoxSSHCommand(streams, global), newBoxRemoveCommand(streams, global), newBoxDestroyCommand(streams, global))
 	return cmd
 }
 
@@ -574,6 +574,83 @@ func newBoxStatusCommand(streams Streams, global *globalOptions) *cobra.Command 
 			}
 			if err = writeStatusResult(streams.Out, global.output, result); err != nil {
 				return executionError{cause: err}
+			}
+			return nil
+		},
+	}
+}
+
+func newBoxSSHCommand(streams Streams, global *globalOptions) *cobra.Command {
+	return &cobra.Command{
+		Use:   "ssh [name]",
+		Short: "Open an interactive SSH session to a box",
+		Long:  "Open the current terminal as a normal login shell on a recorded box. A terminal is required; --no-input disables OpenSSH authentication and host-trust prompts.",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if global.output != "human" {
+				return usageError{cause: fmt.Errorf("box ssh supports human output only")}
+			}
+			if !streams.InIsTerminal {
+				return usageError{cause: fmt.Errorf("box ssh requires an interactive terminal")}
+			}
+
+			services, closeServices, err := openApplication(cmd.Context(), streams)
+			if err != nil {
+				return executionError{cause: err}
+			}
+			defer func() {
+				if closeServices != nil {
+					closeServices()
+				}
+			}()
+
+			name := ""
+			if len(args) == 1 {
+				name = args[0]
+			}
+			if name != "" {
+				if err = box.ValidateName(name); err != nil {
+					return usageError{cause: err}
+				}
+			}
+			if name == "" {
+				if !interactionAllowed(streams, global) {
+					return usageError{cause: fmt.Errorf("box name is required when prompts are unavailable")}
+				}
+				records, listErr := services.boxes.List(cmd.Context())
+				if listErr != nil {
+					return executionError{cause: listErr}
+				}
+				if err = showInteractiveIntro(cmd.Context(), streams, global); err != nil {
+					return err
+				}
+				name, err = prompts.PickBox(cmd.Context(), promptOptions(streams, global), "Choose a box to connect to", records)
+				if errors.Is(err, prompts.ErrAborted) {
+					return abortError{cause: err}
+				}
+				if err != nil {
+					return executionError{cause: err}
+				}
+			}
+
+			launch, err := services.boxes.PrepareSSH(cmd.Context(), box.SSHRequest{Name: name, BatchMode: global.noInput})
+			if err != nil {
+				return executionError{cause: err}
+			}
+
+			// Do not keep SQLite open for the lifetime of an interactive shell.
+			closeServices()
+			closeServices = nil
+
+			result, err := services.ssh.OpenShell(cmd.Context(), launch.Connection, sshRuntime.TerminalIO{In: streams.In, Out: streams.Out, Err: streams.Err})
+			if err != nil {
+				if result.DiagnosticsReported {
+					return reportedExecutionError{cause: err}
+				}
+				return executionError{cause: err}
+			}
+			if result.ExitCode != 0 {
+				return exitStatusError{code: result.ExitCode}
 			}
 			return nil
 		},

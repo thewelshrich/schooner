@@ -127,6 +127,42 @@ func TestStatusFailureIncludesLastKnownTime(t *testing.T) {
 	}
 }
 
+func TestPrepareSSHUsesRecordedConnectionForEveryAcquisition(t *testing.T) {
+	store := newMemoryInventory()
+	store.records["adopted"] = Record{Name: "adopted", Acquisition: "adopted", SSHDestination: "work-alias"}
+	store.records["cloud"] = Record{Name: "cloud", Acquisition: "provisioned", SSHDestination: "root@203.0.113.8", IdentityFile: "/state/ssh/id_ed25519"}
+	service := testService(&fakeRuntime{}, store)
+
+	adopted, err := service.PrepareSSH(t.Context(), SSHRequest{Name: "adopted"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if adopted.Connection.Destination != "work-alias" || adopted.Connection.IdentityFile != "" || adopted.Connection.BatchMode {
+		t.Fatalf("adopted launch = %+v", adopted)
+	}
+
+	cloud, err := service.PrepareSSH(t.Context(), SSHRequest{Name: "cloud", BatchMode: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cloud.Connection.Destination != "root@203.0.113.8" || cloud.Connection.IdentityFile != "/state/ssh/id_ed25519" || !cloud.Connection.BatchMode {
+		t.Fatalf("provisioned launch = %+v", cloud)
+	}
+	if runtime := service.runtime.(*fakeRuntime); runtime.calls != 0 {
+		t.Fatalf("PrepareSSH performed %d remote operations", runtime.calls)
+	}
+}
+
+func TestPrepareSSHRejectsInvalidOrMissingBox(t *testing.T) {
+	service := testService(&fakeRuntime{}, newMemoryInventory())
+	if _, err := service.PrepareSSH(t.Context(), SSHRequest{Name: "Not Valid"}); ErrorCode(err) != "invalid_input" {
+		t.Fatalf("invalid name error = %v", err)
+	}
+	if _, err := service.PrepareSSH(t.Context(), SSHRequest{Name: "missing"}); ErrorCode(err) != "not_found" {
+		t.Fatalf("missing box error = %v", err)
+	}
+}
+
 func TestRemoveDoesNotCallRuntime(t *testing.T) {
 	store := newMemoryInventory()
 	store.records["work"] = Record{ID: "box-1", Name: "work"}

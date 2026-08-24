@@ -140,6 +140,19 @@ type StatusRequest struct {
 	Progress  Progress
 }
 
+// SSHRequest identifies a recorded box for an interactive OpenSSH handoff.
+type SSHRequest struct {
+	Name      string
+	BatchMode bool
+}
+
+// SSHLaunch contains only the trusted connection inputs recorded for a box.
+// Interactive process execution remains the responsibility of the OpenSSH
+// adapter and cannot carry a remote command.
+type SSHLaunch struct {
+	Connection Connection
+}
+
 type RemoveResult struct {
 	Box             Record
 	RemoteUnchanged bool

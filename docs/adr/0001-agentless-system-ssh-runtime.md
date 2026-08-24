@@ -21,6 +21,12 @@ a typed runtime interface. The SSH adapter implements bounded product
 operations with small embedded scripts and structured results. It exposes no
 generic remote execution method.
 
+An explicit `box ssh` command is a separate user-owned interactive handoff. It
+attaches the current terminal directly to OpenSSH using only the recorded
+destination and optional identity file. The handoff accepts neither a remote
+command nor arbitrary SSH arguments, and it does not extend the bounded remote
+operation interface.
+
 Schooner installs no remote binary or daemon. Operations are attached,
 idempotent, and checkpointed for safe retry.
 
@@ -31,6 +37,8 @@ but never substitutes for host-key verification.
 ## Consequences
 
 - SSH config, agents, proxying, and host trust continue to work independently.
+- Users can enter a normal remote login shell without Schooner launching or
+  owning another terminal application.
 - Schooner has no remote update or daemon-supervision lifecycle in V1.
 - Shell behavior requires disciplined input separation, versioned result
   schemas, hostile-input testing, and a narrow certified OS matrix.

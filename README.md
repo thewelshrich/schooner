@@ -36,6 +36,7 @@ Or provide the complete input for scripts and CI:
 schooner box add work-api --ssh work-api --yes
 schooner box list
 schooner box status work-api
+schooner box ssh work-api
 schooner box remove work-api --yes
 ```
 
@@ -49,13 +50,20 @@ existing identities, agents, proxies, and `known_hosts`. For unattended first
 contact, `--accept-new-host-key` explicitly enables OpenSSH's `accept-new`
 policy; it never accepts a changed key.
 
+`box ssh` hands the current terminal directly to the system OpenSSH client and
+opens the remote user's normal login shell. It uses the connection details
+recorded during `box add`, without launching another terminal or changing to
+the project root. Supplying `--no-input` with a box name enables OpenSSH batch
+mode, so authentication and host-trust prompts fail instead of blocking.
+
 `box add` verifies the remote system, establishes a stable machine identity,
 installs missing Git and tmux packages when `sudo -n` is available, and creates
 the project root (default `~/schooner`). `box remove` only forgets local
 inventory and never changes the remote machine.
 
-All box commands support `--output json`. Global interaction controls include
-`--no-input`, `--accessible`, `--color auto|always|never`, and
+Box commands that return structured results support `--output json`; the
+interactive `box ssh` session supports human output only. Global interaction
+controls include `--no-input`, `--accessible`, `--color auto|always|never`, and
 `--theme auto|light|dark`. The automatic theme uses the terminal's own
 foreground and ANSI palette, making it independent of background detection;
 the explicit modes apply Schooner's exact light or dark palette. `NO_COLOR` is
@@ -131,6 +139,7 @@ selections:
 ```bash
 schooner box add work-cloud
 schooner box add work-cloud --yes --accept-new-host-key
+schooner box ssh work-cloud
 ```
 
 Local removal and infrastructure destruction remain deliberately separate:

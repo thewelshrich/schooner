@@ -300,6 +300,146 @@ func TestBoxLifecycleJSONThroughRun(t *testing.T) {
 	}
 }
 
+func TestBoxSSHOpensRecordedBoxesInCurrentTerminal(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		record box.Record
+		want   string
+	}{
+		{
+			name:   "adopted",
+			record: box.Record{Name: "work", Acquisition: "adopted", SSHDestination: "work-alias"},
+			want:   "args=work-alias\n",
+		},
+		{
+			name: "provisioned",
+			record: box.Record{
+				Name:                  "cloud",
+				Acquisition:           "provisioned",
+				SSHDestination:        "root@203.0.113.8",
+				IdentityFile:          "/state/ssh/id_ed25519",
+				Provider:              "digitalocean",
+				ProviderResourceID:    "42",
+				ProviderCorrelationID: "operation-1",
+				CredentialProfile:     "digitalocean/personal",
+			},
+			want: "args=-i /state/ssh/id_ed25519 -o IdentitiesOnly=yes root@203.0.113.8\n",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("XDG_STATE_HOME", filepath.Join(home, "state"))
+			installTestSSH(t, home, "#!/bin/sh\nprintf 'args=%s\\n' \"$*\"\n")
+			saveTestBox(t, tt.record)
+
+			var stdout, stderr bytes.Buffer
+			code := cli.Run(t.Context(), []string{"box", "ssh", tt.record.Name}, cli.Streams{
+				In:            strings.NewReader(""),
+				Out:           &stdout,
+				Err:           &stderr,
+				InIsTerminal:  true,
+				OutIsTerminal: true,
+				ErrIsTerminal: true,
+			}, testBuild())
+			if code != 0 || stdout.String() != tt.want || stderr.String() != "" {
+				t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+			}
+			if strings.Contains(stdout.String(), "schooner\n") || strings.Contains(stdout.String(), "cd --") {
+				t.Fatalf("named SSH handoff emitted UI or project command: %q", stdout.String())
+			}
+		})
+	}
+}
+
+func TestBoxSSHGlobalInteractionPolicy(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_STATE_HOME", filepath.Join(home, "state"))
+	installTestSSH(t, home, "#!/bin/sh\nprintf 'args=%s\\n' \"$*\"\n")
+	saveTestBox(t, box.Record{Name: "work", Acquisition: "adopted", SSHDestination: "work-alias"})
+
+	code, stdout, stderr := run(t.Context(), []string{"box", "ssh", "work"}, testBuild(), nil)
+	if code != 2 || stdout != "" || !strings.Contains(stderr, "requires an interactive terminal") {
+		t.Fatalf("non-TTY: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+
+	code, stdout, stderr = runTerminal(t.Context(), []string{"box", "ssh", "work", "--output", "json"}, "")
+	if code != 2 || stdout != "" || !strings.Contains(stderr, "human output only") {
+		t.Fatalf("JSON: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+
+	code, stdout, stderr = runTerminal(t.Context(), []string{"box", "ssh", "--no-input"}, "")
+	if code != 2 || stdout != "" || !strings.Contains(stderr, "box name is required") {
+		t.Fatalf("unnamed batch: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+
+	code, stdout, stderr = runTerminal(t.Context(), []string{"box", "ssh", "work", "--no-input"}, "")
+	if code != 0 || stdout != "args=-o BatchMode=yes work-alias\n" || stderr != "" {
+		t.Fatalf("named batch: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+
+	code, stdout, stderr = runTerminal(t.Context(), []string{"box", "ssh", "missing"}, "")
+	if code != 1 || stdout != "" || !strings.Contains(stderr, `box "missing" was not found`) {
+		t.Fatalf("missing box: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+
+	code, stdout, stderr = runTerminal(t.Context(), []string{"box", "ssh", "Not Valid"}, "")
+	if code != 2 || stdout != "" || !strings.Contains(stderr, "lowercase slug") {
+		t.Fatalf("invalid name: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+}
+
+func TestBoxSSHEmptyInventory(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_STATE_HOME", filepath.Join(home, "state"))
+	code, stdout, stderr := runTerminal(t.Context(), []string{"box", "ssh", "--accessible"}, "")
+	if code != 1 || stdout != "" || !strings.Contains(stderr, "no boxes are registered") {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+}
+
+func TestBoxSSHExitAndDiagnosticMapping(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		script     string
+		wantCode   int
+		wantStderr string
+	}{
+		{name: "remote shell exit", script: "#!/bin/sh\nexit 42\n", wantCode: 42},
+		{name: "OpenSSH failure", script: "#!/bin/sh\nprintf 'Permission denied (publickey).\\n' >&2\nexit 255\n", wantCode: 1, wantStderr: "Permission denied (publickey).\n"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("XDG_STATE_HOME", filepath.Join(home, "state"))
+			installTestSSH(t, home, tt.script)
+			saveTestBox(t, box.Record{Name: "work", Acquisition: "adopted", SSHDestination: "work-alias"})
+			code, stdout, stderr := runTerminal(t.Context(), []string{"box", "ssh", "work"}, "")
+			if code != tt.wantCode || stdout != "" || stderr != tt.wantStderr {
+				t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+			}
+			if strings.Contains(stderr, "Error:") {
+				t.Fatalf("native diagnostic was duplicated: %q", stderr)
+			}
+		})
+	}
+}
+
+func TestBoxSSHPicksABoxWhenNameIsOmitted(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_STATE_HOME", filepath.Join(home, "state"))
+	installTestSSH(t, home, "#!/bin/sh\nexit 0\n")
+	saveTestBox(t, box.Record{Name: "work", Acquisition: "adopted", SSHDestination: "work-alias"})
+
+	code, stdout, stderr := runTerminal(t.Context(), []string{"box", "ssh", "--accessible"}, "1\n")
+	if code != 0 || stdout != "" || !strings.Contains(stderr, "Choose a box to connect to") || !strings.Contains(stderr, "work") {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+}
+
 func TestBoxListEmptyInventory(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -526,6 +666,58 @@ func run(ctx context.Context, args []string, build cli.BuildInfo, out io.Writer)
 	}, build)
 
 	return code, stdout.String(), stderr.String()
+}
+
+func runTerminal(ctx context.Context, args []string, input string) (int, string, string) {
+	var stdout, stderr bytes.Buffer
+	code := cli.Run(ctx, args, cli.Streams{
+		In:            strings.NewReader(input),
+		Out:           &stdout,
+		Err:           &stderr,
+		InIsTerminal:  true,
+		OutIsTerminal: true,
+		ErrIsTerminal: true,
+	}, testBuild())
+	return code, stdout.String(), stderr.String()
+}
+
+func installTestSSH(t *testing.T, home, contents string) {
+	t.Helper()
+	bin := filepath.Join(home, "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bin, "ssh"), []byte(contents), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func saveTestBox(t *testing.T, record box.Record) {
+	t.Helper()
+	path, err := sqlite.DefaultPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := sqlite.Open(t.Context(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
+	record.ID = "box-" + record.Name
+	record.RemoteIdentity = "remote-" + record.Name
+	record.ProjectRoot = "/home/test/schooner"
+	record.CreatedAt = now
+	record.UpdatedAt = now
+	op := box.AddOperation{Name: record.Name, SSHDestination: record.SSHDestination, ProjectRoot: record.ProjectRoot, UpdatedAt: now}
+	if err := store.BeginAdd(t.Context(), op); err != nil {
+		t.Fatal(err)
+	}
+	observation := box.Observation{BoxID: record.ID, ObservedAt: now, Capabilities: box.Capabilities{OSID: "ubuntu", OSVersion: "24.04", Architecture: "amd64"}}
+	if err := store.CompleteAdd(t.Context(), op, record, observation); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func testBuild() cli.BuildInfo {
