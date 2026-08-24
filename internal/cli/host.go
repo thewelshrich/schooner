@@ -82,16 +82,28 @@ func newDoctorCommand(build BuildInfo, streams Streams, options *globalOptions) 
 			if err != nil {
 				return executionError{cause: err}
 			}
-			switch options.output {
-			case "json":
-				return encodeHostResult(cmd.OutOrStdout(), report)
-			case "human":
-				return writeDoctorReport(cmd.OutOrStdout(), report)
-			default:
-				return usageError{cause: fmt.Errorf("unsupported output format %q (expected human or json)", options.output)}
-			}
+			return writeDoctorResult(cmd.OutOrStdout(), options.output, report)
 		},
 	}
+}
+
+func writeDoctorResult(w io.Writer, output string, report hostruntime.DoctorReport) error {
+	var err error
+	switch output {
+	case "json":
+		err = encodeHostResult(w, report)
+	case "human":
+		err = writeDoctorReport(w, report)
+	default:
+		return usageError{cause: fmt.Errorf("unsupported output format %q (expected human or json)", output)}
+	}
+	if err != nil {
+		return err
+	}
+	if !report.Healthy {
+		return exitStatusError{code: exitFailure}
+	}
+	return nil
 }
 
 func readHostRequest(streams Streams, defaultWorkspaceRoot string) (hostruntime.InspectRequest, error) {

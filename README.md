@@ -74,6 +74,9 @@ ssh work-api '~/.local/bin/schooner version'
 ssh work-api '~/.local/bin/schooner doctor'
 ```
 
+`doctor` always writes its complete report and exits with status 1 when any
+readiness check needs attention.
+
 Box commands that return structured results support `--output json`; the
 interactive `box ssh` handoff supports human output only. Global interaction
 controls include `--no-input`, `--accessible`, `--color auto|always|never`, and

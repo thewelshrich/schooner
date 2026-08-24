@@ -110,6 +110,32 @@ func TestEnsureHostDoesNotReplaceUnidentifiableExistingFile(t *testing.T) {
 	}
 }
 
+func TestEnsureHostFallsBackToVersionWhenRejectedHelloOmitsVersion(t *testing.T) {
+	testRemoteShell(t)
+	root := t.TempDir()
+	target := filepath.Join(root, "home", ".local", "bin", "schooner")
+	existing := writeHostArtifactAt(t, target, "v9.0.0", "0", "amd64")
+	contents := strings.Replace(existing.contents, `"schooner_version":"v9.0.0"`, `"schooner_version":""`, 1)
+	if contents == existing.contents {
+		t.Fatal("test runtime hello version was not replaced")
+	}
+	if err := os.WriteFile(target, []byte(contents), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	resolver := &staticArtifactResolver{result: writeHostArtifact(t, root, "v2.0.0", "1", "amd64")}
+	runtime := NewHost(testSSHExecutable(t), nil, "v2.0.0", resolver)
+	request := box.HostInstallRequest{Path: target, OS: "linux", Architecture: "amd64", ExpectedIdentity: hostTestIdentity}
+
+	_, err := runtime.EnsureHost(t.Context(), box.Connection{Destination: "trusted-host"}, request)
+	if box.ErrorCode(err) != "host_runtime_incompatible" || !strings.Contains(err.Error(), "newer") || resolver.calls != 0 {
+		t.Fatalf("error=%v resolver calls=%d", err, resolver.calls)
+	}
+	installed, readErr := os.ReadFile(target)
+	if readErr != nil || string(installed) != contents {
+		t.Fatalf("version-identifiable newer runtime was replaced: err=%v", readErr)
+	}
+}
+
 func TestEnsureHostReinstallsAnOlderIncompatibleRuntime(t *testing.T) {
 	testRemoteShell(t)
 	root := t.TempDir()

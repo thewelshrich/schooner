@@ -110,6 +110,24 @@ func TestStatusRepairsMissingRuntimeAndPersistsItsPath(t *testing.T) {
 	}
 }
 
+func TestStatusRepairsMissingRuntimeAfterHomeMove(t *testing.T) {
+	store := newMemoryInventory()
+	store.records["work"] = Record{ID: "box-1", Name: "work", SSHDestination: "work", RemoteIdentity: "remote-1", RuntimePath: "/home/alice/.local/bin/schooner", WorkspaceRoot: "/home/alice/schooner"}
+	runtime := &fakeRuntime{capabilities: readyCapabilities(), inspectHostErrors: []error{NewError("host_runtime_missing", "missing", nil), nil}}
+	runtime.capabilities.Home = "/srv/alice"
+	runtime.capabilities.RemoteIdentity = "remote-1"
+	service := testService(runtime, store)
+
+	result, err := service.Status(t.Context(), StatusRequest{Name: "work"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "/srv/alice/.local/bin/schooner"
+	if result.Box.RuntimePath != want || store.records["work"].RuntimePath != want || runtime.ensured.Path != want {
+		t.Fatalf("result=%+v stored=%+v ensured=%+v", result.Box, store.records["work"], runtime.ensured)
+	}
+}
+
 func TestListEntriesIncludesObservationAndMixedAcquisition(t *testing.T) {
 	store := newMemoryInventory()
 	observed := time.Date(2026, 8, 24, 15, 0, 0, 0, time.UTC)
@@ -213,16 +231,18 @@ func readyCapabilities() Capabilities {
 }
 
 type fakeRuntime struct {
-	capabilities     Capabilities
-	inspectErr       error
-	inspectHostErr   error
-	installCalled    bool
-	calls            int
-	inspectCalls     int
-	inspectHostCalls int
-	ensureHostCalls  int
-	resolved         Connection
-	inspected        Connection
+	capabilities      Capabilities
+	inspectErr        error
+	inspectHostErr    error
+	inspectHostErrors []error
+	installCalled     bool
+	calls             int
+	inspectCalls      int
+	inspectHostCalls  int
+	ensureHostCalls   int
+	resolved          Connection
+	inspected         Connection
+	ensured           HostInstallRequest
 }
 
 func (f *fakeRuntime) Resolve(_ context.Context, connection Connection) error {
@@ -244,6 +264,7 @@ func (f *fakeRuntime) EnsureIdentity(_ context.Context, _ Connection, candidate 
 func (f *fakeRuntime) EnsureHost(_ context.Context, _ Connection, request HostInstallRequest) (HostRuntime, error) {
 	f.calls++
 	f.ensureHostCalls++
+	f.ensured = request
 	f.capabilities.Host = HostRuntime{Path: request.Path, Version: "v1.2.3", ProtocolVersion: "1", Capabilities: []string{"host.doctor.v1", "host.hello.v1", "host.inspect.v1"}}
 	return f.capabilities.Host, nil
 }
@@ -255,6 +276,13 @@ func (f *fakeRuntime) InspectHost(_ context.Context, _ Connection, installed Hos
 		f.capabilities.Host.Version = "v1.2.3"
 		f.capabilities.Host.ProtocolVersion = "1"
 		f.capabilities.Host.Capabilities = []string{"host.doctor.v1", "host.hello.v1", "host.inspect.v1"}
+	}
+	if len(f.inspectHostErrors) > 0 {
+		err := f.inspectHostErrors[0]
+		f.inspectHostErrors = f.inspectHostErrors[1:]
+		if err != nil {
+			return f.capabilities, err
+		}
 	}
 	if f.inspectHostErr != nil {
 		return f.capabilities, f.inspectHostErr

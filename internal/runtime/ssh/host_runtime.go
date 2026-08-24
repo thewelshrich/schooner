@@ -102,7 +102,7 @@ func (r *Runtime) assessHost(ctx context.Context, connection box.Connection, req
 	}
 
 	remoteVersion := ""
-	if attempt.ExitCode == 0 && decodeErr == nil {
+	if attempt.ExitCode == 0 && decodeErr == nil && hello.SchoonerVersion != "" {
 		remoteVersion = hello.SchoonerVersion
 	} else {
 		if attempt.ExitCode == 126 || attempt.ExitCode == 127 {

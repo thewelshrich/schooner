@@ -202,7 +202,7 @@ func (s *Service) Status(ctx context.Context, req StatusRequest) (StatusResult, 
 			return &Error{Code: "conflict", Message: "the connected machine does not match the recorded box identity"}
 		}
 		runtimePath := record.RuntimePath
-		if runtimePath == "" {
+		if runtimePath == "" || ErrorCode(inspectErr) == "host_runtime_missing" {
 			runtimePath, repairErr = hostprotocol.InstallPath(probe.Home)
 			if repairErr != nil {
 				return NewError("unsupported", repairErr.Error(), repairErr)
