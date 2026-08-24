@@ -83,6 +83,7 @@ internal/sync/                explicit push, pull, and sync behavior
 internal/session/             tmux-backed Sessions and optional Agents
 internal/runtime/             typed remote-operation interface
 internal/runtime/ssh/         system-OpenSSH transport adapter
+internal/artifact/            verified remote-application artifacts and cache
 internal/provider/            provider contracts and catalogue
 internal/provider/digitalocean/
 internal/provider/hetzner/
@@ -105,6 +106,19 @@ Schooner installs the same application on each supported Box for the configured
 SSH user. Installation is versioned and recoverable. Before an operation, the
 local application verifies that a compatible remote application is available
 and installs or updates it when necessary.
+
+The artifact module resolves a version and supported remote platform to one
+verified executable. GitHub Releases is the canonical published source. A
+required `SHA256SUMS` manifest supplies runtime integrity; GitHub build
+provenance attestations supplement it at publication time. Verified downloads
+are cached beneath the operating system's user cache directory at
+`schooner/artifacts/<version>`. `SCHOONER_ARTIFACT_DIR` replaces both the
+release source and cache lookup for explicit development builds, but it must
+contain the same binary and checksum-manifest contract. Concurrent resolutions
+may duplicate a download, but temporary files and checksum sidecars are stored
+atomically so callers never receive a partially written artifact. Stable
+artifact errors distinguish invalid versions, unsupported platforms,
+unavailability, invalid manifests, checksum mismatches, and cache failures.
 
 The local application invokes a private, machine-oriented remote mode at a
 known Schooner-owned path through the user's system OpenSSH executable. The

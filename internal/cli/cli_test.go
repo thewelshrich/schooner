@@ -544,11 +544,15 @@ func TestDigitalOceanAddResumesInterruptedByName(t *testing.T) {
 func TestDatabaseDestroyRemovesOnlyActiveDatabaseFiles(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	directory := filepath.Join(home, "Library", "Application Support", "Schooner")
+	t.Setenv("XDG_STATE_HOME", filepath.Join(home, "state"))
+	database, err := sqlite.DefaultPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory := filepath.Dir(database)
 	if err := os.MkdirAll(directory, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	database := filepath.Join(directory, "state.db")
 	for _, path := range []string{database, database + "-wal", database + "-shm"} {
 		if err := os.WriteFile(path, []byte("local state"), 0o600); err != nil {
 			t.Fatal(err)
