@@ -321,6 +321,12 @@ func TestInteractiveAccessibleDeclineThroughRun(t *testing.T) {
 	if !strings.Contains(stderr.String(), "Existing SSH") || !strings.Contains(stderr.String(), "Review") {
 		t.Fatalf("stderr = %q", stderr.String())
 	}
+	if !strings.Contains(stderr.String(), "schooner\n▁▂▄▆▆▄▂▁") {
+		t.Fatalf("interactive heading missing from stderr: %q", stderr.String())
+	}
+	if strings.Contains(stderr.String(), "\x1b[") {
+		t.Fatalf("accessible interaction contains ANSI control sequences: %q", stderr.String())
+	}
 }
 
 func TestInteractiveAbortExits130(t *testing.T) {
@@ -333,6 +339,9 @@ func TestInteractiveAbortExits130(t *testing.T) {
 	code := cli.Run(ctx, []string{"box", "add"}, cli.Streams{In: reader, Out: &stdout, Err: &stderr, InIsTerminal: true, ErrIsTerminal: true}, testBuild())
 	if code != 130 {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if strings.Count(stderr.String(), "\x1b[?25l") != strings.Count(stderr.String(), "\x1b[?25h") {
+		t.Fatalf("cursor was not restored after abort: %q", stderr.String())
 	}
 }
 

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/thewelshrich/schooner/internal/box"
+	"github.com/thewelshrich/schooner/internal/ui/intro"
 	"github.com/thewelshrich/schooner/internal/ui/prompts"
 	uitheme "github.com/thewelshrich/schooner/internal/ui/theme"
 )
@@ -57,6 +59,9 @@ func newBoxAddCommand(streams Streams, global *globalOptions) *cobra.Command {
 				projectRoot = box.DefaultProjectRoot
 			}
 			if interactive && (!yes || !nameSet || !sshSet) {
+				if err := showInteractiveIntro(cmd.Context(), streams, global); err != nil {
+					return err
+				}
 				draft, confirmed, err := prompts.Add(cmd.Context(), promptOptions(streams, global), prompts.AddDraft{Name: name, SSHDestination: destination, ProjectRoot: projectRoot}, nameSet, sshSet, rootSet, yes)
 				if errors.Is(err, prompts.ErrAborted) {
 					return abortError{cause: err}
@@ -121,6 +126,9 @@ func newBoxStatusCommand(streams Streams, global *globalOptions) *cobra.Command 
 				if listErr != nil {
 					return executionError{cause: listErr}
 				}
+				if err := showInteractiveIntro(cmd.Context(), streams, global); err != nil {
+					return err
+				}
 				name, err = prompts.PickBox(cmd.Context(), promptOptions(streams, global), "Choose a box", records)
 				if errors.Is(err, prompts.ErrAborted) {
 					return abortError{cause: err}
@@ -173,6 +181,12 @@ func newBoxRemoveCommand(streams Streams, global *globalOptions) *cobra.Command 
 			records, err := service.List(cmd.Context())
 			if err != nil {
 				return executionError{cause: err}
+			}
+			needsIntro := interactive && (name == "" || !yes)
+			if needsIntro {
+				if err := showInteractiveIntro(cmd.Context(), streams, global); err != nil {
+					return err
+				}
 			}
 			if name == "" {
 				if !interactive {
@@ -228,6 +242,23 @@ func promptOptions(streams Streams, options *globalOptions) prompts.Options {
 }
 func terminalTheme(options *globalOptions, streams Streams) *uitheme.Theme {
 	return uitheme.New(uitheme.Mode(options.theme), !colorDisabled(options, streams))
+}
+func showInteractiveIntro(ctx context.Context, streams Streams, options *globalOptions) error {
+	color := !colorDisabled(options, streams)
+	decorated := color && !options.accessible
+	err := intro.Show(ctx, intro.Options{
+		Output:   streams.Err,
+		Theme:    uitheme.New(uitheme.Mode(options.theme), decorated),
+		Animated: decorated,
+		Color:    decorated,
+	})
+	if err == nil {
+		return nil
+	}
+	if ctx.Err() != nil {
+		return abortError{cause: err}
+	}
+	return executionError{cause: err}
 }
 func helpRun(cmd *cobra.Command, _ []string) error { return cmd.Help() }
 
