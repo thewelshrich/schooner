@@ -211,13 +211,20 @@ jobs:
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           if gh release view "${VERSION}" >/dev/null 2>&1; then
             echo "release ${VERSION} already exists" >&2
             exit 1
           fi
+          release_flags=()
+          without_build="${VERSION%%+*}"
+          if [[ "${without_build}" == *-* ]]; then
+            release_flags+=(--prerelease)
+          fi
           gh release create "${VERSION}" dist/* \
             --verify-tag \
             --generate-notes \
-            --title "${VERSION}"
+            --title "${VERSION}" \
+            "${release_flags[@]}"
