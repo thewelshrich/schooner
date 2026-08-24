@@ -88,6 +88,28 @@ func TestEnsureHostNeverDowngradesAndToleratesCompatibleSkew(t *testing.T) {
 	}
 }
 
+func TestEnsureHostDoesNotReplaceUnidentifiableExistingFile(t *testing.T) {
+	testRemoteShell(t)
+	root := t.TempDir()
+	target := filepath.Join(root, "home", ".local", "bin", "schooner")
+	existing := writeHostArtifactAt(t, target, "v9.0.0", "2", "amd64")
+	if err := os.Chmod(target, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	resolver := &staticArtifactResolver{result: writeHostArtifact(t, root, "v2.0.0", "1", "amd64")}
+	runtime := NewHost(testSSHExecutable(t), nil, "v2.0.0", resolver)
+	request := box.HostInstallRequest{Path: target, OS: "linux", Architecture: "amd64", ExpectedIdentity: hostTestIdentity}
+
+	_, err := runtime.EnsureHost(t.Context(), box.Connection{Destination: "trusted-host"}, request)
+	if box.ErrorCode(err) != "host_runtime_incompatible" || resolver.calls != 0 {
+		t.Fatalf("error=%v resolver calls=%d", err, resolver.calls)
+	}
+	contents, readErr := os.ReadFile(target)
+	if readErr != nil || string(contents) != existing.contents {
+		t.Fatalf("unidentifiable existing runtime was replaced: err=%v", readErr)
+	}
+}
+
 func TestEnsureHostReinstallsAnOlderIncompatibleRuntime(t *testing.T) {
 	testRemoteShell(t)
 	root := t.TempDir()

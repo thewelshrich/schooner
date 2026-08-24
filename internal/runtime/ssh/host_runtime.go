@@ -104,7 +104,16 @@ func (r *Runtime) assessHost(ctx context.Context, connection box.Connection, req
 	remoteVersion := ""
 	if attempt.ExitCode == 0 && decodeErr == nil {
 		remoteVersion = hello.SchoonerVersion
-	} else if attempt.ExitCode != 126 && attempt.ExitCode != 127 {
+	} else {
+		if attempt.ExitCode == 126 || attempt.ExitCode == 127 {
+			fingerprint, err := r.fingerprintAt(ctx, connection, request.Path)
+			if err != nil {
+				return nil, "", err
+			}
+			if fingerprint == "missing" {
+				return nil, "", nil
+			}
+		}
 		var found bool
 		var err error
 		remoteVersion, found, err = r.versionAt(ctx, connection, request.Path)
