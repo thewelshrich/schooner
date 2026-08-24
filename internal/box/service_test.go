@@ -15,11 +15,11 @@ func TestAddPreparesAndPersistsBox(t *testing.T) {
 	runtime.capabilities.Git.Version = ""
 	service := testService(runtime, store)
 	var events []Event
-	result, err := service.Add(t.Context(), AddRequest{Name: "work-api", SSHDestination: "work", ProjectRoot: DefaultProjectRoot, Progress: func(event Event) { events = append(events, event) }})
+	result, err := service.Add(t.Context(), AddRequest{Name: "work-api", SSHDestination: "work", WorkspaceRoot: DefaultWorkspaceRoot, Progress: func(event Event) { events = append(events, event) }})
 	if err != nil {
 		t.Fatalf("Add() error = %v", err)
 	}
-	if result.Box.Acquisition != "adopted" || result.Box.ProjectRoot != "/home/alice/schooner" {
+	if result.Box.Acquisition != "adopted" || result.Box.WorkspaceRoot != "/home/alice/schooner" {
 		t.Fatalf("unexpected box: %+v", result.Box)
 	}
 	if !slices.Equal(result.Installed, []string{"git"}) {
@@ -71,7 +71,7 @@ func TestAddRejectsDuplicateRemoteIdentity(t *testing.T) {
 
 func TestStatusVerifiesIdentityAndCachesObservation(t *testing.T) {
 	store := newMemoryInventory()
-	store.records["work"] = Record{ID: "box-1", Name: "work", SSHDestination: "work", RemoteIdentity: "remote-1", ProjectRoot: "/home/alice/schooner"}
+	store.records["work"] = Record{ID: "box-1", Name: "work", SSHDestination: "work", RemoteIdentity: "remote-1", WorkspaceRoot: "/home/alice/schooner"}
 	runtime := &fakeRuntime{capabilities: readyCapabilities()}
 	runtime.capabilities.RemoteIdentity = "remote-1"
 	service := testService(runtime, store)
@@ -186,7 +186,7 @@ func testService(runtime Runtime, store Inventory) *Service {
 }
 
 func readyCapabilities() Capabilities {
-	return Capabilities{OSID: "ubuntu", OSVersion: "24.04", Architecture: "amd64", Home: "/home/alice", ProjectRoot: "/home/alice/schooner", ProjectRootExists: true, Git: Tool{Available: true, Version: "git version 2.43.0"}, Tmux: Tool{Available: true, Version: "tmux 3.4"}, PasswordlessSudo: true}
+	return Capabilities{OSID: "ubuntu", OSVersion: "24.04", Architecture: "amd64", Home: "/home/alice", WorkspaceRoot: "/home/alice/schooner", WorkspaceRootExists: true, Git: Tool{Available: true, Version: "git version 2.43.0"}, Tmux: Tool{Available: true, Version: "tmux 3.4"}, PasswordlessSudo: true}
 }
 
 type fakeRuntime struct {
@@ -219,7 +219,7 @@ func (f *fakeRuntime) InstallTools(_ context.Context, _ Connection, tools []stri
 	}
 	return nil
 }
-func (f *fakeRuntime) EnsureProjectRoot(context.Context, Connection, string) (string, error) {
+func (f *fakeRuntime) EnsureWorkspaceRoot(context.Context, Connection, string) (string, error) {
 	f.calls++
 	return "/home/alice/schooner", nil
 }

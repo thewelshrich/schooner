@@ -188,7 +188,7 @@ func (e abortError) Unwrap() error { return e.cause }
 type exitStatusError struct{ code int }
 
 func (e exitStatusError) Error() string {
-	return fmt.Sprintf("SSH session exited with status %d", e.code)
+	return fmt.Sprintf("SSH connection exited with status %d", e.code)
 }
 
 type reportedExecutionError struct{ cause error }

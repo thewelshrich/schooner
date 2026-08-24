@@ -346,7 +346,7 @@ func TestBoxSSHOpensRecordedBoxesInCurrentTerminal(t *testing.T) {
 				t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 			}
 			if strings.Contains(stdout.String(), "schooner\n") || strings.Contains(stdout.String(), "cd --") {
-				t.Fatalf("named SSH handoff emitted UI or project command: %q", stdout.String())
+				t.Fatalf("named SSH handoff emitted UI or remote command: %q", stdout.String())
 			}
 		})
 	}
@@ -510,7 +510,7 @@ func TestDigitalOceanAddResumesInterruptedByName(t *testing.T) {
 		Region:        "fra1",
 		Size:          "small",
 		Image:         "ubuntu-24-04-x64",
-		ProjectRoot:   box.DefaultProjectRoot,
+		WorkspaceRoot: box.DefaultWorkspaceRoot,
 		Checkpoint:    "provider_request_pending",
 		UpdatedAt:     time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC),
 	}
@@ -707,10 +707,10 @@ func saveTestBox(t *testing.T, record box.Record) {
 	now := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
 	record.ID = "box-" + record.Name
 	record.RemoteIdentity = "remote-" + record.Name
-	record.ProjectRoot = "/home/test/schooner"
+	record.WorkspaceRoot = "/home/test/schooner"
 	record.CreatedAt = now
 	record.UpdatedAt = now
-	op := box.AddOperation{Name: record.Name, SSHDestination: record.SSHDestination, ProjectRoot: record.ProjectRoot, UpdatedAt: now}
+	op := box.AddOperation{Name: record.Name, SSHDestination: record.SSHDestination, WorkspaceRoot: record.WorkspaceRoot, UpdatedAt: now}
 	if err := store.BeginAdd(t.Context(), op); err != nil {
 		t.Fatal(err)
 	}
@@ -755,9 +755,9 @@ case "$program" in
   *"candidate=\$1"*)
     printf '%s\n' '{"schema_version":"1","remote_identity":"11111111-1111-4111-8111-111111111111"}' ;;
   *"requested=\$1"*)
-    printf '%s\n' '{"schema_version":"1","project_root":"/home/alice/schooner"}' ;;
+    printf '%s\n' '{"schema_version":"1","workspace_root":"/home/alice/schooner"}' ;;
   *)
-    printf '%s\n' '{"schema_version":"1","os_id":"ubuntu","os_version":"24.04","architecture":"amd64","home":"/home/alice","remote_identity":"11111111-1111-4111-8111-111111111111","project_root":"/home/alice/schooner","project_root_exists":true,"git":{"available":true,"version":"git version 2.43.0"},"tmux":{"available":true,"version":"tmux 3.4"},"passwordless_sudo":true}' ;;
+    printf '%s\n' '{"schema_version":"1","os_id":"ubuntu","os_version":"24.04","architecture":"amd64","home":"/home/alice","remote_identity":"11111111-1111-4111-8111-111111111111","workspace_root":"/home/alice/schooner","workspace_root_exists":true,"git":{"available":true,"version":"git version 2.43.0"},"tmux":{"available":true,"version":"tmux 3.4"},"passwordless_sudo":true}' ;;
 esac
 `
 

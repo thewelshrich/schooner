@@ -11,70 +11,84 @@ this repository wins.
 Schooner is an open-source command-line application for creating and operating
 persistent, user-owned development machines.
 
-A Schooner box is a compatible Linux machine that the user controls and can
-access independently through OpenSSH. A box may be adopted through an existing
+A Schooner Box is a supported Linux machine that the user controls and can
+access independently through OpenSSH. A Box may be adopted through an existing
 SSH destination or provisioned through a supported provider. Acquisition only
-determines which infrastructure lifecycle operations are available. All boxes
-otherwise converge on the same identity, inspection, preparation, project,
-session, and recovery model.
+determines which infrastructure lifecycle operations are available. Every Box
+otherwise converges on the same preparation, Project, Workspace, Session, and
+recovery model.
 
-Schooner is not a hosted control plane and does not replace SSH, Git, terminals,
-editors, coding agents, source hosts, or cloud providers. Live machine state is
-authoritative on the machine. Local inventory is an aid to access and recovery,
-not a competing source of truth.
+Schooner is installed on the local machine and on supported remote Boxes. The
+local application invokes the remote application on demand through the user's
+system OpenSSH client. There is no persistent remote daemon in the initial
+release; tmux supplies persistence for development Sessions and their
+processes.
+
+Schooner does not replace SSH, Git, tmux, terminals, editors, coding agents,
+source hosts, or cloud providers. It has no accounts or Schooner-operated
+backend. Live Workspace and Session state is authoritative on the Box. Local
+inventory supports access, optional Local Links, synchronization, and recovery
+without becoming a hosted control plane.
 
 ## Product principles
 
-1. **Existing machines are first-class.** Adoption through OpenSSH is the
+1. **Workspaces are remote-first.** A Workspace is a first-class remote
+   checkout. It does not depend on a local checkout, Local Link, or Agent.
+2. **Existing machines are first-class.** Adoption through OpenSSH is the
    foundational path, not an import or compatibility route.
-2. **Acquisition is separate from operation.** Provider adapters obtain or
-   destroy infrastructure; they do not define projects, sessions, or box
-   behavior.
-3. **Independent access is preserved.** Schooner uses the user's system
+3. **Acquisition is separate from operation.** Provider adapters obtain or
+   destroy infrastructure; they do not define Projects, Workspaces, Sessions,
+   or Box behavior.
+4. **Independent access is preserved.** Schooner uses the user's system
    OpenSSH client and never makes ordinary SSH access depend on Schooner.
-4. **Remote authority stays remote.** Projects, worktrees, sessions, installed
-   tools, and capabilities are observed from the box.
-5. **Destruction is explicit.** Removing local inventory never destroys a
+5. **Remote authority stays remote.** Projects, Workspaces, Sessions,
+   installed tools, and capabilities are observed from the Box.
+6. **Synchronization is explicit.** `push`, `pull`, and `sync` are one-shot,
+   Git-aware operations. Schooner never runs a continuous file synchronizer or
+   silently chooses a winner when states conflict.
+7. **Destruction is explicit.** Removing local inventory never destroys a
    machine. Infrastructure destruction is a distinct, capability-gated action.
-6. **No generic remote execution.** Product behavior is expressed as typed,
-   bounded operations. Schooner does not expose a user-facing remote `run`.
-7. **Agentless until proven otherwise.** V1 uses OpenSSH and standard Linux
-   primitives. An on-demand helper or daemon requires evidence that the simpler
-   model cannot meet a concrete requirement.
-8. **Automation and interaction are peers.** Every interactive flow has a
+8. **No generic remote execution.** Product behavior is expressed as typed,
+   bounded operations. Schooner does not expose a user-facing `schooner run`.
+9. **Automation and interaction are peers.** Every interactive flow has a
    deterministic non-interactive form. Structured output is a supported
    contract from the beginning.
-9. **Extensibility is for contributors.** V1 has no runtime plugin system.
-   New built-in commands, providers, and domain behavior follow explicit
-   repository patterns and are compiled into Schooner.
+10. **Extensibility is for contributors.** The initial release has no runtime
+    plugin system. New built-in commands, providers, and domain behavior follow
+    explicit repository patterns and are compiled into Schooner.
 
-## V1
+## Initial release
 
-V1 is a coherent vertical product, not every feature Schooner may eventually
-support.
+The initial release is a coherent vertical product, not every feature Schooner
+may eventually support.
 
 It includes:
 
 - adopting an existing OpenSSH destination;
 - provisioning through DigitalOcean and Hetzner;
 - explicit SSH host trust and changed-key failure behavior;
-- establishing and verifying a stable box identity;
-- inspecting and preparing supported Ubuntu machines;
+- establishing and verifying a stable Box identity;
+- installing and invoking the same Schooner application on supported Ubuntu
+  Boxes;
 - installing or verifying Git and tmux;
-- discovering and cloning Git projects;
-- discovering Git worktrees;
-- discovering, starting, and resuming tmux-backed sessions;
-- forgetting a box without affecting the machine;
+- discovering and creating Projects and remote-only Workspaces;
+- creating a Local Link through an explicit `push` or `pull`;
+- explicit, one-shot, Git-aware `push`, `pull`, and `sync` operations;
+- discovering, starting, and resuming tmux-backed Sessions;
+- optionally starting or resuming a coding Agent in a Session;
+- opening private previews through OpenSSH forwarding;
+- forgetting a Box without affecting the machine;
 - destroying only provider-created infrastructure;
 - named, securely stored provider credential profiles;
 - recoverable setup and provisioning operations;
 - human-readable and versioned JSON output.
 
-V1 clone operations use Git as the configured remote SSH user and therefore
-use that user's existing Git credential and SSH setup. Schooner does not store,
-broker, or manufacture source-host credentials in V1.
+Git operations use the configured local or remote user and that user's existing
+Git credential and SSH setup. Schooner does not store, broker, copy, or
+manufacture source-host credentials in the initial release. A repository does
+not need a Schooner configuration file.
 
-The certified V1 matrix is:
+The certified initial matrix is:
 
 | Concern | Support |
 | --- | --- |
@@ -83,46 +97,43 @@ The certified V1 matrix is:
 | Architectures | amd64 and arm64 |
 | SSH | User's system OpenSSH client |
 | Providers | DigitalOcean and Hetzner |
-| Required remote tools | Git and tmux |
+| Required remote tools | Schooner, Git, and tmux |
 
-## Explicit V1 exclusions
+## Explicit initial-release exclusions
 
-V1 does not include:
+The initial release does not include:
 
-- a persistent remote agent or daemon;
-- an on-demand remote binary helper;
+- a persistent remote daemon;
 - a runtime plugin system;
 - a full-screen TUI;
-- generic remote command execution;
-- local/remote filesystem synchronization;
-- wrappers around Git push or pull;
+- generic remote command execution or a user-facing `schooner run`;
+- continuous or implicit filesystem synchronization;
 - public preview ingress;
-- collaborative or shared sessions;
+- collaborative or shared Sessions;
 - a hosted control plane, accounts, organizations, billing, or licensing;
 - Windows client support;
 - arbitrary Linux distribution support;
 - a generalized package catalogue;
 - user-defined providers or package definitions.
 
-Private SSH port forwarding may be added after the core V1 if it remains a thin
-use of OpenSSH. It must not delay the release or introduce hosted authority.
-
 ## Implementation sequence
 
-The first milestone proves the architecture without creating cloud resources:
+The first milestone establishes a trusted Box and installs the remote
+application:
 
 ```text
 box add
   -> resolve an OpenSSH destination
   -> verify host identity
   -> inspect Ubuntu capabilities
-  -> establish stable box identity
+  -> establish stable Box identity
+  -> install a compatible Schooner application, Git, and tmux
   -> persist local inventory
   -> render a human or JSON result
 
 box status
   -> reconnect
-  -> verify box identity
+  -> verify Box and remote-application identity
   -> report live capabilities
 
 box remove
@@ -133,6 +144,8 @@ After this path is complete:
 
 1. DigitalOcean proves provider acquisition and destruction.
 2. Hetzner proves that the provider seam is deep rather than provider-shaped.
-3. Project discovery and cloning prove filesystem and Git observation.
-4. Worktree and tmux discovery prove persistent development resumption.
-5. Additional V1 behavior is added only through these established modules.
+3. Project and remote-only Workspace creation prove the remote-first model.
+4. Session and optional Agent resumption prove tmux-backed persistence.
+5. Local Links, Sync Points, and explicit push/pull/sync prove safe directional
+   synchronization without making local state authoritative.
+6. Additional behavior is added only through these established modules.

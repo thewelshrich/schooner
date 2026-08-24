@@ -78,7 +78,7 @@ func (r *Runtime) OpenShell(ctx context.Context, connection box.Connection, term
 	}
 	code := exitErr.ExitCode()
 	if code < 0 {
-		return ShellResult{}, box.NewError("connection_failed", "SSH session terminated without an exit status", err)
+		return ShellResult{}, box.NewError("connection_failed", "SSH connection terminated without an exit status", err)
 	}
 	if code != 255 {
 		return ShellResult{ExitCode: code}, nil
@@ -163,16 +163,16 @@ func (r *Runtime) Resolve(ctx context.Context, connection box.Connection) error 
 	return nil
 }
 
-func (r *Runtime) Inspect(ctx context.Context, connection box.Connection, projectRoot string) (box.Capabilities, error) {
+func (r *Runtime) Inspect(ctx context.Context, connection box.Connection, workspaceRoot string) (box.Capabilities, error) {
 	contents, err := scripts.ReadFile("scripts/inspect.sh")
 	if err != nil {
 		return box.Capabilities{}, err
 	}
 	var result box.Capabilities
-	if projectRoot == "" {
-		projectRoot = "~"
+	if workspaceRoot == "" {
+		workspaceRoot = "~"
 	}
-	if err = r.runJSON(ctx, connection, contents, []string{projectRoot}, &result); err != nil {
+	if err = r.runJSON(ctx, connection, contents, []string{workspaceRoot}, &result); err != nil {
 		return box.Capabilities{}, err
 	}
 	return result, nil
@@ -216,22 +216,22 @@ func (r *Runtime) InstallTools(ctx context.Context, connection box.Connection, t
 	return r.runJSON(ctx, connection, contents, tools, &result)
 }
 
-func (r *Runtime) EnsureProjectRoot(ctx context.Context, connection box.Connection, requested string) (string, error) {
+func (r *Runtime) EnsureWorkspaceRoot(ctx context.Context, connection box.Connection, requested string) (string, error) {
 	probe, err := r.Inspect(ctx, connection, "~")
 	if err != nil {
 		return "", err
 	}
-	contents, err := scripts.ReadFile("scripts/project_root.sh")
+	contents, err := scripts.ReadFile("scripts/workspace_root.sh")
 	if err != nil {
 		return "", err
 	}
 	var result struct {
-		ProjectRoot string `json:"project_root"`
+		WorkspaceRoot string `json:"workspace_root"`
 	}
 	if err = r.runJSON(ctx, connection, contents, []string{requested, probe.Home}, &result); err != nil {
 		return "", err
 	}
-	return result.ProjectRoot, nil
+	return result.WorkspaceRoot, nil
 }
 
 func (r *Runtime) runJSON(ctx context.Context, connection box.Connection, program []byte, arguments []string, target any) error {

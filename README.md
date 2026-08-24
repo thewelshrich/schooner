@@ -4,9 +4,10 @@ Schooner is an open-source, CLI-first application for creating and operating
 persistent, user-owned development machines.
 
 It adopts existing machines through OpenSSH or provisions them through a
-supported provider, then applies the same box, project, worktree, and session
-model regardless of acquisition path. Live state remains on the machine, and
-users retain independent SSH access.
+supported provider, then applies the same Box, Project, Workspace, and Session
+model regardless of acquisition path. A Workspace is a first-class remote
+checkout and does not require a local checkout. Live state remains on the Box,
+and users retain independent SSH access.
 
 This repository is currently establishing the V1 implementation foundation.
 
@@ -53,16 +54,16 @@ policy; it never accepts a changed key.
 `box ssh` hands the current terminal directly to the system OpenSSH client and
 opens the remote user's normal login shell. It uses the connection details
 recorded during `box add`, without launching another terminal or changing to
-the project root. Supplying `--no-input` with a box name enables OpenSSH batch
+the workspace root. Supplying `--no-input` with a box name enables OpenSSH batch
 mode, so authentication and host-trust prompts fail instead of blocking.
 
 `box add` verifies the remote system, establishes a stable machine identity,
 installs missing Git and tmux packages when `sudo -n` is available, and creates
-the project root (default `~/schooner`). `box remove` only forgets local
+the workspace root (default `~/schooner`). `box remove` only forgets local
 inventory and never changes the remote machine.
 
 Box commands that return structured results support `--output json`; the
-interactive `box ssh` session supports human output only. Global interaction
+interactive `box ssh` handoff supports human output only. Global interaction
 controls include `--no-input`, `--accessible`, `--color auto|always|never`, and
 `--theme auto|light|dark`. The automatic theme uses the terminal's own
 foreground and ANSI palette, making it independent of background detection;
@@ -72,12 +73,19 @@ also respected.
 ## Core constraints
 
 - Use the user's system OpenSSH client.
-- Keep remote machine state authoritative.
+- Install and invoke the same Schooner application on supported Boxes without
+  running a persistent daemon.
+- Keep Project, Workspace, Session, and Agent state authoritative on the Box.
+- Treat local checkouts as optional Local Links to remote Workspaces.
+- Make `push`, `pull`, and `sync` explicit, one-shot, Git-aware operations.
 - Preserve independent SSH, Git, tmux, terminal, and editor use.
-- Never expose generic remote command execution.
+- Never require a repository configuration file.
+- Never expose generic remote command execution or `schooner run`.
 - Never let local removal destroy infrastructure.
-- Add remote helpers or daemons only when demonstrated requirements justify
-  their lifecycle and security cost.
+- Use tmux, not a Schooner daemon, for persistent Sessions and optional coding
+  Agents.
+- Do not add a full-screen TUI, public previews, accounts, or a
+  Schooner-operated backend in the initial release.
 
 ## Development
 

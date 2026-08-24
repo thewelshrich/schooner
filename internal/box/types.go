@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-const DefaultProjectRoot = "~/schooner"
+const DefaultWorkspaceRoot = "~/schooner"
 
 type Step string
 
@@ -18,7 +18,7 @@ const (
 	StepInspect       Step = "inspect"
 	StepIdentity      Step = "identity"
 	StepPrerequisites Step = "prerequisites"
-	StepProjectRoot   Step = "project_root"
+	StepWorkspaceRoot Step = "workspace_root"
 	StepVerify        Step = "verify"
 	StepSave          Step = "save"
 )
@@ -52,16 +52,16 @@ type Tool struct {
 }
 
 type Capabilities struct {
-	OSID              string `json:"os_id"`
-	OSVersion         string `json:"os_version"`
-	Architecture      string `json:"architecture"`
-	Home              string `json:"home"`
-	RemoteIdentity    string `json:"remote_identity,omitempty"`
-	ProjectRoot       string `json:"project_root,omitempty"`
-	ProjectRootExists bool   `json:"project_root_exists"`
-	Git               Tool   `json:"git"`
-	Tmux              Tool   `json:"tmux"`
-	PasswordlessSudo  bool   `json:"passwordless_sudo"`
+	OSID                string `json:"os_id"`
+	OSVersion           string `json:"os_version"`
+	Architecture        string `json:"architecture"`
+	Home                string `json:"home"`
+	RemoteIdentity      string `json:"remote_identity,omitempty"`
+	WorkspaceRoot       string `json:"workspace_root,omitempty"`
+	WorkspaceRootExists bool   `json:"workspace_root_exists"`
+	Git                 Tool   `json:"git"`
+	Tmux                Tool   `json:"tmux"`
+	PasswordlessSudo    bool   `json:"passwordless_sudo"`
 }
 
 type Record struct {
@@ -71,7 +71,7 @@ type Record struct {
 	SSHDestination        string
 	IdentityFile          string
 	RemoteIdentity        string
-	ProjectRoot           string
+	WorkspaceRoot         string
 	Provider              string
 	ProviderResourceID    string
 	ProviderCorrelationID string
@@ -90,7 +90,7 @@ type Observation struct {
 type AddOperation struct {
 	Name           string
 	SSHDestination string
-	ProjectRoot    string
+	WorkspaceRoot  string
 	Checkpoint     Step
 	RemoteIdentity string
 	UpdatedAt      time.Time
@@ -100,7 +100,7 @@ type AddRequest struct {
 	Name                  string
 	SSHDestination        string
 	IdentityFile          string
-	ProjectRoot           string
+	WorkspaceRoot         string
 	Acquisition           string
 	Provider              string
 	ProviderResourceID    string
@@ -164,7 +164,7 @@ type Runtime interface {
 	Inspect(context.Context, Connection, string) (Capabilities, error)
 	EnsureIdentity(context.Context, Connection, string) (string, error)
 	InstallTools(context.Context, Connection, []string) error
-	EnsureProjectRoot(context.Context, Connection, string) (string, error)
+	EnsureWorkspaceRoot(context.Context, Connection, string) (string, error)
 }
 
 // Inventory is the consumer-owned seam for durable local box state.
