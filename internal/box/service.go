@@ -27,10 +27,10 @@ func (s *Service) Add(ctx context.Context, req AddRequest) (AddResult, error) {
 	if err := ValidateSSHDestination(req.SSHDestination); err != nil {
 		return AddResult{}, invalid(err)
 	}
-	if req.ProjectRoot == "" {
-		req.ProjectRoot = DefaultProjectRoot
+	if req.WorkspaceRoot == "" {
+		req.WorkspaceRoot = DefaultWorkspaceRoot
 	}
-	if err := ValidateProjectRoot(req.ProjectRoot); err != nil {
+	if err := ValidateWorkspaceRoot(req.WorkspaceRoot); err != nil {
 		return AddResult{}, invalid(err)
 	}
 	if _, err := s.store.FindByName(ctx, req.Name); err == nil {
@@ -40,7 +40,7 @@ func (s *Service) Add(ctx context.Context, req AddRequest) (AddResult, error) {
 	}
 
 	conn := Connection{Destination: req.SSHDestination, IdentityFile: req.IdentityFile, AcceptNewHostKey: req.AcceptNewHostKey, BatchMode: req.BatchMode}
-	op := AddOperation{Name: req.Name, SSHDestination: req.SSHDestination, ProjectRoot: req.ProjectRoot, UpdatedAt: s.now().UTC()}
+	op := AddOperation{Name: req.Name, SSHDestination: req.SSHDestination, WorkspaceRoot: req.WorkspaceRoot, UpdatedAt: s.now().UTC()}
 	if err := s.store.BeginAdd(ctx, op); err != nil {
 		return AddResult{}, err
 	}
@@ -51,7 +51,7 @@ func (s *Service) Add(ctx context.Context, req AddRequest) (AddResult, error) {
 	var capabilities Capabilities
 	if err := s.runStep(ctx, req.Progress, StepConnect, "Connect and verify host trust", func() error {
 		var err error
-		capabilities, err = s.runtime.Inspect(ctx, conn, req.ProjectRoot)
+		capabilities, err = s.runtime.Inspect(ctx, conn, req.WorkspaceRoot)
 		return err
 	}); err != nil {
 		return AddResult{}, err
@@ -100,10 +100,10 @@ func (s *Service) Add(ctx context.Context, req AddRequest) (AddResult, error) {
 		return AddResult{}, err
 	}
 
-	var projectRoot string
-	if err := s.runStep(ctx, req.Progress, StepProjectRoot, "Prepare project root", func() error {
+	var workspaceRoot string
+	if err := s.runStep(ctx, req.Progress, StepWorkspaceRoot, "Prepare workspace root", func() error {
 		var err error
-		projectRoot, err = s.runtime.EnsureProjectRoot(ctx, conn, req.ProjectRoot)
+		workspaceRoot, err = s.runtime.EnsureWorkspaceRoot(ctx, conn, req.WorkspaceRoot)
 		return err
 	}); err != nil {
 		return AddResult{}, err
@@ -111,7 +111,7 @@ func (s *Service) Add(ctx context.Context, req AddRequest) (AddResult, error) {
 
 	if err := s.runStep(ctx, req.Progress, StepVerify, "Verify box readiness", func() error {
 		var err error
-		capabilities, err = s.runtime.Inspect(ctx, conn, projectRoot)
+		capabilities, err = s.runtime.Inspect(ctx, conn, workspaceRoot)
 		if err != nil {
 			return err
 		}
@@ -124,8 +124,8 @@ func (s *Service) Add(ctx context.Context, req AddRequest) (AddResult, error) {
 		if !capabilities.Git.Available || !capabilities.Tmux.Available {
 			return &Error{Code: "unsupported", Message: "Git and tmux are required but were not available after setup"}
 		}
-		if !capabilities.ProjectRootExists {
-			return &Error{Code: "unsupported", Message: "project root was not available after setup"}
+		if !capabilities.WorkspaceRootExists {
+			return &Error{Code: "unsupported", Message: "workspace root was not available after setup"}
 		}
 		return nil
 	}); err != nil {
@@ -141,7 +141,7 @@ func (s *Service) Add(ctx context.Context, req AddRequest) (AddResult, error) {
 	if acquisition == "" {
 		acquisition = "adopted"
 	}
-	record := Record{ID: recordID, Name: req.Name, Acquisition: acquisition, SSHDestination: req.SSHDestination, IdentityFile: req.IdentityFile, RemoteIdentity: identity, ProjectRoot: projectRoot, Provider: req.Provider, ProviderResourceID: req.ProviderResourceID, ProviderCorrelationID: req.ProviderCorrelationID, CredentialProfile: req.CredentialProfile, ProviderRegion: req.ProviderRegion, CreatedAt: now, UpdatedAt: now}
+	record := Record{ID: recordID, Name: req.Name, Acquisition: acquisition, SSHDestination: req.SSHDestination, IdentityFile: req.IdentityFile, RemoteIdentity: identity, WorkspaceRoot: workspaceRoot, Provider: req.Provider, ProviderResourceID: req.ProviderResourceID, ProviderCorrelationID: req.ProviderCorrelationID, CredentialProfile: req.CredentialProfile, ProviderRegion: req.ProviderRegion, CreatedAt: now, UpdatedAt: now}
 	observation := Observation{BoxID: record.ID, ObservedAt: now, Capabilities: capabilities}
 	if err := s.runStep(ctx, req.Progress, StepSave, "Save local inventory", func() error { return s.store.CompleteAdd(ctx, op, record, observation) }); err != nil {
 		return AddResult{}, err
@@ -162,7 +162,7 @@ func (s *Service) Status(ctx context.Context, req StatusRequest) (StatusResult, 
 	var capabilities Capabilities
 	err = s.runStep(ctx, req.Progress, StepConnect, "Check live box status", func() error {
 		var inspectErr error
-		capabilities, inspectErr = s.runtime.Inspect(ctx, conn, record.ProjectRoot)
+		capabilities, inspectErr = s.runtime.Inspect(ctx, conn, record.WorkspaceRoot)
 		return inspectErr
 	})
 	if err != nil {
@@ -201,7 +201,7 @@ func (s *Service) Status(ctx context.Context, req StatusRequest) (StatusResult, 
 
 // PrepareSSH loads the authoritative local connection inputs for an
 // interactive system-OpenSSH handoff. It deliberately performs no live probe:
-// OpenSSH owns authentication and host trust for the resulting session.
+// OpenSSH owns authentication and host trust for the resulting connection.
 func (s *Service) PrepareSSH(ctx context.Context, req SSHRequest) (SSHLaunch, error) {
 	if err := ValidateName(req.Name); err != nil {
 		return SSHLaunch{}, invalid(err)

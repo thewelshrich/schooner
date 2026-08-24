@@ -28,15 +28,15 @@ func ValidateSSHDestination(destination string) error {
 	return nil
 }
 
-func ValidateProjectRoot(root string) error {
+func ValidateWorkspaceRoot(root string) error {
 	if root == "" {
-		return fmt.Errorf("project root is required")
+		return fmt.Errorf("workspace root is required")
 	}
 	if strings.ContainsAny(root, "\x00\r\n") {
-		return fmt.Errorf("project root contains unsupported control characters")
+		return fmt.Errorf("workspace root contains unsupported control characters")
 	}
 	if root != "~" && !strings.HasPrefix(root, "~/") && !strings.HasPrefix(root, "/") {
-		return fmt.Errorf("project root must be absolute or begin with ~/")
+		return fmt.Errorf("workspace root must be absolute or begin with ~/")
 	}
 	return nil
 }

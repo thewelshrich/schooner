@@ -22,7 +22,7 @@ func TestStoreLifecycleAndMigrationHistory(t *testing.T) {
 		t.Fatalf("Open() error = %v", err)
 	}
 	now := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
-	op := box.AddOperation{Name: "work", SSHDestination: "work-host", ProjectRoot: "~/schooner", UpdatedAt: now}
+	op := box.AddOperation{Name: "work", SSHDestination: "work-host", WorkspaceRoot: "~/schooner", UpdatedAt: now}
 	if err = store.BeginAdd(t.Context(), op); err != nil {
 		t.Fatalf("BeginAdd() error = %v", err)
 	}
@@ -30,7 +30,7 @@ func TestStoreLifecycleAndMigrationHistory(t *testing.T) {
 	if err = store.CheckpointAdd(t.Context(), op); err != nil {
 		t.Fatalf("CheckpointAdd() error = %v", err)
 	}
-	record := box.Record{ID: "box-1", Name: "work", Acquisition: "adopted", SSHDestination: "work-host", RemoteIdentity: "remote-1", ProjectRoot: "/home/alice/schooner", CreatedAt: now, UpdatedAt: now}
+	record := box.Record{ID: "box-1", Name: "work", Acquisition: "adopted", SSHDestination: "work-host", RemoteIdentity: "remote-1", WorkspaceRoot: "/home/alice/schooner", CreatedAt: now, UpdatedAt: now}
 	observation := box.Observation{BoxID: record.ID, ObservedAt: now, Capabilities: box.Capabilities{OSID: "ubuntu", OSVersion: "24.04", Architecture: "amd64", Home: "/home/alice", RemoteIdentity: "remote-1", Git: box.Tool{Available: true, Version: "git version 2.43.0"}, Tmux: box.Tool{Available: true, Version: "tmux 3.4"}, PasswordlessSudo: true}}
 	if err = store.CompleteAdd(t.Context(), op, record, observation); err != nil {
 		t.Fatalf("CompleteAdd() error = %v", err)
@@ -71,10 +71,10 @@ func TestStoreRejectsChangedRecoveryInput(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	if err = store.BeginAdd(t.Context(), box.AddOperation{Name: "work", SSHDestination: "one", ProjectRoot: "~/schooner", UpdatedAt: time.Now()}); err != nil {
+	if err = store.BeginAdd(t.Context(), box.AddOperation{Name: "work", SSHDestination: "one", WorkspaceRoot: "~/schooner", UpdatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
-	err = store.BeginAdd(t.Context(), box.AddOperation{Name: "work", SSHDestination: "two", ProjectRoot: "~/schooner", UpdatedAt: time.Now()})
+	err = store.BeginAdd(t.Context(), box.AddOperation{Name: "work", SSHDestination: "two", WorkspaceRoot: "~/schooner", UpdatedAt: time.Now()})
 	if box.ErrorCode(err) != "conflict" {
 		t.Fatalf("error = %v", err)
 	}
@@ -87,7 +87,7 @@ func TestProvisionOperationPersistsSelectedLocalPublicKeys(t *testing.T) {
 	}
 	defer store.Close()
 	key := provider.PublicKey{Name: "id_ed25519", Fingerprint: "SHA256:local", PublicKey: "ssh-ed25519 AAAA"}
-	op := acquisition.ProvisionOperation{Name: "work", CorrelationID: "op-1", Profile: "digitalocean/personal", Region: "fra1", Size: "small", Image: "ubuntu-24-04-x64", LocalPublicKeys: []provider.PublicKey{key}, ProjectRoot: box.DefaultProjectRoot, UpdatedAt: time.Now().UTC()}
+	op := acquisition.ProvisionOperation{Name: "work", CorrelationID: "op-1", Profile: "digitalocean/personal", Region: "fra1", Size: "small", Image: "ubuntu-24-04-x64", LocalPublicKeys: []provider.PublicKey{key}, WorkspaceRoot: box.DefaultWorkspaceRoot, UpdatedAt: time.Now().UTC()}
 	if _, err = store.BeginProvision(t.Context(), op); err != nil {
 		t.Fatal(err)
 	}
@@ -133,11 +133,11 @@ func TestProviderMigrationBackupAndStructuredRecord(t *testing.T) {
 	if err != nil || !gotProfile.Default || gotProfile.ExternalID != "team-1" {
 		t.Fatalf("profile=%+v err=%v", gotProfile, err)
 	}
-	op := box.AddOperation{Name: "cloud", SSHDestination: "root@203.0.113.8", ProjectRoot: box.DefaultProjectRoot, UpdatedAt: now}
+	op := box.AddOperation{Name: "cloud", SSHDestination: "root@203.0.113.8", WorkspaceRoot: box.DefaultWorkspaceRoot, UpdatedAt: now}
 	if err = store.BeginAdd(t.Context(), op); err != nil {
 		t.Fatal(err)
 	}
-	record := box.Record{ID: "box-cloud", Name: "cloud", Acquisition: "provisioned", SSHDestination: op.SSHDestination, IdentityFile: "/state/id_ed25519", RemoteIdentity: "remote-cloud", ProjectRoot: "/root/schooner", Provider: "digitalocean", ProviderResourceID: "42", ProviderCorrelationID: "op-1", CredentialProfile: string(profile.Ref), CreatedAt: now, UpdatedAt: now}
+	record := box.Record{ID: "box-cloud", Name: "cloud", Acquisition: "provisioned", SSHDestination: op.SSHDestination, IdentityFile: "/state/id_ed25519", RemoteIdentity: "remote-cloud", WorkspaceRoot: "/root/schooner", Provider: "digitalocean", ProviderResourceID: "42", ProviderCorrelationID: "op-1", CredentialProfile: string(profile.Ref), CreatedAt: now, UpdatedAt: now}
 	observation := box.Observation{BoxID: record.ID, ObservedAt: now, Capabilities: box.Capabilities{OSID: "ubuntu", OSVersion: "24.04", Architecture: "amd64"}}
 	if err = store.CompleteAdd(t.Context(), op, record, observation); err != nil {
 		t.Fatal(err)

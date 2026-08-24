@@ -59,28 +59,47 @@ Do not build a Schooner command framework on top of Cobra.
    cleanup.
 
 Provider adapters acquire infrastructure. They do not install tools, discover
-projects, manage sessions, or define box behavior.
+Projects or Workspaces, manage Sessions, or define Box behavior.
 
 ## Adding remote behavior
 
 1. Add a typed product operation to the runtime interface only when a caller
    needs it; never add generic command execution.
-2. Keep the operation cohesive enough to hide shell and tool-version details.
-3. Implement it as a small embedded, versioned script in the OpenSSH adapter.
-4. Pass input separately from script source.
-5. Emit a versioned JSON result on stdout and diagnostics on stderr.
+2. Implement the operation in the shared application and register it in the
+   private remote entry point.
+3. Keep the operation cohesive enough to hide Git, tmux, filesystem, and tool
+   version details.
+4. Pass structured input separately from remote invocation and executable
+   selection.
+5. Emit a versioned result on stdout and diagnostics on stderr.
 6. Bound output, classify exits, redact unsafe values, and respect cancellation.
-7. Test idempotency, interruption, unsupported capabilities, and hostile input.
-8. Add the operation to the runtime conformance suite.
+7. Test idempotency, interruption, unsupported capabilities, protocol
+   compatibility, and hostile input.
+8. Add the operation to the remote-runtime conformance suite.
 
 Treat the remote box identifier as correlation data, never as authentication.
 Tests covering identity must establish OpenSSH host trust separately and must
 exercise the duplicate-ID case caused by a cloned machine image.
 
-Do not install a remote helper merely to make one script more convenient. A
-helper requires repeated evidence that shell orchestration cannot safely supply
-atomicity, cancellation, or structured inspection. A daemon additionally
-requires behavior that must continue without a connected CLI.
+The remote Schooner application is invoked on demand and exits with its bounded
+operation. Do not introduce a persistent service, worker, or daemon without a
+separate architectural decision demonstrating behavior that must continue
+without a connected CLI. tmux owns persistence for user-visible Sessions and
+optional coding Agents.
+
+## Adding Project, Workspace, or synchronization behavior
+
+1. Preserve Project as repository identity plus its shared Git object store and
+   Workspace as one concrete remote checkout or worktree.
+2. Make remote-only Workspaces complete product objects; never require a local
+   checkout or Local Link.
+3. Store Schooner metadata outside repositories; do not require a repository
+   configuration file.
+4. Keep `push` local-to-remote, `pull` remote-to-local, and `sync` a comparison
+   of both sides against their Sync Point.
+5. Run synchronization only through explicit one-shot commands and update the
+   Sync Point only after verifying the shared result.
+6. Return conflicts instead of silently choosing a winning checkout.
 
 ## Adding a module
 
@@ -117,7 +136,7 @@ the following require explicit compatibility and migration review:
 - TOML configuration;
 - SQLite schema and migration history;
 - remote identity and metadata files;
-- embedded remote-operation result schemas;
+- remote-operation protocols and result schemas;
 - remove and destroy semantics;
 - SSH host-trust behavior;
 - credential storage and redaction behavior.

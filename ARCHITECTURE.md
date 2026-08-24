@@ -2,14 +2,18 @@
 
 ## Architectural style
 
-Schooner is one local Go executable composed explicitly from deep domain
-modules and infrastructure adapters.
+Schooner is one Go application that runs locally and is installed on supported
+remote Boxes. The local application provides the user-facing CLI and invokes
+the remote application on demand through OpenSSH. The remote invocation exits
+when its bounded operation completes; the initial release has no persistent
+Schooner daemon.
 
-A **module** presents one **interface** to its callers. The interface includes
-types, invariants, ordering constraints, errors, configuration, and operational
-behavior. A module is **deep** when callers gain substantial behavior through a
-small interface. A **seam** is a place where behavior can vary; an **adapter**
-satisfies an interface at that seam.
+The application is composed explicitly from deep domain modules and
+infrastructure adapters. A **module** presents one **interface** to its callers.
+The interface includes types, invariants, ordering constraints, errors,
+configuration, and operational behavior. A module is **deep** when callers gain
+substantial behavior through a small interface. A **seam** is a place where
+behavior can vary; an **adapter** satisfies an interface at that seam.
 
 Schooner does not create an interface for every implementation. A seam must be
 justified by multiple production adapters, a meaningful test adapter, or a
@@ -19,26 +23,28 @@ module.
 ## Dependency direction
 
 ```text
-                  +-------------------+
-                  | CLI and prompts   |
-                  +---------+---------+
-                            |
-        +-------------------v-------------------+
-        | Deep domain modules and use cases    |
-        | box, acquisition, project, session   |
-        +----+---------------+---------------+-+
-             |               |               |
-       +-----v-----+   +-----v-----+   +-----v------+
-       | OpenSSH   |   | Providers |   | SQLite     |
-       | adapter   |   | adapters  |   | adapter    |
-       +-----------+   +-----------+   +------------+
+Local machine                                Remote Box
+
++-------------------+                       +-----------------------+
+| CLI and prompts   |                       | Schooner remote mode  |
++---------+---------+                       +-----------+-----------+
+          |                                             |
++---------v---------------------------------------------v-----------+
+| Deep domain modules and use cases                                |
+| Box, Project, Workspace, Local Link, Session, Agent, Sync Point   |
++----+-----------------+------------------+-------------------------+
+     |                 |                  |
++----v-----+     +-----v-----+      +-----v-----------------+
+| OpenSSH  |     | Providers |      | Local/remote storage  |
+| adapter  |     | adapters  |      | Git and tmux adapters |
++----------+     +-----------+      +-----------------------+
 ```
 
 Domain modules do not import Cobra, Huh, SQL drivers, provider SDKs, terminal
 rendering, or operating-system process packages. The executable's composition
-root creates concrete adapters, constructs modules, and registers commands.
-There is no dependency-injection framework, service locator, or global
-registry.
+root creates concrete adapters, constructs modules, and registers local and
+remote entry points. There is no dependency-injection framework, service
+locator, or global registry.
 
 ## Concrete stack
 
@@ -51,7 +57,8 @@ registry.
 | Configuration | Strict typed TOML through `pelletier/go-toml/v2` |
 | Logging | Standard library `log/slog` |
 | Local process execution | Standard library `os/exec` behind a deep process module |
-| SSH | User's system `ssh` executable |
+| Remote transport | User's system `ssh` executable |
+| Remote persistence | tmux for user-visible Sessions and their processes |
 | Testing | `testing`, `go-cmp`, fuzzing, golden files, and handwritten fakes |
 | Credential storage | `zalando/go-keyring` behind a credential-store seam |
 | Dependency wiring | Explicit constructors in one composition root |
@@ -61,18 +68,21 @@ adapters and do not escape into domain interfaces.
 
 ## Repository shape
 
-The initial repository uses one Go module and one executable entry point:
+The repository uses one Go module and one application entry point:
 
 ```text
-cmd/schooner/                 composition root
-internal/cli/                 Cobra command adapter
-internal/ui/prompts/          Huh prompt adapter
-internal/box/                 box identity, inspection, and lifecycle
+cmd/schooner/                 local and remote composition roots
+internal/cli/                 user-facing Cobra command adapter
+internal/ui/prompts/          focused Huh prompt adapter
+internal/box/                 Box identity, inspection, and lifecycle
 internal/acquisition/         adopted and provider-created acquisition
-internal/project/             project and worktree behavior
-internal/session/             tmux-backed session behavior
+internal/project/             Project identity and shared Git object stores
+internal/workspace/           remote Workspace lifecycle and inspection
+internal/link/                Local Links and Sync Points
+internal/sync/                explicit push, pull, and sync behavior
+internal/session/             tmux-backed Sessions and optional Agents
 internal/runtime/             typed remote-operation interface
-internal/runtime/ssh/         system-OpenSSH adapter and embedded operations
+internal/runtime/ssh/         system-OpenSSH transport adapter
 internal/provider/            provider contracts and catalogue
 internal/provider/digitalocean/
 internal/provider/hetzner/
@@ -85,90 +95,131 @@ internal/config/              typed configuration and precedence
 ```
 
 This is a map, not a requirement to create empty packages. A package is added
-when it owns behavior. Package names may improve while the dependency rules and
-domain language remain stable.
+only when it owns behavior. A future implementation may combine closely
+coupled concepts behind a deeper module while preserving the domain language
+and dependency rules.
 
-## Remote runtime
+## Remote application and OpenSSH transport
 
-V1 installs no Schooner executable or daemon on a box. `runtime` is a deliberate
-Go interface for bounded remote product operations, not a remote process and
-not a generic command runner.
+Schooner installs the same application on each supported Box for the configured
+SSH user. Installation is versioned and recoverable. Before an operation, the
+local application verifies that a compatible remote application is available
+and installs or updates it when necessary.
 
-The OpenSSH adapter:
+The local application invokes a private, machine-oriented remote mode at a
+known Schooner-owned path through the user's system OpenSSH executable. The
+transport:
 
-- invokes the user's system OpenSSH executable;
 - respects SSH config aliases, identities, agents, proxies, and host-trust
   behavior;
 - never implements a competing SSH stack or partial SSH-config parser;
-- exposes typed operations to callers;
-- keeps raw command execution private;
-- embeds small, operation-specific, versioned shell programs;
-- passes data separately from program source;
-- uses POSIX `sh` for the minimal capability probe and Bash for non-trivial
-  operations on the certified Ubuntu target;
-- emits versioned JSON results on stdout and diagnostics on stderr;
+- exposes typed product operations to domain callers;
+- keeps raw remote command construction private;
+- passes structured input separately from the invoked operation;
+- exchanges versioned results on stdout and diagnostics on stderr;
 - bounds captured output and preserves typed exit information.
+
+There is no exported `Run(command string)` method and no user-facing
+`schooner run`. The private remote entry point accepts only registered bounded
+operations; user input cannot select an arbitrary executable or shell program.
+An explicit `box ssh` remains a separate user-owned interactive handoff to
+OpenSSH and accepts no remote command.
 
 Unknown hosts require explicit approval of the presented fingerprint. Known
 hosts must match, and changed host keys fail closed with recovery guidance.
-Schooner never disables strict host-key checking. The remote box identifier is
+Schooner never disables strict host-key checking. The remote Box identifier is
 checked after SSH authentication for correlation and duplicate detection; it
 does not replace host-key trust.
 
-There is no exported `Run(command string)` method. User input is never
-interpolated into shell program source. Argument encoding and environment
-construction are centralized and fuzz-tested with hostile values.
+The remote application runs only for the duration of an invocation. Operations
+are idempotent and checkpointed so a later invocation can inspect and resume
+after interruption. tmux, not a Schooner daemon, supplies persistence for
+Sessions and optional coding Agents.
 
-Ordinary operations remain attached to SSH. They are idempotent and
-checkpointed so a later invocation can inspect and resume after interruption.
-tmux is reserved for user-visible development sessions, not hidden work.
-
-Remote files and sessions belong to the configured SSH user. Schooner keeps its
-hidden remote state separate from visible projects:
+Remote files and processes belong to the configured SSH user. Schooner keeps
+its own state separate from visible Workspaces:
 
 ```text
-~/.local/state/schooner/       identity and operation checkpoints
-~/.local/share/schooner/       Schooner-owned durable data, if later needed
-~/schooner/                    default configurable project root
+~/.local/state/schooner/       Box identity and operation checkpoints
+~/.local/share/schooner/       installed application and Project metadata
+~/schooner/                    default configurable Workspace root
 ```
 
 The runtime resolves the remote home directory deliberately rather than
-assuming interactive-shell environment variables. The stable box identifier is
-stored beneath the state directory. It is a correlation identifier, not an
-authentication secret.
+assuming interactive-shell environment variables. Ordinary Project, Workspace,
+Session, Agent, and synchronization operations do not require elevation.
+Explicit Box setup may use `sudo` after capability inspection and user consent.
+Schooner does not create a dedicated Unix user or install broad sudo rules.
 
-Ordinary inspection, project, and session operations do not require elevation.
-Explicit setup operations may use `sudo` after capability inspection and user
-consent. V1 does not create a dedicated Schooner Unix user, install broad sudo
-rules, or execute ordinary work as root.
+## Project and Workspace model
 
-An on-demand helper requires demonstrated shell brittleness around atomicity,
-cancellation, or structured inspection. A daemon additionally requires
-continuous or independently durable behavior while no CLI is connected.
+A Project owns repository identity and a shared Git object store on one Box. A
+Workspace is one concrete remote checkout or Git worktree backed by that
+Project. Project data and Workspace state are authoritative on the Box and are
+inspected through the remote application.
+
+Remote-only Workspaces are complete product objects. Creating, discovering,
+opening, or resuming one never requires a local checkout. A repository does not
+need a `.schooner` file or any other Schooner-specific configuration. Schooner
+metadata stays in its own local and remote state directories.
+
+A Session is associated with a Workspace and persists in tmux. An optional
+coding Agent may occupy the Session, but Agent lifecycle does not define the
+Workspace or Session lifecycle. The remote Schooner application is not an
+Agent.
+
+## Local Links and synchronization
+
+A Local Link relates one local checkout to one remote Workspace. The link and
+its Sync Point are local inventory; deleting them does not delete or rewrite
+either checkout. The remote Workspace remains usable without the link.
+
+Synchronization is explicit and attached to the invoking CLI:
+
+```text
+push: local checkout    -> remote Workspace
+pull: remote Workspace -> local checkout
+sync: both sides + Sync Point -> verified safe reconciliation or conflict
+```
+
+Each operation is one-shot and Git-aware. It observes repository identity,
+refs, object state, checkout state, and the last Sync Point before mutation. It
+updates the Sync Point only after verifying the resulting shared state. A
+divergence that cannot be reconciled safely returns a conflict without silently
+choosing a side. Continuous watchers and implicit background synchronization
+are outside the initial release.
+
+The detailed transport and treatment of staged, unstaged, untracked, and
+ignored files belong to the synchronization module's design. They must preserve
+the directional meanings and conflict invariant above.
 
 ## Commands and interaction
 
 Cobra is used directly by the CLI adapter; Schooner does not wrap it in a
-generic command framework. A command constructor receives explicit
-dependencies and returns a `*cobra.Command`. Commands resolve input and call
-domain modules but contain no business rules.
+generic command framework. A command constructor receives explicit dependencies
+and returns a `*cobra.Command`. Commands resolve input and call domain modules
+but contain no business rules.
 
-Input precedence is explicit. For ordinary settings:
+Input precedence is explicit:
 
 ```text
 flags > documented environment variables > TOML > defaults
 ```
 
-Interactive prompts occur only when interaction is allowed and the relevant
+Interactive prompts occur only when interaction is allowed and relevant
 streams are terminals. Non-interactive, JSON, remote-operation, and test paths
 never initialize Huh. Every prompt-backed action has a complete flag or input
-equivalent.
+equivalent. Focused prompts are allowed; a full-screen TUI is not part of the
+initial release.
 
 Human results use stdout and progress or diagnostics use stderr. JSON mode uses
 dedicated, versioned presentation types; it never serializes domain structs,
 database rows, or SDK types directly. Errors are structured on stderr and
-paired with a nonzero documented exit status. JSON Lines is reserved for a
-future command that genuinely streams events.
+paired with a nonzero documented exit status.
+
+Private previews may use explicit OpenSSH forwarding. Public ingress, public
+preview URLs, and a Schooner-operated relay or backend are outside the initial
+release.
 
 ## Errors
 
@@ -195,11 +246,11 @@ internal
 Secrets, authorization headers, raw provider responses, and unsafe remote
 output are redacted before entering error context or logs.
 
-## Local persistence
+## Persistence and authority
 
-SQLite stores inventory, credential-profile references, cached observations,
-schema version, and operation recovery metadata. It does not become authority
-for live remote or provider state.
+SQLite stores Box inventory, Credential Profile references, Local Links, Sync
+Points, cached observations, schema version, and operation recovery metadata.
+It does not become authority for live remote or provider state.
 
 The SQLite adapter uses WAL, a bounded busy timeout, short transactions, and
 explicit logical ownership for conflicting long mutations. It never holds a
@@ -210,6 +261,12 @@ binary. The migration module records version and checksum, runs one transaction
 per migration, rejects altered history, and refuses a database created by a
 newer application. Risky migrations require a backup. Shipped commands never
 automatically run down-migrations.
+
+This pre-release domain rebaseline is the one deliberate exception: the
+unreleased migration history is hard-cut from `project_root` to
+`workspace_root`, and development databases carrying the earlier checksums must
+be destroyed. Once this baseline is released, migration immutability applies
+normally.
 
 Configuration and state use platform conventions:
 
@@ -222,8 +279,9 @@ Linux: $XDG_CONFIG_HOME/schooner/
        $XDG_CACHE_HOME/schooner/
 ```
 
-Documented XDG fallbacks apply. `SCHOONER_CONFIG` may select a configuration
-file; individual internal paths are not separately configurable.
+Documented XDG fallbacks apply. `SCHOONER_CONFIG` may select an application
+configuration file. Repositories and Workspaces require no Schooner
+configuration file.
 
 ## Credentials
 
@@ -237,57 +295,33 @@ documented provider environment variable
 ```
 
 An interactively entered token is validated before Schooner offers to store it.
-The prompt names the actual destination, such as macOS Keychain or Secret
-Service. Environment-provided credentials are never saved implicitly, and
-secrets are never accepted as ordinary command-line arguments.
+Environment-provided credentials are never saved implicitly, secrets are never
+accepted as ordinary command-line arguments, and plaintext fallback files are
+not used.
 
-If secure storage is unavailable, Schooner uses the secret in memory for the
-current operation, explains that it was not stored, and never falls back to a
-plaintext credential file. SQLite and TOML contain only opaque references and
-safe display metadata.
+Provider Credential Profiles are distinct from source-host credentials. Git
+operations run as the configured local or remote user and use that user's
+existing Git and SSH setup. Schooner does not copy local Git credentials to a
+Box or persist source-host tokens.
 
-The initial macOS keyring adapter may use the system `security` executable via
-`zalando/go-keyring`. A native, code-identity-bound adapter becomes a hardening
-candidate once macOS artifacts are consistently signed and notarized.
-
-Provider credential profiles are distinct from source-host credentials. Git
-operations run as the configured remote SSH user and use that user's existing
-Git and SSH setup. V1 does not copy local Git credentials to a box or persist
-source-host tokens.
-
-## Extensibility
+## Extensibility and verification
 
 Extensibility means that a contributor has one obvious, verified path for a
-change. It does not mean runtime plugins or speculative interfaces.
-
-- Registration is explicit in the composition root; there are no `init()`
-  registries, side-effect imports, or reflection-based discovery.
-- A new command constructs Cobra commands directly and delegates to a domain
-  module.
-- A new provider implements the acquisition seam and its conformance suite;
-  provider-specific types stay inside the adapter.
-- New functionality belongs in an existing deep module or justifies a new one
-  through distinct invariants and behavior.
-- Generators are introduced only after at least three implementations reveal
-  stable mechanical repetition.
-- Internal interfaces may evolve. Only persisted or externally consumed
-  contracts receive compatibility guarantees.
-
-## Verification
-
-Tests observe behavior through module interfaces. They use real local
-substitutes where practical, handwritten fakes at caller-owned seams, and
-provider mocks only for true external APIs.
+change. Registration is explicit in the composition root; there are no
+`init()` registries, side-effect imports, reflection-based discovery, runtime
+plugins, or user-defined providers in the initial release.
 
 The repository enforces:
 
-- import direction and forbidden framework/SDK imports in domain packages;
-- runtime and provider conformance suites;
+- import direction and forbidden framework or SDK imports in domain packages;
+- remote-runtime and provider conformance suites;
 - command-tree and external-output golden tests;
 - duplicate command, provider, profile, and migration identifiers;
 - migration history and checksum integrity;
-- fuzz tests for shell argument encoding, configuration, identifiers, and
-  remote JSON decoding;
+- fuzz tests for remote input encoding, configuration, identifiers, and JSON
+  decoding;
 - integration tests using the actual `ssh` process adapter against controlled
   fixtures before cloud tests;
-- narrowly scoped live-provider tests that are opt-in and resource-cleaning.
+- narrowly scoped live-provider tests that are opt-in and resource-cleaning;
+- terminology checks that keep Project, Workspace, Local Link, Session, Agent,
+  and Sync Point aligned with `DOMAIN.md`.

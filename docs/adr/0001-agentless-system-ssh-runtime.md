@@ -1,7 +1,11 @@
 # ADR 0001: Agentless system-SSH runtime
 
-- Status: Accepted
+- Status: Superseded by ADR 0006
 - Date: 2026-08-24
+
+This decision is retained as historical context. ADR 0006 replaces its
+prohibition on a remote Schooner application while preserving system OpenSSH,
+host-key trust, bounded operations, and the absence of a persistent daemon.
 
 ## Context
 

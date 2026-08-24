@@ -5,7 +5,7 @@ CREATE TABLE boxes_new (
     ssh_destination TEXT NOT NULL,
     identity_file TEXT NOT NULL DEFAULT '',
     remote_identity TEXT NOT NULL UNIQUE,
-    project_root TEXT NOT NULL,
+    workspace_root TEXT NOT NULL,
     provider TEXT,
     provider_resource_id TEXT,
     provider_correlation_id TEXT,
@@ -20,10 +20,10 @@ CREATE TABLE boxes_new (
 ) STRICT;
 
 INSERT INTO boxes_new (
-    id, name, acquisition, ssh_destination, remote_identity, project_root,
+    id, name, acquisition, ssh_destination, remote_identity, workspace_root,
     created_at, updated_at
 )
-SELECT id, name, acquisition, ssh_destination, remote_identity, project_root,
+SELECT id, name, acquisition, ssh_destination, remote_identity, workspace_root,
        created_at, updated_at
 FROM boxes;
 
@@ -35,8 +35,8 @@ CREATE TABLE observations_new (
     architecture TEXT NOT NULL,
     home TEXT NOT NULL,
     remote_identity TEXT NOT NULL,
-    project_root TEXT NOT NULL,
-    project_root_exists INTEGER NOT NULL,
+    workspace_root TEXT NOT NULL,
+    workspace_root_exists INTEGER NOT NULL,
     git_available INTEGER NOT NULL,
     git_version TEXT NOT NULL,
     tmux_available INTEGER NOT NULL,
@@ -80,7 +80,7 @@ CREATE TABLE provision_operations (
     access_key_ids_json TEXT NOT NULL,
     automatic_backups INTEGER NOT NULL,
     ipv6 INTEGER NOT NULL,
-    project_root TEXT NOT NULL,
+    workspace_root TEXT NOT NULL,
     resource_id TEXT NOT NULL,
     ssh_destination TEXT NOT NULL,
     identity_file TEXT NOT NULL,
