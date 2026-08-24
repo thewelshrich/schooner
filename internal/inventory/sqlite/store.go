@@ -198,10 +198,13 @@ func (s *Store) CompleteAdd(ctx context.Context, op box.AddOperation, record box
 	}
 	defer tx.Rollback()
 	var providerID, resourceID, correlationID, profile any
+	region := record.ProviderRegion
 	if record.Acquisition == "provisioned" {
 		providerID, resourceID, correlationID, profile = record.Provider, record.ProviderResourceID, record.ProviderCorrelationID, record.CredentialProfile
+	} else {
+		region = ""
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO boxes(id,name,acquisition,ssh_destination,identity_file,remote_identity,project_root,provider,provider_resource_id,provider_correlation_id,credential_profile,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`, record.ID, record.Name, record.Acquisition, record.SSHDestination, record.IdentityFile, record.RemoteIdentity, record.ProjectRoot, providerID, resourceID, correlationID, profile, formatTime(record.CreatedAt), formatTime(record.UpdatedAt))
+	_, err = tx.ExecContext(ctx, `INSERT INTO boxes(id,name,acquisition,ssh_destination,identity_file,remote_identity,project_root,provider,provider_resource_id,provider_correlation_id,credential_profile,provider_region,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, record.ID, record.Name, record.Acquisition, record.SSHDestination, record.IdentityFile, record.RemoteIdentity, record.ProjectRoot, providerID, resourceID, correlationID, profile, region, formatTime(record.CreatedAt), formatTime(record.UpdatedAt))
 	if err == nil {
 		err = saveObservation(ctx, tx, observation)
 	}
@@ -256,14 +259,14 @@ func (s *Store) Remove(ctx context.Context, name string) (box.Record, error) {
 	return record, nil
 }
 
-const selectRecord = `SELECT id,name,acquisition,ssh_destination,identity_file,remote_identity,project_root,COALESCE(provider,''),COALESCE(provider_resource_id,''),COALESCE(provider_correlation_id,''),COALESCE(credential_profile,''),created_at,updated_at FROM boxes`
+const selectRecord = `SELECT id,name,acquisition,ssh_destination,identity_file,remote_identity,project_root,COALESCE(provider,''),COALESCE(provider_resource_id,''),COALESCE(provider_correlation_id,''),COALESCE(credential_profile,''),COALESCE(provider_region,''),created_at,updated_at FROM boxes`
 
 type scanner interface{ Scan(...any) error }
 
 func scanRecord(row scanner, key string) (box.Record, error) {
 	var result box.Record
 	var created, updated string
-	err := row.Scan(&result.ID, &result.Name, &result.Acquisition, &result.SSHDestination, &result.IdentityFile, &result.RemoteIdentity, &result.ProjectRoot, &result.Provider, &result.ProviderResourceID, &result.ProviderCorrelationID, &result.CredentialProfile, &created, &updated)
+	err := row.Scan(&result.ID, &result.Name, &result.Acquisition, &result.SSHDestination, &result.IdentityFile, &result.RemoteIdentity, &result.ProjectRoot, &result.Provider, &result.ProviderResourceID, &result.ProviderCorrelationID, &result.CredentialProfile, &result.ProviderRegion, &created, &updated)
 	if errors.Is(err, sql.ErrNoRows) {
 		return box.Record{}, box.NotFound(key)
 	}

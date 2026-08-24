@@ -17,7 +17,7 @@ A local box record contains:
 - an OpenSSH destination, such as an SSH config alias or `user@host`;
 - the stable identity established on the remote machine;
 - acquisition information;
-- optional provider resource and credential-profile references;
+- optional provider resource, region, and credential-profile references;
 - cached observations and operation recovery state.
 
 An SSH alias, address, hostname, or username is a connection locator, not box

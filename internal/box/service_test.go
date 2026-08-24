@@ -87,6 +87,32 @@ func TestStatusVerifiesIdentityAndCachesObservation(t *testing.T) {
 	}
 }
 
+func TestListEntriesIncludesObservationAndMixedAcquisition(t *testing.T) {
+	store := newMemoryInventory()
+	observed := time.Date(2026, 8, 24, 15, 0, 0, 0, time.UTC)
+	store.records["api"] = Record{ID: "box-ssh", Name: "api", Acquisition: "adopted", SSHDestination: "api"}
+	store.records["cloud"] = Record{ID: "box-do", Name: "cloud", Acquisition: "provisioned", SSHDestination: "root@203.0.113.8", Provider: "digitalocean", ProviderRegion: "fra1"}
+	store.observations["box-do"] = Observation{BoxID: "box-do", ObservedAt: observed, Capabilities: readyCapabilities()}
+	service := testService(&fakeRuntime{}, store)
+	entries, err := service.ListEntries(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("entries=%+v", entries)
+	}
+	byName := map[string]ListEntry{}
+	for _, entry := range entries {
+		byName[entry.Box.Name] = entry
+	}
+	if byName["api"].Reachable || byName["api"].HasObservation || byName["api"].Box.ProviderRegion != "" {
+		t.Fatalf("ssh entry=%+v", byName["api"])
+	}
+	if !byName["cloud"].Reachable || !byName["cloud"].HasObservation || byName["cloud"].Box.ProviderRegion != "fra1" || !byName["cloud"].LastObservedAt.Equal(observed) {
+		t.Fatalf("cloud entry=%+v", byName["cloud"])
+	}
+}
+
 func TestStatusFailureIncludesLastKnownTime(t *testing.T) {
 	store := newMemoryInventory()
 	store.records["work"] = Record{ID: "box-1", Name: "work", SSHDestination: "work", RemoteIdentity: "remote-1"}

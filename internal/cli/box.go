@@ -25,7 +25,7 @@ import (
 
 func newBoxCommand(streams Streams, global *globalOptions) *cobra.Command {
 	cmd := &cobra.Command{Use: "box", Short: "Add and operate development boxes", Args: cobra.NoArgs, RunE: helpRun}
-	cmd.AddCommand(newBoxAddCommand(streams, global), newBoxStatusCommand(streams, global), newBoxRemoveCommand(streams, global), newBoxDestroyCommand(streams, global))
+	cmd.AddCommand(newBoxAddCommand(streams, global), newBoxListCommand(streams, global), newBoxStatusCommand(streams, global), newBoxRemoveCommand(streams, global), newBoxDestroyCommand(streams, global))
 	return cmd
 }
 
@@ -506,6 +506,27 @@ func normalizeVPC(value string) string {
 	return value
 }
 
+func newBoxListCommand(streams Streams, global *globalOptions) *cobra.Command {
+	return &cobra.Command{
+		Use:   "list",
+		Short: "List boxes from local inventory",
+		Long:  "Show locally known boxes without probing them. Reachability and last observed time come from the latest successful observation; use box status for a live check.",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			service, closeService, err := openBoxService(cmd.Context(), streams)
+			if err != nil {
+				return executionError{cause: err}
+			}
+			defer closeService()
+			entries, err := service.ListEntries(cmd.Context())
+			if err != nil {
+				return executionError{cause: err}
+			}
+			return writeListResult(streams.Out, global.output, entries, terminalTheme(global, streams))
+		},
+	}
+}
+
 func newBoxStatusCommand(streams Streams, global *globalOptions) *cobra.Command {
 	return &cobra.Command{
 		Use: "status [name]", Short: "Show live box status", Args: cobra.MaximumNArgs(1),
@@ -749,8 +770,9 @@ type boxDocument struct {
 }
 type providerDocument struct {
 	ID                string `json:"id"`
-	ResourceID        string `json:"resource_id"`
-	CredentialProfile string `json:"credential_profile"`
+	ResourceID        string `json:"resource_id,omitempty"`
+	CredentialProfile string `json:"credential_profile,omitempty"`
+	Region            string `json:"region,omitempty"`
 }
 type capabilitiesDocument struct {
 	OS struct {
@@ -767,7 +789,7 @@ type capabilitiesDocument struct {
 func documentBox(record box.Record) boxDocument {
 	doc := boxDocument{ID: record.ID, Name: record.Name, Acquisition: record.Acquisition, SSHDestination: record.SSHDestination, RemoteIdentity: record.RemoteIdentity, ProjectRoot: record.ProjectRoot}
 	if record.Provider != "" {
-		doc.Provider = &providerDocument{ID: record.Provider, ResourceID: record.ProviderResourceID, CredentialProfile: record.CredentialProfile}
+		doc.Provider = &providerDocument{ID: record.Provider, ResourceID: record.ProviderResourceID, CredentialProfile: record.CredentialProfile, Region: record.ProviderRegion}
 	}
 	return doc
 }
@@ -775,6 +797,117 @@ func documentCapabilities(value box.Capabilities) capabilitiesDocument {
 	result := capabilitiesDocument{Architecture: value.Architecture, ProjectRoot: value.ProjectRoot, ProjectRootExists: value.ProjectRootExists, Git: value.Git, Tmux: value.Tmux}
 	result.OS.ID, result.OS.Version = value.OSID, value.OSVersion
 	return result
+}
+
+func writeListResult(w io.Writer, output string, entries []box.ListEntry, theme *uitheme.Theme) error {
+	if output == "json" {
+		type listItem struct {
+			Name           string            `json:"name"`
+			Acquisition    string            `json:"acquisition"`
+			SSHDestination string            `json:"ssh_destination"`
+			Provider       *providerDocument `json:"provider"`
+			Region         string            `json:"region,omitempty"`
+			Reachable      bool              `json:"reachable"`
+			LastObservedAt *string           `json:"last_observed_at"`
+		}
+		doc := struct {
+			SchemaVersion string     `json:"schema_version"`
+			Boxes         []listItem `json:"boxes"`
+		}{SchemaVersion: "1", Boxes: make([]listItem, 0, len(entries))}
+		for _, entry := range entries {
+			item := listItem{
+				Name:           entry.Box.Name,
+				Acquisition:    entry.Box.Acquisition,
+				SSHDestination: entry.Box.SSHDestination,
+				Region:         entry.Box.ProviderRegion,
+				Reachable:      entry.Reachable,
+			}
+			if entry.Box.Provider != "" {
+				item.Provider = &providerDocument{ID: entry.Box.Provider, ResourceID: entry.Box.ProviderResourceID, CredentialProfile: entry.Box.CredentialProfile, Region: entry.Box.ProviderRegion}
+			}
+			if entry.HasObservation {
+				observed := entry.LastObservedAt.UTC().Format(time.RFC3339)
+				item.LastObservedAt = &observed
+			}
+			doc.Boxes = append(doc.Boxes, item)
+		}
+		return json.NewEncoder(w).Encode(doc)
+	}
+	if len(entries) == 0 {
+		_, err := fmt.Fprintln(w, "No boxes in local inventory.")
+		return err
+	}
+	rows := make([][]string, 0, len(entries))
+	for _, entry := range entries {
+		reachable := "unknown"
+		if entry.Reachable {
+			reachable = "yes"
+		}
+		observed := "—"
+		if entry.HasObservation {
+			observed = entry.LastObservedAt.UTC().Format(time.RFC3339)
+		}
+		rows = append(rows, []string{
+			entry.Box.Name,
+			listProviderLabel(entry.Box),
+			firstNonEmpty(entry.Box.ProviderRegion, "—"),
+			reachable,
+			observed,
+			entry.Box.SSHDestination,
+		})
+	}
+	return writeTable(w, theme, []string{"NAME", "PROVIDER", "REGION", "REACHABLE", "LAST OBSERVED", "SSH"}, rows)
+}
+
+func listProviderLabel(record box.Record) string {
+	switch {
+	case record.Acquisition == "adopted" || record.Provider == "":
+		return "SSH"
+	case record.Provider == string(providerdomain.DigitalOcean):
+		return "DigitalOcean"
+	default:
+		return record.Provider
+	}
+}
+
+func writeTable(w io.Writer, theme *uitheme.Theme, headers []string, rows [][]string) error {
+	widths := make([]int, len(headers))
+	for i, header := range headers {
+		widths[i] = len(header)
+	}
+	for _, row := range rows {
+		for i, cell := range row {
+			if len(cell) > widths[i] {
+				widths[i] = len(cell)
+			}
+		}
+	}
+	writeCell := func(value string, width int, header bool) string {
+		cell := fmt.Sprintf("%-*s", width, value)
+		if theme != nil && theme.HasColor() {
+			if header {
+				return theme.Style(uitheme.Muted).Render(cell)
+			}
+			return theme.Style(uitheme.Text).Render(cell)
+		}
+		return cell
+	}
+	line := make([]string, len(headers))
+	for i, header := range headers {
+		line[i] = writeCell(header, widths[i], true)
+	}
+	if _, err := fmt.Fprintln(w, strings.Join(line, "  ")); err != nil {
+		return err
+	}
+	for _, row := range rows {
+		for i, cell := range row {
+			line[i] = writeCell(cell, widths[i], false)
+		}
+		if _, err := fmt.Fprintln(w, strings.Join(line, "  ")); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func writeAddResult(w io.Writer, output string, result box.AddResult, theme *uitheme.Theme) error {

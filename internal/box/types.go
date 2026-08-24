@@ -76,6 +76,7 @@ type Record struct {
 	ProviderResourceID    string
 	ProviderCorrelationID string
 	CredentialProfile     string
+	ProviderRegion        string
 	CreatedAt             time.Time
 	UpdatedAt             time.Time
 }
@@ -105,9 +106,20 @@ type AddRequest struct {
 	ProviderResourceID    string
 	ProviderCorrelationID string
 	CredentialProfile     string
+	ProviderRegion        string
 	AcceptNewHostKey      bool
 	BatchMode             bool
 	Progress              Progress
+}
+
+// ListEntry is a local inventory row with the latest cached observation.
+// Reachable is last-known only: true when Schooner has a successful observation
+// on record. Live reachability remains box status.
+type ListEntry struct {
+	Box            Record
+	Reachable      bool
+	LastObservedAt time.Time
+	HasObservation bool
 }
 
 type AddResult struct {

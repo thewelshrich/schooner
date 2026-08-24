@@ -19,7 +19,7 @@ This repository is currently establishing the V1 implementation foundation.
 - [Architecture decisions](docs/adr/)
 
 The first implementation milestone is the adopted-box path: `box add`,
-`box status`, and `box remove`. It supports Ubuntu 24.04 and 26.04 on amd64 and
+`box list`, `box status`, and `box remove`. It supports Ubuntu 24.04 and 26.04 on amd64 and
 arm64. See [DIRECTION.md](DIRECTION.md) for the wider V1 scope and exclusions.
 
 ## Adopt an existing machine
@@ -34,10 +34,15 @@ Or provide the complete input for scripts and CI:
 
 ```bash
 schooner box add work-api --ssh work-api --yes
+schooner box list
 schooner box status work-api
 schooner box remove work-api --yes
 ```
 
+`box list` shows what Schooner already knows locally for SSH-adopted and
+provider-created boxes alike: provider, region when recorded, last-known
+reachability, and the time of the latest successful observation. It does not
+probe machines; use `box status` for a live check.
 The SSH destination may be an alias from `~/.ssh/config` or a normal
 `user@host` destination. Schooner uses the system OpenSSH client and its
 existing identities, agents, proxies, and `known_hosts`. For unattended first

@@ -26,6 +26,9 @@ func TestProvisionConvergesOnBoxPreparationAndDestroy(t *testing.T) {
 	if result.Box.Acquisition != "provisioned" || result.Box.ProviderResourceID != "42" || result.Box.IdentityFile != "/state/id_ed25519" {
 		t.Fatalf("box=%+v", result.Box)
 	}
+	if result.Box.ProviderRegion != "fra1" {
+		t.Fatalf("provider region = %q", result.Box.ProviderRegion)
+	}
 	if cloud.provision.CorrelationID != "correlation-1" || runtime.connection.IdentityFile != "/state/id_ed25519" {
 		t.Fatalf("provision=%+v connection=%+v", cloud.provision, runtime.connection)
 	}

@@ -141,7 +141,7 @@ func (s *Service) Add(ctx context.Context, req AddRequest) (AddResult, error) {
 	if acquisition == "" {
 		acquisition = "adopted"
 	}
-	record := Record{ID: recordID, Name: req.Name, Acquisition: acquisition, SSHDestination: req.SSHDestination, IdentityFile: req.IdentityFile, RemoteIdentity: identity, ProjectRoot: projectRoot, Provider: req.Provider, ProviderResourceID: req.ProviderResourceID, ProviderCorrelationID: req.ProviderCorrelationID, CredentialProfile: req.CredentialProfile, CreatedAt: now, UpdatedAt: now}
+	record := Record{ID: recordID, Name: req.Name, Acquisition: acquisition, SSHDestination: req.SSHDestination, IdentityFile: req.IdentityFile, RemoteIdentity: identity, ProjectRoot: projectRoot, Provider: req.Provider, ProviderResourceID: req.ProviderResourceID, ProviderCorrelationID: req.ProviderCorrelationID, CredentialProfile: req.CredentialProfile, ProviderRegion: req.ProviderRegion, CreatedAt: now, UpdatedAt: now}
 	observation := Observation{BoxID: record.ID, ObservedAt: now, Capabilities: capabilities}
 	if err := s.runStep(ctx, req.Progress, StepSave, "Save local inventory", func() error { return s.store.CompleteAdd(ctx, op, record, observation) }); err != nil {
 		return AddResult{}, err
@@ -211,6 +211,27 @@ func (s *Service) Remove(ctx context.Context, name string) (RemoveResult, error)
 }
 
 func (s *Service) List(ctx context.Context) ([]Record, error) { return s.store.List(ctx) }
+
+func (s *Service) ListEntries(ctx context.Context) ([]ListEntry, error) {
+	records, err := s.store.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	entries := make([]ListEntry, 0, len(records))
+	for _, record := range records {
+		entry := ListEntry{Box: record}
+		observation, obsErr := s.store.LastObservation(ctx, record.ID)
+		if obsErr == nil {
+			entry.HasObservation = true
+			entry.Reachable = true
+			entry.LastObservedAt = observation.ObservedAt
+		} else if !IsNotFound(obsErr) {
+			return nil, obsErr
+		}
+		entries = append(entries, entry)
+	}
+	return entries, nil
+}
 
 func (s *Service) Get(ctx context.Context, name string) (Record, error) {
 	if err := ValidateName(name); err != nil {

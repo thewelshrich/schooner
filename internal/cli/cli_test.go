@@ -300,6 +300,20 @@ func TestBoxLifecycleJSONThroughRun(t *testing.T) {
 	}
 }
 
+func TestBoxListEmptyInventory(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_STATE_HOME", filepath.Join(home, "state"))
+	code, stdout, stderr := run(t.Context(), []string{"box", "list"}, testBuild(), nil)
+	if code != 0 || stderr != "" || stdout != "No boxes in local inventory.\n" {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	code, stdout, stderr = run(t.Context(), []string{"box", "list", "--output", "json"}, testBuild(), nil)
+	if code != 0 || stderr != "" || stdout != "{\"schema_version\":\"1\",\"boxes\":[]}\n" {
+		t.Fatalf("json code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+}
+
 func TestBoxMutationRequiresYesWithoutPrompts(t *testing.T) {
 	code, stdout, stderr := run(t.Context(), []string{"box", "add", "work", "--ssh", "work-host"}, testBuild(), nil)
 	if code != 2 || stdout != "" || !strings.Contains(stderr, "--yes is required") {

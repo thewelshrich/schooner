@@ -1,0 +1,1 @@
+ALTER TABLE boxes ADD COLUMN provider_region TEXT NOT NULL DEFAULT '';

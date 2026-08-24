@@ -211,7 +211,7 @@ func (s *Service) Provision(ctx context.Context, request ProvisionRequest) (Prov
 		return ProvisionResult{}, err
 	}
 	resource := provider.ResourceRef{Provider: provider.DigitalOcean, ResourceID: machine.ResourceID, CorrelationID: operation.CorrelationID, Profile: credential.Profile}
-	added, err := s.boxes.Add(ctx, box.AddRequest{Name: request.Name, SSHDestination: operation.SSHDestination, IdentityFile: identity.PrivateKey, ProjectRoot: request.ProjectRoot, Acquisition: "provisioned", Provider: string(provider.DigitalOcean), ProviderResourceID: resource.ResourceID, ProviderCorrelationID: resource.CorrelationID, CredentialProfile: string(resource.Profile), AcceptNewHostKey: request.AcceptNewHostKey, BatchMode: true, Progress: request.Progress})
+	added, err := s.boxes.Add(ctx, box.AddRequest{Name: request.Name, SSHDestination: operation.SSHDestination, IdentityFile: identity.PrivateKey, ProjectRoot: request.ProjectRoot, Acquisition: "provisioned", Provider: string(provider.DigitalOcean), ProviderResourceID: resource.ResourceID, ProviderCorrelationID: resource.CorrelationID, CredentialProfile: string(resource.Profile), ProviderRegion: operation.Region, AcceptNewHostKey: request.AcceptNewHostKey, BatchMode: true, Progress: request.Progress})
 	if err != nil {
 		operation.Checkpoint = failureCheckpoint(err)
 		operation.UpdatedAt = s.now().UTC()
