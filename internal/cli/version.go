@@ -21,9 +21,7 @@ type versionDocument struct {
 	Arch          string  `json:"arch"`
 }
 
-func newVersionCommand(build BuildInfo) *cobra.Command {
-	var output string
-
+func newVersionCommand(build BuildInfo, options *globalOptions) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:          "version",
 		Short:        "Show Schooner build information",
@@ -35,7 +33,7 @@ func newVersionCommand(build BuildInfo) *cobra.Command {
 				return executionError{cause: err}
 			}
 
-			switch output {
+			switch options.output {
 			case "human":
 				if err := writeHumanVersion(cmd.OutOrStdout(), document); err != nil {
 					return executionError{cause: err}
@@ -45,14 +43,13 @@ func newVersionCommand(build BuildInfo) *cobra.Command {
 					return executionError{cause: err}
 				}
 			default:
-				return usageError{cause: fmt.Errorf("unsupported output format %q (expected human or json)", output)}
+				return usageError{cause: fmt.Errorf("unsupported output format %q (expected human or json)", options.output)}
 			}
 
 			return nil
 		},
 	}
 
-	cmd.Flags().StringVar(&output, "output", "human", "output format: human or json")
 	cmd.SetFlagErrorFunc(func(_ *cobra.Command, err error) error {
 		return usageError{cause: err}
 	})

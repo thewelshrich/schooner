@@ -5,12 +5,18 @@ Usage:
   schooner [command]
 
 Available Commands:
+  box         Add and operate development boxes
   completion  Generate the autocompletion script for the specified shell
   help        Help about any command
   version     Show Schooner build information
 
 Flags:
-  -h, --help      help for schooner
-  -v, --version   version for schooner
+      --accessible      use screen-reader-friendly prompts and progress
+      --color string    color mode: auto, always, or never (default "auto")
+  -h, --help            help for schooner
+      --no-input        disable interactive prompts
+      --output string   output format: human or json (default "human")
+      --theme string    terminal theme: auto, light, or dark (default "auto")
+  -v, --version         version for schooner
 
 Use "schooner [command] --help" for more information about a command.

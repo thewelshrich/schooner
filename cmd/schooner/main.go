@@ -8,6 +8,7 @@ import (
 	"syscall"
 
 	"github.com/thewelshrich/schooner/internal/cli"
+	"golang.org/x/term"
 )
 
 var (
@@ -21,9 +22,12 @@ func main() {
 	defer stop()
 
 	code := cli.Run(ctx, os.Args[1:], cli.Streams{
-		In:  os.Stdin,
-		Out: os.Stdout,
-		Err: os.Stderr,
+		In:            os.Stdin,
+		Out:           os.Stdout,
+		Err:           os.Stderr,
+		InIsTerminal:  term.IsTerminal(int(os.Stdin.Fd())),
+		OutIsTerminal: term.IsTerminal(int(os.Stdout.Fd())),
+		ErrIsTerminal: term.IsTerminal(int(os.Stderr.Fd())),
 	}, cli.BuildInfo{
 		Version:   version,
 		Commit:    commit,

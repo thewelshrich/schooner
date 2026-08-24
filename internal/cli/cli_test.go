@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/thewelshrich/schooner/internal/cli"
 )
@@ -162,6 +163,11 @@ func TestUsageErrors(t *testing.T) {
 			message: "unsupported output format",
 		},
 		{
+			name:    "invalid terminal theme",
+			args:    []string{"version", "--theme", "sepia"},
+			message: "unsupported theme mode",
+		},
+		{
 			name:    "unexpected argument",
 			args:    []string{"version", "extra"},
 			message: "unknown command",
@@ -238,15 +244,114 @@ func TestCanceledContext(t *testing.T) {
 	cancel()
 
 	code, stdout, stderr := run(ctx, []string{"version"}, testBuild(), nil)
-	if code != 1 {
-		t.Errorf("exit status = %d, want 1", code)
+	if code != 130 {
+		t.Errorf("exit status = %d, want 130", code)
 	}
 	if stdout != "" {
 		t.Errorf("stdout = %q, want empty", stdout)
 	}
-	if stderr != "Error: context canceled\n" {
+	if stderr != "" {
 		t.Errorf("stderr = %q", stderr)
 	}
+}
+
+func TestBoxLifecycleJSONThroughRun(t *testing.T) {
+	home := t.TempDir()
+	bin := filepath.Join(home, "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sshPath := filepath.Join(bin, "ssh")
+	if err := os.WriteFile(sshPath, []byte(fakeSSH), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_STATE_HOME", filepath.Join(home, "state"))
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	code, stdout, stderr := run(t.Context(), []string{"box", "add", "work", "--ssh", "work-host", "--yes", "--accept-new-host-key", "--output", "json"}, testBuild(), nil)
+	if code != 0 || stderr != "" {
+		t.Fatalf("add: code=%d stderr=%q", code, stderr)
+	}
+	add := normalizeBoxJSON(t, stdout, false)
+	if want := golden(t, "box-add.json"); add != want {
+		t.Fatalf("add JSON mismatch\nwant: %s\ngot:  %s", want, add)
+	}
+
+	code, stdout, stderr = run(t.Context(), []string{"box", "status", "work", "--output", "json"}, testBuild(), nil)
+	if code != 0 || stderr != "" {
+		t.Fatalf("status: code=%d stderr=%q", code, stderr)
+	}
+	status := normalizeBoxJSON(t, stdout, true)
+	if want := golden(t, "box-status.json"); status != want {
+		t.Fatalf("status JSON mismatch\nwant: %s\ngot:  %s", want, status)
+	}
+
+	code, stdout, stderr = run(t.Context(), []string{"box", "remove", "work", "--yes", "--output", "json"}, testBuild(), nil)
+	if code != 0 || stderr != "" {
+		t.Fatalf("remove: code=%d stderr=%q", code, stderr)
+	}
+	removed := normalizeBoxJSON(t, stdout, false)
+	if want := golden(t, "box-remove.json"); removed != want {
+		t.Fatalf("remove JSON mismatch\nwant: %s\ngot:  %s", want, removed)
+	}
+}
+
+func TestBoxMutationRequiresYesWithoutPrompts(t *testing.T) {
+	code, stdout, stderr := run(t.Context(), []string{"box", "add", "work", "--ssh", "work-host"}, testBuild(), nil)
+	if code != 2 || stdout != "" || !strings.Contains(stderr, "--yes is required") {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+}
+
+func TestInvalidBoxNameIsUsageError(t *testing.T) {
+	code, _, stderr := run(t.Context(), []string{"box", "add", "Not Valid", "--ssh", "work-host", "--yes"}, testBuild(), nil)
+	if code != 2 || !strings.Contains(stderr, "lowercase slug") {
+		t.Fatalf("code=%d stderr=%q", code, stderr)
+	}
+}
+
+func TestInteractiveAccessibleDeclineThroughRun(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	input := &slowReader{reader: strings.NewReader("1\nn\n")}
+	code := cli.Run(t.Context(), []string{"box", "add", "work", "--ssh", "work-host", "--accessible"}, cli.Streams{In: input, Out: &stdout, Err: &stderr, InIsTerminal: true, ErrIsTerminal: true}, testBuild())
+	if code != 0 || stdout.String() != "Cancelled. No changes made.\n" {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "Existing SSH") || !strings.Contains(stderr.String(), "Review") {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
+func TestInteractiveAbortExits130(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	reader, writer := io.Pipe()
+	defer reader.Close()
+	defer writer.Close()
+	go func() { time.Sleep(50 * time.Millisecond); cancel() }()
+	var stdout, stderr bytes.Buffer
+	code := cli.Run(ctx, []string{"box", "add"}, cli.Streams{In: reader, Out: &stdout, Err: &stderr, InIsTerminal: true, ErrIsTerminal: true}, testBuild())
+	if code != 130 {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
+func normalizeBoxJSON(t *testing.T, value string, status bool) string {
+	t.Helper()
+	var document map[string]any
+	if err := json.Unmarshal([]byte(value), &document); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	boxValue := document["box"].(map[string]any)
+	boxValue["id"] = "box-id"
+	if status {
+		document["status"].(map[string]any)["observed_at"] = "2026-08-24T12:00:00Z"
+	}
+	contents, err := json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(contents) + "\n"
 }
 
 func run(ctx context.Context, args []string, build cli.BuildInfo, out io.Writer) (int, string, string) {
@@ -289,6 +394,30 @@ func golden(t *testing.T, name string) string {
 
 type failingWriter struct {
 	err error
+}
+
+const fakeSSH = `#!/bin/sh
+case " $* " in
+  *" -G "*) exit 0 ;;
+esac
+program=$(dd bs=4096 2>/dev/null)
+case "$program" in
+  *"candidate=\$1"*)
+    printf '%s\n' '{"schema_version":"1","remote_identity":"11111111-1111-4111-8111-111111111111"}' ;;
+  *"requested=\$1"*)
+    printf '%s\n' '{"schema_version":"1","project_root":"/home/alice/schooner"}' ;;
+  *)
+    printf '%s\n' '{"schema_version":"1","os_id":"ubuntu","os_version":"24.04","architecture":"amd64","home":"/home/alice","remote_identity":"11111111-1111-4111-8111-111111111111","project_root":"/home/alice/schooner","project_root_exists":true,"git":{"available":true,"version":"git version 2.43.0"},"tmux":{"available":true,"version":"tmux 3.4"},"passwordless_sudo":true}' ;;
+esac
+`
+
+type slowReader struct{ reader *strings.Reader }
+
+func (r *slowReader) Read(buffer []byte) (int, error) {
+	if len(buffer) > 1 {
+		buffer = buffer[:1]
+	}
+	return r.reader.Read(buffer)
 }
 
 func (w failingWriter) Write([]byte) (int, error) {
