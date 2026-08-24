@@ -100,7 +100,52 @@ go test ./...
 go vet ./...
 ```
 
-The initial scaffold intentionally has no task runner or release automation.
+### Development remote artifacts
+
+Remote bootstrap resolves a platform-specific executable by version and always
+verifies it against a `SHA256SUMS` manifest. To use a locally built executable,
+place both files in one directory and set `SCHOONER_ARTIFACT_DIR`:
+
+```bash
+artifact_dir="$(mktemp -d)"
+artifact="schooner_dev_$(go env GOOS)_$(go env GOARCH)"
+CGO_ENABLED=0 go build -trimpath -o "${artifact_dir}/${artifact}" ./cmd/schooner
+
+# Linux:
+(cd "${artifact_dir}" && sha256sum "${artifact}" > SHA256SUMS)
+# macOS alternative:
+# (cd "${artifact_dir}" && shasum -a 256 "${artifact}" > SHA256SUMS)
+
+export SCHOONER_ARTIFACT_DIR="${artifact_dir}"
+```
+
+The override supports `dev` and release versions, but never bypasses checksum
+verification. Without it, release artifacts are read from the verified local
+cache or downloaded from the matching GitHub Release.
+
+### Releases
+
+Pushing a `v`-prefixed semantic-version tag builds four raw executables on
+native GitHub-hosted runners:
+
+```text
+schooner_<version>_darwin_amd64
+schooner_<version>_darwin_arm64
+schooner_<version>_linux_amd64
+schooner_<version>_linux_arm64
+SHA256SUMS
+```
+
+Each binary is built with CGO disabled, reproducible path trimming, and linker
+metadata for the version, full commit, and UTC commit timestamp. The workflow
+runs each binary natively, publishes a required checksum manifest, and records
+GitHub build-provenance attestations. A manual workflow run performs the same
+build and verification but uploads a workflow artifact instead of publishing a
+release.
+
+Before the first public tag, repository administrators must enable GitHub
+Immutable Releases. Homebrew packaging, archives, remote installation,
+automatic updates, and Apple signing or notarization are separate work.
 
 ## DigitalOcean
 

@@ -1,0 +1,223 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to build without publishing a release
+        required: true
+        default: v0.0.0-dev
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Prepare release metadata
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.metadata.outputs.version }}
+      commit: ${{ steps.metadata.outputs.commit }}
+      built_at: ${{ steps.metadata.outputs.built_at }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Resolve and validate metadata
+        id: metadata
+        env:
+          MANUAL_VERSION: ${{ inputs.version }}
+        run: |
+          if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
+            version="${GITHUB_REF_NAME}"
+          else
+            version="${MANUAL_VERSION}"
+          fi
+          semver='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
+          if [[ ! "${version}" =~ ${semver} ]]; then
+            echo "version must be a v-prefixed semantic version" >&2
+            exit 1
+          fi
+          without_build="${version%%+*}"
+          if [[ "${without_build}" == *-* ]]; then
+            prerelease="${without_build#*-}"
+            IFS='.' read -ra identifiers <<< "${prerelease}"
+            for identifier in "${identifiers[@]}"; do
+              if [[ "${identifier}" =~ ^[0-9]+$ && "${#identifier}" -gt 1 && "${identifier}" == 0* ]]; then
+                echo "numeric prerelease identifiers must not contain leading zeroes" >&2
+                exit 1
+              fi
+            done
+          fi
+          commit="$(git rev-parse "${GITHUB_SHA}^{commit}")"
+          built_at="$(date -u -d "$(git show -s --format=%cI "${commit}")" '+%Y-%m-%dT%H:%M:%SZ')"
+          {
+            echo "version=${version}"
+            echo "commit=${commit}"
+            echo "built_at=${built_at}"
+          } >> "${GITHUB_OUTPUT}"
+
+  build:
+    name: Build ${{ matrix.os }}/${{ matrix.arch }}
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: linux
+            arch: amd64
+            runner: ubuntu-24.04
+          - os: linux
+            arch: arm64
+            runner: ubuntu-24.04-arm
+          - os: darwin
+            arch: amd64
+            runner: macos-15-intel
+          - os: darwin
+            arch: arm64
+            runner: macos-15
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build native binary
+        env:
+          TARGET_OS: ${{ matrix.os }}
+          TARGET_ARCH: ${{ matrix.arch }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          COMMIT: ${{ needs.prepare.outputs.commit }}
+          BUILT_AT: ${{ needs.prepare.outputs.built_at }}
+        run: |
+          if [[ "$(go env GOOS)/$(go env GOARCH)" != "${TARGET_OS}/${TARGET_ARCH}" ]]; then
+            echo "runner architecture does not match release target" >&2
+            exit 1
+          fi
+          mkdir -p dist
+          artifact="dist/schooner_${VERSION}_${TARGET_OS}_${TARGET_ARCH}"
+          CGO_ENABLED=0 go build \
+            -trimpath \
+            -ldflags "-s -w -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.builtAt=${BUILT_AT}" \
+            -o "${artifact}" \
+            ./cmd/schooner
+
+          version_json="$("${artifact}" version --output json)"
+          VERSION_JSON="${version_json}" python3 -c '
+          import json, os
+          value = json.loads(os.environ["VERSION_JSON"])
+          expected = {
+              "schema_version": "1",
+              "version": os.environ["VERSION"],
+              "commit": os.environ["COMMIT"],
+              "built_at": os.environ["BUILT_AT"],
+              "os": os.environ["TARGET_OS"],
+              "arch": os.environ["TARGET_ARCH"],
+          }
+          for key, wanted in expected.items():
+              if value.get(key) != wanted:
+                  raise SystemExit(f"{key}: got {value.get(key)!r}, want {wanted!r}")
+          '
+
+      - name: Upload binary
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: schooner-${{ matrix.os }}-${{ matrix.arch }}
+          path: dist/schooner_*
+          if-no-files-found: error
+          retention-days: 7
+
+  bundle:
+    name: Verify and bundle artifacts
+    needs:
+      - prepare
+      - build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download binaries
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          pattern: schooner-*
+          path: dist
+          merge-multiple: true
+
+      - name: Verify artifact set and write checksums
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          expected=(
+            "schooner_${VERSION}_darwin_amd64"
+            "schooner_${VERSION}_darwin_arm64"
+            "schooner_${VERSION}_linux_amd64"
+            "schooner_${VERSION}_linux_arm64"
+          )
+          for artifact in "${expected[@]}"; do
+            test -f "dist/${artifact}"
+          done
+          if [[ "$(find dist -maxdepth 1 -type f -name 'schooner_*' | wc -l | tr -d ' ')" != "4" ]]; then
+            echo "release bundle must contain exactly four binaries" >&2
+            exit 1
+          fi
+          cd dist
+          sha256sum "${expected[@]}" | LC_ALL=C sort -k2 > SHA256SUMS
+          sha256sum --check SHA256SUMS
+
+      - name: Upload verified bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: schooner-${{ needs.prepare.outputs.version }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish release
+    if: github.event_name == 'push'
+    needs:
+      - prepare
+      - bundle
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Download verified bundle
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: schooner-${{ needs.prepare.outputs.version }}
+          path: dist
+
+      - name: Attest release binaries
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: dist/schooner_*
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          if gh release view "${VERSION}" >/dev/null 2>&1; then
+            echo "release ${VERSION} already exists" >&2
+            exit 1
+          fi
+          gh release create "${VERSION}" dist/* \
+            --verify-tag \
+            --generate-notes \
+            --title "${VERSION}"
