@@ -30,17 +30,17 @@ func TestStoreLifecycleAndMigrationHistory(t *testing.T) {
 	if err = store.CheckpointAdd(t.Context(), op); err != nil {
 		t.Fatalf("CheckpointAdd() error = %v", err)
 	}
-	record := box.Record{ID: "box-1", Name: "work", Acquisition: "adopted", SSHDestination: "work-host", RemoteIdentity: "remote-1", WorkspaceRoot: "/home/alice/schooner", CreatedAt: now, UpdatedAt: now}
-	observation := box.Observation{BoxID: record.ID, ObservedAt: now, Capabilities: box.Capabilities{OSID: "ubuntu", OSVersion: "24.04", Architecture: "amd64", Home: "/home/alice", RemoteIdentity: "remote-1", Git: box.Tool{Available: true, Version: "git version 2.43.0"}, Tmux: box.Tool{Available: true, Version: "tmux 3.4"}, PasswordlessSudo: true}}
+	record := box.Record{ID: "box-1", Name: "work", Acquisition: "adopted", SSHDestination: "work-host", RemoteIdentity: "remote-1", RuntimePath: "/home/alice/.local/bin/schooner", WorkspaceRoot: "/home/alice/schooner", CreatedAt: now, UpdatedAt: now}
+	observation := box.Observation{BoxID: record.ID, ObservedAt: now, Capabilities: box.Capabilities{OSID: "ubuntu", OSVersion: "24.04", Architecture: "amd64", Home: "/home/alice", RemoteIdentity: "remote-1", Git: box.Tool{Available: true, Version: "git version 2.43.0"}, Tmux: box.Tool{Available: true, Version: "tmux 3.4"}, PasswordlessSudo: true, Host: box.HostRuntime{Path: record.RuntimePath, Version: "v1.2.3", ProtocolVersion: "1", Capabilities: []string{"host.inspect.v1", "host.hello.v1"}}}}
 	if err = store.CompleteAdd(t.Context(), op, record, observation); err != nil {
 		t.Fatalf("CompleteAdd() error = %v", err)
 	}
 	got, err := store.FindByName(t.Context(), "work")
-	if err != nil || got.RemoteIdentity != "remote-1" {
+	if err != nil || got.RemoteIdentity != "remote-1" || got.RuntimePath != record.RuntimePath {
 		t.Fatalf("FindByName() = %+v, %v", got, err)
 	}
 	last, err := store.LastObservation(t.Context(), record.ID)
-	if err != nil || last.Capabilities.Tmux.Version != "tmux 3.4" {
+	if err != nil || last.Capabilities.Tmux.Version != "tmux 3.4" || last.Capabilities.Host.Version != "v1.2.3" || len(last.Capabilities.Host.Capabilities) != 2 || last.Capabilities.Host.Capabilities[0] != "host.hello.v1" {
 		t.Fatalf("LastObservation() = %+v, %v", last, err)
 	}
 	removed, err := store.Remove(t.Context(), "work")
@@ -60,7 +60,7 @@ func TestStoreLifecycleAndMigrationHistory(t *testing.T) {
 	}
 	defer store.Close()
 	var count int
-	if err = store.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil || count != 4 {
+	if err = store.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil || count != 5 {
 		t.Fatalf("migration count = %d, err = %v", count, err)
 	}
 }
@@ -171,6 +171,9 @@ func TestProviderMigrationPreservesVersionOneAdoptedBox(t *testing.T) {
 	if _, err = db.Exec(`INSERT INTO boxes VALUES('box-1','legacy','adopted','legacy-host','remote-1','/home/alice/schooner','2026-08-24T12:00:00Z','2026-08-24T12:00:00Z')`); err != nil {
 		t.Fatal(err)
 	}
+	if _, err = db.Exec(`INSERT INTO observations VALUES('box-1','2026-08-24T12:00:00Z','ubuntu','24.04','amd64','/home/alice','remote-1','/home/alice/schooner',1,1,'git version 2.43.0',1,'tmux 3.4',1)`); err != nil {
+		t.Fatal(err)
+	}
 	if err = db.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -180,8 +183,12 @@ func TestProviderMigrationPreservesVersionOneAdoptedBox(t *testing.T) {
 	}
 	defer store.Close()
 	record, err := store.FindByName(t.Context(), "legacy")
-	if err != nil || record.Acquisition != "adopted" || record.Provider != "" || record.IdentityFile != "" {
+	if err != nil || record.Acquisition != "adopted" || record.Provider != "" || record.IdentityFile != "" || record.RuntimePath != "/home/alice/.local/bin/schooner" {
 		t.Fatalf("record=%+v err=%v", record, err)
+	}
+	observation, err := store.LastObservation(t.Context(), record.ID)
+	if err != nil || observation.Capabilities.Host.Path != record.RuntimePath || observation.Capabilities.Host.Version != "" {
+		t.Fatalf("observation=%+v err=%v", observation, err)
 	}
 	if _, err = os.Stat(path + ".pre-v2-backup"); err != nil {
 		t.Fatal(err)

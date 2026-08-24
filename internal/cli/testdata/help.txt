@@ -8,6 +8,7 @@ Available Commands:
   box         Add and operate development boxes
   completion  Generate the autocompletion script for the specified shell
   db          Manage local Schooner database state
+  doctor      Check this machine for Schooner readiness
   help        Help about any command
   provider    Manage cloud provider credential profiles
   version     Show Schooner build information

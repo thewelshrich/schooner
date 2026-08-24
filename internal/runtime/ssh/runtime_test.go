@@ -27,6 +27,21 @@ func TestShellQuoteRoundTrip(t *testing.T) {
 	}
 }
 
+func TestFixedShellCommandRunsThroughNonPOSIXLoginShell(t *testing.T) {
+	command := fixedShellCommand(`value=$(printf %s "$1" | base64 -d) || exit 64; printf %s "$value"`, "path with ' quotes")
+	if !strings.HasPrefix(command, "/bin/sh -c ") {
+		t.Fatalf("command does not enter through /bin/sh: %q", command)
+	}
+	shell, err := exec.LookPath("csh")
+	if err != nil {
+		t.Skip("csh is not installed")
+	}
+	output, err := exec.Command(shell, "-f", "-c", command).CombinedOutput()
+	if err != nil || string(output) != "path with ' quotes" {
+		t.Fatalf("csh command output=%q err=%v", output, err)
+	}
+}
+
 func FuzzShellQuote(f *testing.F) {
 	for _, seed := range []string{"hello", "a b", "'", "$()", "semi;colon"} {
 		f.Add(seed)
@@ -160,5 +175,18 @@ func TestWaitReadyRetriesOnlyConnectionFailures(t *testing.T) {
 	}
 	if err := runtime.WaitReady(t.Context(), box.Connection{Destination: "root@host"}); box.ErrorCode(err) != "authentication_required" || attempts != 1 {
 		t.Fatalf("attempts=%d err=%v", attempts, err)
+	}
+}
+
+func TestRunRemotePreservesRemoteExitAndRejectsOversizedOutput(t *testing.T) {
+	runtime := New(writeExecutable(t, "#!/bin/sh\nprintf 'remote diagnostic' >&2\nexit 42\n"), nil)
+	result, err := runtime.runRemote(t.Context(), box.Connection{Destination: "work"}, "fixed operation", nil)
+	if err != nil || result.ExitCode != 42 || string(result.Stderr) != "remote diagnostic" {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+
+	runtime = New(writeExecutable(t, "#!/bin/sh\ndd if=/dev/zero bs=1048577 count=1 2>/dev/null\n"), nil)
+	if _, err = runtime.runRemote(t.Context(), box.Connection{Destination: "work"}, "fixed operation", nil); box.ErrorCode(err) != "internal" {
+		t.Fatalf("oversized output error = %v", err)
 	}
 }

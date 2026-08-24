@@ -23,7 +23,7 @@ func TestProvisionConvergesOnBoxPreparationAndDestroy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Box.Acquisition != "provisioned" || result.Box.ProviderResourceID != "42" || result.Box.IdentityFile != "/state/id_ed25519" {
+	if result.Box.Acquisition != "provisioned" || result.Box.ProviderResourceID != "42" || result.Box.IdentityFile != "/state/id_ed25519" || result.Box.RuntimePath != "/root/.local/bin/schooner" {
 		t.Fatalf("box=%+v", result.Box)
 	}
 	if result.Box.ProviderRegion != "fra1" {
@@ -155,6 +155,16 @@ func (f *testRuntime) EnsureIdentity(_ context.Context, connection box.Connectio
 	f.capabilities.RemoteIdentity = candidate
 	return candidate, nil
 }
+func (f *testRuntime) EnsureHost(_ context.Context, connection box.Connection, request box.HostInstallRequest) (box.HostRuntime, error) {
+	f.connection = connection
+	f.capabilities.Host = box.HostRuntime{Path: request.Path, Version: "v1.2.3", ProtocolVersion: "1", Capabilities: []string{"host.doctor.v1", "host.hello.v1", "host.inspect.v1"}}
+	return f.capabilities.Host, nil
+}
+func (f *testRuntime) InspectHost(_ context.Context, connection box.Connection, installed box.HostRuntime, _ string, _ string) (box.Capabilities, error) {
+	f.connection = connection
+	f.capabilities.Host = installed
+	return f.capabilities, nil
+}
 func (*testRuntime) InstallTools(context.Context, box.Connection, []string) error { return nil }
 func (f *testRuntime) EnsureWorkspaceRoot(_ context.Context, connection box.Connection, _ string) (string, error) {
 	f.connection = connection
@@ -203,6 +213,16 @@ func (s *testStore) CompleteAdd(_ context.Context, _ box.AddOperation, record bo
 	s.records[record.Name] = record
 	s.observations[record.ID] = observation
 	return nil
+}
+func (s *testStore) UpdateRuntimePath(_ context.Context, id, runtimePath string) error {
+	for name, record := range s.records {
+		if record.ID == id {
+			record.RuntimePath = runtimePath
+			s.records[name] = record
+			return nil
+		}
+	}
+	return box.NotFound(id)
 }
 func (s *testStore) SaveObservation(_ context.Context, value box.Observation) error {
 	s.observations[value.BoxID] = value

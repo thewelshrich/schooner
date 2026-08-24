@@ -5,8 +5,10 @@ import (
 	"bytes"
 	"context"
 	"embed"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os/exec"
 	"regexp"
@@ -26,8 +28,11 @@ var scripts embed.FS
 type Runtime struct {
 	Path         string
 	Stderr       io.Writer
+	Version      string
+	Artifacts    ArtifactResolver
 	probe        func(context.Context, box.Connection) error
 	wait         func(context.Context, time.Duration) error
+	randomSuffix func() (string, error)
 	readyTimeout time.Duration
 }
 
@@ -47,6 +52,10 @@ type ShellResult struct {
 }
 
 func New(path string, stderr io.Writer) *Runtime { return &Runtime{Path: path, Stderr: stderr} }
+
+func NewHost(path string, stderr io.Writer, version string, artifacts ArtifactResolver) *Runtime {
+	return &Runtime{Path: path, Stderr: stderr, Version: version, Artifacts: artifacts}
+}
 
 // OpenShell hands the current terminal to system OpenSSH. Unlike the bounded
 // product operations below, it never accepts or appends a remote command.
@@ -235,35 +244,21 @@ func (r *Runtime) EnsureWorkspaceRoot(ctx context.Context, connection box.Connec
 }
 
 func (r *Runtime) runJSON(ctx context.Context, connection box.Connection, program []byte, arguments []string, target any) error {
-	path, err := r.executable()
-	if err != nil {
-		return err
-	}
 	for _, argument := range arguments {
 		if err := validateArgument(argument); err != nil {
 			return err
 		}
 	}
-	command := "sh -s --"
-	for _, argument := range arguments {
-		command += " " + shellQuote(argument)
+	command := scriptCommand(arguments)
+	result, err := r.runRemote(ctx, connection, command, bytes.NewReader(program))
+	if err != nil {
+		return err
 	}
-	args := r.options(connection)
-	args = append(args, connection.Destination, command)
-	cmd := exec.CommandContext(ctx, path, args...)
-	cmd.Stdin = bytes.NewReader(program)
-	var stdout, stderr limitedBuffer
-	cmd.Stdout = &stdout
-	if !connection.BatchMode && r.Stderr != nil {
-		cmd.Stderr = io.MultiWriter(&stderr, r.Stderr)
-	} else {
-		cmd.Stderr = &stderr
-	}
-	if err := cmd.Run(); err != nil {
-		return classify(err, stderr.String())
+	if result.ExitCode != 0 {
+		return remoteFailure("remote operation", result)
 	}
 	var envelope map[string]json.RawMessage
-	if err := json.Unmarshal(stdout.Bytes(), &envelope); err != nil {
+	if err := json.Unmarshal(result.Stdout, &envelope); err != nil {
 		return box.NewError("internal", "remote operation returned an invalid result", err)
 	}
 	var schema string
@@ -281,6 +276,75 @@ func (r *Runtime) runJSON(ctx context.Context, connection box.Connection, progra
 		return box.NewError("internal", "remote operation returned an invalid result", err)
 	}
 	return nil
+}
+
+type remoteResult struct {
+	ExitCode int
+	Stdout   []byte
+	Stderr   []byte
+}
+
+func (r *Runtime) runRemote(ctx context.Context, connection box.Connection, command string, stdin io.Reader) (remoteResult, error) {
+	path, err := r.executable()
+	if err != nil {
+		return remoteResult{}, err
+	}
+	args := r.options(connection)
+	args = append(args, connection.Destination, command)
+	cmd := exec.CommandContext(ctx, path, args...)
+	cmd.Stdin = stdin
+	var stdout, stderr limitedBuffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err = cmd.Run()
+	if stdout.overflow || stderr.overflow {
+		return remoteResult{}, box.NewError("internal", "remote operation output exceeded 1 MiB", nil)
+	}
+	result := remoteResult{Stdout: append([]byte(nil), stdout.Bytes()...), Stderr: append([]byte(nil), stderr.Bytes()...)}
+	if err == nil {
+		return result, nil
+	}
+	if ctx.Err() != nil {
+		return remoteResult{}, ctx.Err()
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		return remoteResult{}, err
+	}
+	result.ExitCode = exitErr.ExitCode()
+	if result.ExitCode < 0 {
+		return remoteResult{}, box.NewError("connection_failed", "SSH connection terminated without an exit status", err)
+	}
+	if result.ExitCode == 255 {
+		return remoteResult{}, classify(err, stderr.String())
+	}
+	return result, nil
+}
+
+func remoteFailure(action string, result remoteResult) error {
+	diagnostic := safeDiagnostic(string(result.Stderr))
+	message := action + " failed on the remote machine"
+	if diagnostic != "" {
+		message += ": " + diagnostic
+	}
+	return box.NewError("remote_operation_failed", message, fmt.Errorf("remote exit status %d", result.ExitCode))
+}
+
+func safeDiagnostic(value string) string {
+	value = strings.TrimSpace(value)
+	if line, _, ok := strings.Cut(value, "\n"); ok {
+		value = line
+	}
+	var result strings.Builder
+	for _, character := range value {
+		if result.Len() >= 256 {
+			break
+		}
+		if character >= 0x20 && character <= 0x7e {
+			result.WriteRune(character)
+		}
+	}
+	return strings.TrimSpace(result.String())
 }
 
 func (r *Runtime) options(connection box.Connection) []string {
@@ -344,6 +408,33 @@ func validateArgument(value string) error {
 
 func shellQuote(value string) string { return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'" }
 
+// fixedShellCommand makes the user's login shell do no more than start the
+// POSIX shell used by Schooner's bounded remote operation. Arguments are
+// encoded so paths and other structured input never enter login-shell syntax.
+func fixedShellCommand(body string, arguments ...string) string {
+	command := "/bin/sh -c " + shellQuote(body) + " schooner-remote"
+	for _, argument := range arguments {
+		command += " " + base64.StdEncoding.EncodeToString([]byte(argument))
+	}
+	return command
+}
+
+func scriptCommand(arguments []string) string {
+	parts := make([]string, 0, len(arguments)+1)
+	references := make([]string, 0, len(arguments))
+	for index := range arguments {
+		name := fmt.Sprintf("argument_%d", index+1)
+		parts = append(parts, fmt.Sprintf(`%s=$(printf %%s "$%d" | base64 -d) || exit 64`, name, index+1))
+		references = append(references, `"$`+name+`"`)
+	}
+	exec := "exec /bin/sh -s --"
+	if len(references) > 0 {
+		exec += " " + strings.Join(references, " ")
+	}
+	parts = append(parts, exec)
+	return fixedShellCommand(strings.Join(parts, "; "), arguments...)
+}
+
 func waitContext(ctx context.Context, duration time.Duration) error {
 	timer := time.NewTimer(duration)
 	defer timer.Stop()
@@ -355,17 +446,24 @@ func waitContext(ctx context.Context, duration time.Duration) error {
 	}
 }
 
-type limitedBuffer struct{ data []byte }
+type limitedBuffer struct {
+	data     []byte
+	overflow bool
+}
 
 func (b *limitedBuffer) Write(p []byte) (int, error) {
 	written := len(p)
 	remaining := maxOutput - len(b.data)
-	if remaining > 0 {
-		if len(p) > remaining {
-			p = p[:remaining]
-		}
-		b.data = append(b.data, p...)
+	if remaining <= 0 {
+		b.overflow = true
+		return written, nil
 	}
+	if len(p) > remaining {
+		b.data = append(b.data, p[:remaining]...)
+		b.overflow = true
+		return written, nil
+	}
+	b.data = append(b.data, p...)
 	return written, nil
 }
 func (b *limitedBuffer) Bytes() []byte  { return b.data }

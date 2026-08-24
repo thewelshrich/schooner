@@ -49,7 +49,7 @@ func newProviderConnectCommand(streams Streams, global *globalOptions) *cobra.Co
 					return executionError{cause: err}
 				}
 			}
-			services, closeServices, err := openApplication(cmd.Context(), streams)
+			services, closeServices, err := openApplication(cmd.Context(), streams, global.build)
 			if err != nil {
 				return executionError{cause: err}
 			}
@@ -70,7 +70,7 @@ func newProviderConnectCommand(streams Streams, global *globalOptions) *cobra.Co
 
 func newProviderListCommand(streams Streams, global *globalOptions) *cobra.Command {
 	return &cobra.Command{Use: "list", Short: "List provider credential profiles", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
-		services, closeServices, err := openApplication(cmd.Context(), streams)
+		services, closeServices, err := openApplication(cmd.Context(), streams, global.build)
 		if err != nil {
 			return executionError{cause: err}
 		}
@@ -131,7 +131,7 @@ func newProviderDisconnectCommand(streams Streams, global *globalOptions) *cobra
 				return nil
 			}
 		}
-		services, closeServices, err := openApplication(cmd.Context(), streams)
+		services, closeServices, err := openApplication(cmd.Context(), streams, global.build)
 		if err != nil {
 			return executionError{cause: err}
 		}

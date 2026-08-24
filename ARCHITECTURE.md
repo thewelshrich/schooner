@@ -107,6 +107,25 @@ SSH user. Installation is versioned and recoverable. Before an operation, the
 local application verifies that a compatible remote application is available
 and installs or updates it when necessary.
 
+Bootstrap is the only shell-based part of the remote-application path. It
+creates a unique staging file in `~/.local/bin`, streams the already verified
+artifact over OpenSSH, verifies SHA-256 again on the Box, and executes the
+staged binary's structured `host hello` handshake. Promotion to
+`~/.local/bin/schooner` is a same-directory atomic rename followed by a fresh
+handshake. Bootstrap commands invoke `/bin/sh` explicitly rather than relying
+on the SSH user's login-shell grammar. Promotion holds a remote install lock and
+compares the target with the fingerprint captured around the version check; a
+changed target is reassessed before any retry. An interrupted attempt therefore
+leaves either the previous runtime or the fully verified replacement at the
+recorded path. Once present, product inspection uses fixed, hidden typed
+operations rather than shell scripts.
+
+The handshake negotiates a protocol version and sorted capabilities separately
+from the Schooner release version. Compatible older or newer executables may be
+reused. An incompatible older executable can be replaced, while a newer one is
+never silently downgraded; unidentifiable version skew fails with recovery
+guidance.
+
 The artifact module resolves a version and supported remote platform to one
 verified executable. GitHub Releases is the canonical published source. A
 required `SHA256SUMS` manifest supplies runtime integrity; GitHub build
@@ -154,8 +173,9 @@ Remote files and processes belong to the configured SSH user. Schooner keeps
 its own state separate from visible Workspaces:
 
 ```text
+~/.local/bin/schooner          installed on-demand application
 ~/.local/state/schooner/       Box identity and operation checkpoints
-~/.local/share/schooner/       installed application and Project metadata
+~/.local/share/schooner/       Project and shared application metadata
 ~/schooner/                    default configurable Workspace root
 ```
 
@@ -252,6 +272,11 @@ permission_denied
 unsupported
 connection_failed
 host_identity_changed
+host_runtime_missing
+host_runtime_incompatible
+host_runtime_install_failed
+artifact_unavailable
+checksum_mismatch
 operation_in_progress
 outcome_unknown
 internal

@@ -19,7 +19,7 @@ func TestAddPreparesAndPersistsBox(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Add() error = %v", err)
 	}
-	if result.Box.Acquisition != "adopted" || result.Box.WorkspaceRoot != "/home/alice/schooner" {
+	if result.Box.Acquisition != "adopted" || result.Box.WorkspaceRoot != "/home/alice/schooner" || result.Box.RuntimePath != "/home/alice/.local/bin/schooner" {
 		t.Fatalf("unexpected box: %+v", result.Box)
 	}
 	if !slices.Equal(result.Installed, []string{"git"}) {
@@ -31,7 +31,7 @@ func TestAddPreparesAndPersistsBox(t *testing.T) {
 	if _, ok := store.records["work-api"]; !ok {
 		t.Fatal("box was not persisted")
 	}
-	if len(events) != 16 || events[0].Step != StepResolve || events[len(events)-1].Step != StepSave {
+	if len(events) != 18 || events[0].Step != StepResolve || events[len(events)-1].Step != StepSave {
 		t.Fatalf("events = %+v", events)
 	}
 }
@@ -54,15 +54,19 @@ func TestAddRequiresPasswordlessSudoForMissingTools(t *testing.T) {
 	}
 }
 
-func TestAddRejectsDuplicateRemoteIdentity(t *testing.T) {
+func TestAddRejectsClonedIdentityAfterOpenSSHTrustResolution(t *testing.T) {
 	store := newMemoryInventory()
-	store.records["existing"] = Record{Name: "existing", RemoteIdentity: "remote-1"}
+	identity := "11111111-1111-4111-8111-111111111111"
+	store.records["existing"] = Record{Name: "existing", SSHDestination: "original-host", RemoteIdentity: identity}
 	runtime := &fakeRuntime{capabilities: readyCapabilities()}
-	runtime.capabilities.RemoteIdentity = "remote-1"
+	runtime.capabilities.RemoteIdentity = identity
 	service := testService(runtime, store)
-	_, err := service.Add(t.Context(), AddRequest{Name: "alias", SSHDestination: "other"})
+	_, err := service.Add(t.Context(), AddRequest{Name: "clone", SSHDestination: "clone-host", AcceptNewHostKey: true})
 	if ErrorCode(err) != "conflict" {
 		t.Fatalf("error = %v", err)
+	}
+	if runtime.resolved.Destination != "clone-host" || !runtime.resolved.AcceptNewHostKey || runtime.inspected.Destination != "clone-host" {
+		t.Fatalf("host trust and inspection were not established independently: resolved=%+v inspected=%+v", runtime.resolved, runtime.inspected)
 	}
 	if runtime.installCalled {
 		t.Fatal("duplicate identity caused remote setup")
@@ -71,7 +75,7 @@ func TestAddRejectsDuplicateRemoteIdentity(t *testing.T) {
 
 func TestStatusVerifiesIdentityAndCachesObservation(t *testing.T) {
 	store := newMemoryInventory()
-	store.records["work"] = Record{ID: "box-1", Name: "work", SSHDestination: "work", RemoteIdentity: "remote-1", WorkspaceRoot: "/home/alice/schooner"}
+	store.records["work"] = Record{ID: "box-1", Name: "work", SSHDestination: "work", RemoteIdentity: "remote-1", RuntimePath: "/home/alice/.local/bin/schooner", WorkspaceRoot: "/home/alice/schooner"}
 	runtime := &fakeRuntime{capabilities: readyCapabilities()}
 	runtime.capabilities.RemoteIdentity = "remote-1"
 	service := testService(runtime, store)
@@ -84,6 +88,25 @@ func TestStatusVerifiesIdentityAndCachesObservation(t *testing.T) {
 	}
 	if store.observations["box-1"].ObservedAt.IsZero() {
 		t.Fatal("observation was not cached")
+	}
+	if runtime.inspectCalls != 0 || runtime.inspectHostCalls != 1 {
+		t.Fatalf("status used shell after bootstrap: inspect=%d inspectHost=%d", runtime.inspectCalls, runtime.inspectHostCalls)
+	}
+}
+
+func TestStatusRepairsMissingRuntimeAndPersistsItsPath(t *testing.T) {
+	store := newMemoryInventory()
+	store.records["work"] = Record{ID: "box-1", Name: "work", SSHDestination: "work", RemoteIdentity: "remote-1", WorkspaceRoot: "/home/alice/schooner"}
+	runtime := &fakeRuntime{capabilities: readyCapabilities()}
+	runtime.capabilities.RemoteIdentity = "remote-1"
+	service := testService(runtime, store)
+	result, err := service.Status(t.Context(), StatusRequest{Name: "work"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "/home/alice/.local/bin/schooner"
+	if result.Box.RuntimePath != want || store.records["work"].RuntimePath != want || runtime.inspectCalls != 1 || runtime.ensureHostCalls != 1 {
+		t.Fatalf("result=%+v stored=%+v inspect=%d ensure=%d", result.Box, store.records["work"], runtime.inspectCalls, runtime.ensureHostCalls)
 	}
 }
 
@@ -115,7 +138,7 @@ func TestListEntriesIncludesObservationAndMixedAcquisition(t *testing.T) {
 
 func TestStatusFailureIncludesLastKnownTime(t *testing.T) {
 	store := newMemoryInventory()
-	store.records["work"] = Record{ID: "box-1", Name: "work", SSHDestination: "work", RemoteIdentity: "remote-1"}
+	store.records["work"] = Record{ID: "box-1", Name: "work", SSHDestination: "work", RemoteIdentity: "remote-1", RuntimePath: "/home/alice/.local/bin/schooner"}
 	last := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
 	store.observations["box-1"] = Observation{BoxID: "box-1", ObservedAt: last, Capabilities: readyCapabilities()}
 	runtime := &fakeRuntime{inspectErr: NewError("connection_failed", "offline", nil)}
@@ -186,25 +209,57 @@ func testService(runtime Runtime, store Inventory) *Service {
 }
 
 func readyCapabilities() Capabilities {
-	return Capabilities{OSID: "ubuntu", OSVersion: "24.04", Architecture: "amd64", Home: "/home/alice", WorkspaceRoot: "/home/alice/schooner", WorkspaceRootExists: true, Git: Tool{Available: true, Version: "git version 2.43.0"}, Tmux: Tool{Available: true, Version: "tmux 3.4"}, PasswordlessSudo: true}
+	return Capabilities{OSID: "ubuntu", OSVersion: "24.04", Architecture: "amd64", Home: "/home/alice", WorkspaceRoot: "/home/alice/schooner", WorkspaceRootExists: true, Git: Tool{Available: true, Version: "git version 2.43.0"}, Tmux: Tool{Available: true, Version: "tmux 3.4"}, PasswordlessSudo: true, Host: HostRuntime{Path: "/home/alice/.local/bin/schooner", Version: "v1.2.3", ProtocolVersion: "1", Capabilities: []string{"host.doctor.v1", "host.hello.v1", "host.inspect.v1"}}}
 }
 
 type fakeRuntime struct {
-	capabilities  Capabilities
-	inspectErr    error
-	installCalled bool
-	calls         int
+	capabilities     Capabilities
+	inspectErr       error
+	inspectHostErr   error
+	installCalled    bool
+	calls            int
+	inspectCalls     int
+	inspectHostCalls int
+	ensureHostCalls  int
+	resolved         Connection
+	inspected        Connection
 }
 
-func (f *fakeRuntime) Resolve(context.Context, Connection) error { f.calls++; return nil }
-func (f *fakeRuntime) Inspect(context.Context, Connection, string) (Capabilities, error) {
+func (f *fakeRuntime) Resolve(_ context.Context, connection Connection) error {
 	f.calls++
+	f.resolved = connection
+	return nil
+}
+func (f *fakeRuntime) Inspect(_ context.Context, connection Connection, _ string) (Capabilities, error) {
+	f.calls++
+	f.inspectCalls++
+	f.inspected = connection
 	return f.capabilities, f.inspectErr
 }
 func (f *fakeRuntime) EnsureIdentity(_ context.Context, _ Connection, candidate string) (string, error) {
 	f.calls++
 	f.capabilities.RemoteIdentity = candidate
 	return candidate, nil
+}
+func (f *fakeRuntime) EnsureHost(_ context.Context, _ Connection, request HostInstallRequest) (HostRuntime, error) {
+	f.calls++
+	f.ensureHostCalls++
+	f.capabilities.Host = HostRuntime{Path: request.Path, Version: "v1.2.3", ProtocolVersion: "1", Capabilities: []string{"host.doctor.v1", "host.hello.v1", "host.inspect.v1"}}
+	return f.capabilities.Host, nil
+}
+func (f *fakeRuntime) InspectHost(_ context.Context, _ Connection, installed HostRuntime, _ string, _ string) (Capabilities, error) {
+	f.calls++
+	f.inspectHostCalls++
+	f.capabilities.Host = installed
+	if f.capabilities.Host.Version == "" {
+		f.capabilities.Host.Version = "v1.2.3"
+		f.capabilities.Host.ProtocolVersion = "1"
+		f.capabilities.Host.Capabilities = []string{"host.doctor.v1", "host.hello.v1", "host.inspect.v1"}
+	}
+	if f.inspectHostErr != nil {
+		return f.capabilities, f.inspectHostErr
+	}
+	return f.capabilities, f.inspectErr
 }
 func (f *fakeRuntime) InstallTools(_ context.Context, _ Connection, tools []string) error {
 	f.calls++
@@ -271,6 +326,16 @@ func (m *memoryInventory) CompleteAdd(_ context.Context, _ AddOperation, record 
 	m.observations[record.ID] = observation
 	m.operation = AddOperation{}
 	return nil
+}
+func (m *memoryInventory) UpdateRuntimePath(_ context.Context, boxID, runtimePath string) error {
+	for name, record := range m.records {
+		if record.ID == boxID {
+			record.RuntimePath = runtimePath
+			m.records[name] = record
+			return nil
+		}
+	}
+	return NotFound(boxID)
 }
 func (m *memoryInventory) SaveObservation(_ context.Context, observation Observation) error {
 	m.observations[observation.BoxID] = observation

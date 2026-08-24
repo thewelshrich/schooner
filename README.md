@@ -58,9 +58,21 @@ the workspace root. Supplying `--no-input` with a box name enables OpenSSH batch
 mode, so authentication and host-trust prompts fail instead of blocking.
 
 `box add` verifies the remote system, establishes a stable machine identity,
-installs missing Git and tmux packages when `sudo -n` is available, and creates
-the workspace root (default `~/schooner`). `box remove` only forgets local
-inventory and never changes the remote machine.
+installs the same Schooner executable for that SSH user at
+`~/.local/bin/schooner`, installs missing Git and tmux packages when `sudo -n`
+is available, and creates the workspace root (default `~/schooner`). The
+runtime is a bounded, on-demand SSH target, not a daemon. `box status` reports
+its version, protocol, path, and negotiated capabilities. `box remove` only
+forgets local inventory and never changes the remote machine.
+
+Run local readiness diagnostics, or inspect the installed application directly
+without relying on remote `PATH`:
+
+```bash
+schooner doctor
+ssh work-api '~/.local/bin/schooner version'
+ssh work-api '~/.local/bin/schooner doctor'
+```
 
 Box commands that return structured results support `--output json`; the
 interactive `box ssh` handoff supports human output only. Global interaction
@@ -108,8 +120,10 @@ place both files in one directory and set `SCHOONER_ARTIFACT_DIR`:
 
 ```bash
 artifact_dir="$(mktemp -d)"
-artifact="schooner_dev_$(go env GOOS)_$(go env GOARCH)"
-CGO_ENABLED=0 go build -trimpath -o "${artifact_dir}/${artifact}" ./cmd/schooner
+remote_arch="arm64" # or amd64, matching the Box
+artifact="schooner_dev_linux_${remote_arch}"
+CGO_ENABLED=0 GOOS=linux GOARCH="${remote_arch}" go build -trimpath \
+  -o "${artifact_dir}/${artifact}" ./cmd/schooner
 
 # Linux:
 (cd "${artifact_dir}" && sha256sum "${artifact}" > SHA256SUMS)
@@ -122,6 +136,13 @@ export SCHOONER_ARTIFACT_DIR="${artifact_dir}"
 The override supports `dev` and release versions, but never bypasses checksum
 verification. Without it, release artifacts are read from the verified local
 cache or downloaded from the matching GitHub Release.
+
+Bootstrap streams the verified bytes through system OpenSSH into a unique file
+beside the final runtime. The Box rechecks SHA-256, the staged executable must
+complete a structured identity/platform/protocol handshake, and only then is
+it atomically renamed into place. A fresh handshake completes the transaction.
+Compatible version skew is retained; an incompatible runtime may be repaired
+only when doing so cannot downgrade a newer installed version.
 
 ### Releases
 

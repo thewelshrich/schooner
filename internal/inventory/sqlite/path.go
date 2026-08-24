@@ -8,18 +8,23 @@ import (
 )
 
 func DefaultPath() (string, error) {
+	// The Darwin location is an existing inventory contract. XDG_STATE_HOME
+	// must not make an upgraded CLI silently select a different database.
+	if runtime.GOOS == "darwin" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("resolve home directory: %w", err)
+		}
+		return filepath.Join(home, "Library", "Application Support", "Schooner", "state.db"), nil
+	}
+	if state := os.Getenv("XDG_STATE_HOME"); state != "" {
+		return filepath.Join(state, "schooner", "state.db"), nil
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("resolve home directory: %w", err)
 	}
-	if runtime.GOOS == "darwin" {
-		return filepath.Join(home, "Library", "Application Support", "Schooner", "state.db"), nil
-	}
-	state := os.Getenv("XDG_STATE_HOME")
-	if state == "" {
-		state = filepath.Join(home, ".local", "state")
-	}
-	return filepath.Join(state, "schooner", "state.db"), nil
+	return filepath.Join(home, ".local", "state", "schooner", "state.db"), nil
 }
 
 // Destroy removes the active SQLite database and its transient sidecar files.
