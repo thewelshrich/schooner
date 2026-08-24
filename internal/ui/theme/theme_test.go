@@ -4,6 +4,8 @@ import (
 	"image/color"
 	"strings"
 	"testing"
+
+	"charm.land/lipgloss/v2"
 )
 
 func TestFormPaletteSelection(t *testing.T) {
@@ -39,6 +41,24 @@ func TestAutomaticThemeUsesTerminalForeground(t *testing.T) {
 	}
 	if rendered := styles.Focused.Description.Render("description"); !strings.Contains(rendered, "\x1b[2m") {
 		t.Errorf("description = %q, want terminal faint styling", rendered)
+	}
+}
+
+func TestColoredFormPreservesEmbeddedOptionStyles(t *testing.T) {
+	t.Parallel()
+
+	theme := New(Dark, true)
+	styles := theme.Form().Theme(true)
+	muted := theme.Style(Muted).Render("ams3")
+	row := "Amsterdam 3  " + muted
+	selected := styles.Focused.SelectedOption.Render(row)
+	unselected := styles.Focused.UnselectedOption.Render(row)
+	if !strings.Contains(selected, "ams3") || !strings.Contains(unselected, muted) {
+		t.Fatalf("selected=%q unselected=%q", selected, unselected)
+	}
+	// Selected emphasis is bold, not a flat success recolor of the whole row.
+	if _, isUnset := styles.Focused.SelectedOption.GetForeground().(lipgloss.NoColor); !isUnset {
+		t.Fatalf("SelectedOption should leave foreground unset, got %#v", styles.Focused.SelectedOption.GetForeground())
 	}
 }
 

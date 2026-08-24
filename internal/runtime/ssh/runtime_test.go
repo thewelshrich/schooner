@@ -1,9 +1,11 @@
 package ssh
 
 import (
+	"context"
 	"os/exec"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/thewelshrich/schooner/internal/box"
 )
@@ -56,5 +58,30 @@ func TestConnectionPolicyOptions(t *testing.T) {
 	defaultOptions := strings.Join(runtime.options(box.Connection{}), " ")
 	if strings.Contains(defaultOptions, "StrictHostKeyChecking") || strings.Contains(defaultOptions, "BatchMode") {
 		t.Fatalf("default options override native OpenSSH policy: %q", defaultOptions)
+	}
+}
+
+func TestWaitReadyRetriesOnlyConnectionFailures(t *testing.T) {
+	runtime := New("ssh", nil)
+	attempts := 0
+	runtime.probe = func(context.Context, box.Connection) error {
+		attempts++
+		if attempts < 3 {
+			return box.NewError("connection_failed", "connection refused", nil)
+		}
+		return nil
+	}
+	runtime.wait = func(context.Context, time.Duration) error { return nil }
+	if err := runtime.WaitReady(t.Context(), box.Connection{Destination: "root@host"}); err != nil || attempts != 3 {
+		t.Fatalf("attempts=%d err=%v", attempts, err)
+	}
+
+	attempts = 0
+	runtime.probe = func(context.Context, box.Connection) error {
+		attempts++
+		return box.NewError("authentication_required", "permission denied", nil)
+	}
+	if err := runtime.WaitReady(t.Context(), box.Connection{Destination: "root@host"}); box.ErrorCode(err) != "authentication_required" || attempts != 1 {
+		t.Fatalf("attempts=%d err=%v", attempts, err)
 	}
 }

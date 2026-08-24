@@ -112,6 +112,23 @@ process environment. SQLite and TOML store only the profile reference and safe
 display metadata. A box may refer to the credential profile used to provision
 it so later inspection or destruction can resolve current credentials.
 
+A credential profile is bound to the provider's stable external account or
+project identity when that provider exposes one. Reconnecting a profile with a
+credential for a different account is a conflict, not credential rotation.
+For DigitalOcean, the credential is called a **Personal Access Token**, not an
+API key, and the stable account identity is the team UUID.
+
+## Provider resource reference
+
+A **Provider Resource Reference** identifies infrastructure acquired for one
+box. It contains the provider, the provider's opaque resource identifier, the
+credential-profile reference, and Schooner's acquisition correlation identity.
+
+It is durable recovery and verification data, not authorization. A resource
+may be destroyed only after current provider credentials resolve the reference
+and the provider still reports the expected correlation identity. A missing or
+ambiguous correlation is a conflict that requires explicit recovery.
+
 ## Capability
 
 A **Capability** is an observed fact about what a box can support, such as its

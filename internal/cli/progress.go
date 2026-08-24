@@ -6,8 +6,8 @@ import (
 	"io"
 	"sync"
 
-	"charm.land/huh/v2/spinner"
 	"github.com/thewelshrich/schooner/internal/box"
+	"github.com/thewelshrich/schooner/internal/ui/spinner"
 	uitheme "github.com/thewelshrich/schooner/internal/ui/theme"
 )
 
@@ -19,6 +19,7 @@ type progressRenderer struct {
 	mu       sync.Mutex
 	cancel   context.CancelFunc
 	done     chan struct{}
+	started  bool
 }
 
 func newProgressRenderer(ctx context.Context, writer io.Writer, animated bool, theme *uitheme.Theme) *progressRenderer {
@@ -30,6 +31,10 @@ func (r *progressRenderer) Event(event box.Event) {
 	defer r.mu.Unlock()
 	switch event.State {
 	case box.EventStarted:
+		if !r.started {
+			r.started = true
+			_, _ = fmt.Fprintln(r.writer)
+		}
 		if !r.animated {
 			_, _ = fmt.Fprintf(r.writer, "… %s\n", event.Message)
 			return
@@ -39,7 +44,7 @@ func (r *progressRenderer) Event(event box.Event) {
 		r.done = make(chan struct{})
 		go func(done chan struct{}) {
 			defer close(done)
-			_ = spinner.New().Type(spinner.Dots).Title(" " + event.Message).WithTheme(r.theme.Spinner()).WithOutput(r.writer).Context(stepContext).Run()
+			spinner.Run(stepContext, r.writer, r.theme, event.Message)
 		}(r.done)
 	case box.EventCompleted, box.EventFailed:
 		r.stopLocked()

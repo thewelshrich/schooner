@@ -80,3 +80,75 @@ go vet ./...
 ```
 
 The initial scaffold intentionally has no task runner or release automation.
+
+## DigitalOcean
+
+Connect a named DigitalOcean credential profile with an interactively entered
+Personal Access Token:
+
+```bash
+schooner provider connect digitalocean personal --default
+schooner provider list
+```
+
+For CI or another non-interactive environment, export
+`DIGITALOCEAN_TOKEN`; Schooner never accepts the token as a command-line flag
+and never saves an environment-provided token implicitly. A Full Access token
+is the simplest option. Custom-scoped tokens need account and catalogue reads,
+Droplet create/read/delete, SSH-key create/read/delete, VPC read, and tag create
+permissions.
+
+Run the guided add flow and choose DigitalOcean, or provide the complete
+billable configuration explicitly:
+
+```bash
+schooner box add
+
+schooner box add work-cloud \
+  --provider digitalocean \
+  --profile personal \
+  --region fra1 \
+  --size s-1vcpu-1gb \
+  --image ubuntu-24-04-x64 \
+  --yes \
+  --accept-new-host-key
+```
+
+Schooner generates a dedicated local Ed25519 identity for provider-created
+boxes. The guided flow separately offers public keys discovered beneath
+`~/.ssh` and keys already registered with the DigitalOcean account. Selected
+local public keys are registered only long enough for Droplet creation; private
+keys are never read or uploaded. Creation is correlated and recoverable, so
+retrying the same interrupted `box add` does not blindly create another
+Droplet. Supplying only the previous uncompleted name resumes the recorded
+selections:
+
+```bash
+schooner box add work-cloud
+schooner box add work-cloud --yes --accept-new-host-key
+```
+
+Local removal and infrastructure destruction remain deliberately separate:
+
+```bash
+schooner box remove work-cloud --yes   # local inventory only
+schooner box destroy work-cloud --yes  # verified permanent Droplet deletion
+```
+
+Disconnecting a profile removes its locally stored secret but retains safe
+metadata so referenced boxes can be reconnected without changing accounts:
+
+```bash
+schooner provider disconnect digitalocean/personal --yes
+```
+
+For local development, the active SQLite inventory can be destroyed without
+opening or migrating it first:
+
+```bash
+schooner db destroy --yes
+```
+
+This forgets all locally recorded boxes, profiles, and recovery operations. It
+does not delete DigitalOcean resources, revoke credentials, remove OS-keyring
+entries, delete migration backups, or remove Schooner's SSH identity.

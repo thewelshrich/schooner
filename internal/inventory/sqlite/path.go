@@ -21,3 +21,22 @@ func DefaultPath() (string, error) {
 	}
 	return filepath.Join(state, "schooner", "state.db"), nil
 }
+
+// Destroy removes the active SQLite database and its transient sidecar files.
+// It deliberately leaves provider resources, credential-store entries, SSH
+// identities, and recoverable migration backups untouched.
+func Destroy(path string) (bool, error) {
+	removed := false
+	for _, candidate := range []string{path, path + "-wal", path + "-shm", path + "-journal"} {
+		err := os.Remove(candidate)
+		if err == nil {
+			removed = true
+			continue
+		}
+		if os.IsNotExist(err) {
+			continue
+		}
+		return removed, fmt.Errorf("remove local inventory %s: %w", filepath.Base(candidate), err)
+	}
+	return removed, nil
+}

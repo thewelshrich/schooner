@@ -11,6 +11,8 @@ const DefaultProjectRoot = "~/schooner"
 type Step string
 
 const (
+	StepProvision     Step = "provision"
+	StepWaitSSH       Step = "wait_ssh"
 	StepResolve       Step = "resolve"
 	StepConnect       Step = "connect"
 	StepInspect       Step = "inspect"
@@ -39,6 +41,7 @@ type Progress func(Event)
 
 type Connection struct {
 	Destination      string
+	IdentityFile     string
 	AcceptNewHostKey bool
 	BatchMode        bool
 }
@@ -62,14 +65,19 @@ type Capabilities struct {
 }
 
 type Record struct {
-	ID             string
-	Name           string
-	Acquisition    string
-	SSHDestination string
-	RemoteIdentity string
-	ProjectRoot    string
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	ID                    string
+	Name                  string
+	Acquisition           string
+	SSHDestination        string
+	IdentityFile          string
+	RemoteIdentity        string
+	ProjectRoot           string
+	Provider              string
+	ProviderResourceID    string
+	ProviderCorrelationID string
+	CredentialProfile     string
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
 }
 
 type Observation struct {
@@ -88,12 +96,18 @@ type AddOperation struct {
 }
 
 type AddRequest struct {
-	Name             string
-	SSHDestination   string
-	ProjectRoot      string
-	AcceptNewHostKey bool
-	BatchMode        bool
-	Progress         Progress
+	Name                  string
+	SSHDestination        string
+	IdentityFile          string
+	ProjectRoot           string
+	Acquisition           string
+	Provider              string
+	ProviderResourceID    string
+	ProviderCorrelationID string
+	CredentialProfile     string
+	AcceptNewHostKey      bool
+	BatchMode             bool
+	Progress              Progress
 }
 
 type AddResult struct {

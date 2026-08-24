@@ -39,7 +39,7 @@ func (s *Service) Add(ctx context.Context, req AddRequest) (AddResult, error) {
 		return AddResult{}, err
 	}
 
-	conn := Connection{Destination: req.SSHDestination, AcceptNewHostKey: req.AcceptNewHostKey, BatchMode: req.BatchMode}
+	conn := Connection{Destination: req.SSHDestination, IdentityFile: req.IdentityFile, AcceptNewHostKey: req.AcceptNewHostKey, BatchMode: req.BatchMode}
 	op := AddOperation{Name: req.Name, SSHDestination: req.SSHDestination, ProjectRoot: req.ProjectRoot, UpdatedAt: s.now().UTC()}
 	if err := s.store.BeginAdd(ctx, op); err != nil {
 		return AddResult{}, err
@@ -137,7 +137,11 @@ func (s *Service) Add(ctx context.Context, req AddRequest) (AddResult, error) {
 	if err != nil {
 		return AddResult{}, err
 	}
-	record := Record{ID: recordID, Name: req.Name, Acquisition: "adopted", SSHDestination: req.SSHDestination, RemoteIdentity: identity, ProjectRoot: projectRoot, CreatedAt: now, UpdatedAt: now}
+	acquisition := req.Acquisition
+	if acquisition == "" {
+		acquisition = "adopted"
+	}
+	record := Record{ID: recordID, Name: req.Name, Acquisition: acquisition, SSHDestination: req.SSHDestination, IdentityFile: req.IdentityFile, RemoteIdentity: identity, ProjectRoot: projectRoot, Provider: req.Provider, ProviderResourceID: req.ProviderResourceID, ProviderCorrelationID: req.ProviderCorrelationID, CredentialProfile: req.CredentialProfile, CreatedAt: now, UpdatedAt: now}
 	observation := Observation{BoxID: record.ID, ObservedAt: now, Capabilities: capabilities}
 	if err := s.runStep(ctx, req.Progress, StepSave, "Save local inventory", func() error { return s.store.CompleteAdd(ctx, op, record, observation) }); err != nil {
 		return AddResult{}, err
@@ -154,7 +158,7 @@ func (s *Service) Status(ctx context.Context, req StatusRequest) (StatusResult, 
 	if err != nil {
 		return StatusResult{}, err
 	}
-	conn := Connection{Destination: record.SSHDestination, BatchMode: req.BatchMode}
+	conn := Connection{Destination: record.SSHDestination, IdentityFile: record.IdentityFile, BatchMode: req.BatchMode}
 	var capabilities Capabilities
 	err = s.runStep(ctx, req.Progress, StepConnect, "Check live box status", func() error {
 		var inspectErr error
@@ -207,6 +211,13 @@ func (s *Service) Remove(ctx context.Context, name string) (RemoveResult, error)
 }
 
 func (s *Service) List(ctx context.Context) ([]Record, error) { return s.store.List(ctx) }
+
+func (s *Service) Get(ctx context.Context, name string) (Record, error) {
+	if err := ValidateName(name); err != nil {
+		return Record{}, invalid(err)
+	}
+	return s.store.FindByName(ctx, name)
+}
 
 func (s *Service) runStep(ctx context.Context, progress Progress, step Step, message string, action func() error) error {
 	if progress != nil {

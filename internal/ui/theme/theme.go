@@ -48,6 +48,11 @@ func New(mode Mode, color bool) *Theme {
 	return t
 }
 
+// HasColor reports whether this theme may emit ANSI styling.
+func (t *Theme) HasColor() bool {
+	return t != nil && t.color
+}
+
 // Form returns the Huh form theme for this terminal appearance.
 func (t *Theme) Form() huh.Theme {
 	return huh.ThemeFunc(func(detectedDark bool) *huh.Styles {
@@ -184,11 +189,12 @@ func coloredForm(dark bool) *huh.Styles {
 	t.Focused.SelectSelector = t.Focused.SelectSelector.Foreground(p.primary)
 	t.Focused.NextIndicator = t.Focused.NextIndicator.Foreground(p.primary)
 	t.Focused.PrevIndicator = t.Focused.PrevIndicator.Foreground(p.primary)
-	t.Focused.Option = lipgloss.NewStyle().Foreground(p.text)
+	// Leave option text uncolored so catalog rows can keep split label/meta styling.
+	t.Focused.Option = lipgloss.NewStyle()
 	t.Focused.MultiSelectSelector = t.Focused.MultiSelectSelector.Foreground(p.primary)
-	t.Focused.SelectedOption = lipgloss.NewStyle().Foreground(p.success)
+	t.Focused.SelectedOption = lipgloss.NewStyle().Bold(true)
 	t.Focused.SelectedPrefix = lipgloss.NewStyle().Foreground(p.success).SetString("✓ ")
-	t.Focused.UnselectedOption = lipgloss.NewStyle().Foreground(p.text)
+	t.Focused.UnselectedOption = lipgloss.NewStyle()
 	t.Focused.UnselectedPrefix = lipgloss.NewStyle().Foreground(p.muted).SetString("• ")
 	t.Focused.FocusedButton = lipgloss.NewStyle().Padding(0, 2).Foreground(p.primaryForeground).Background(p.primary).Bold(true)
 	t.Focused.BlurredButton = lipgloss.NewStyle().Padding(0, 2).Foreground(p.muted)
@@ -240,7 +246,7 @@ func terminalForm() *huh.Styles {
 	t.Focused.PrevIndicator = t.Focused.PrevIndicator.Foreground(lipgloss.Color("6"))
 	t.Focused.Option = lipgloss.NewStyle()
 	t.Focused.MultiSelectSelector = t.Focused.MultiSelectSelector.Foreground(lipgloss.Color("6"))
-	t.Focused.SelectedOption = success
+	t.Focused.SelectedOption = lipgloss.NewStyle().Bold(true)
 	t.Focused.SelectedPrefix = success.SetString("✓ ")
 	t.Focused.UnselectedOption = lipgloss.NewStyle()
 	t.Focused.UnselectedPrefix = muted.SetString("• ")

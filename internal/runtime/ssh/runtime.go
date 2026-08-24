@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/thewelshrich/schooner/internal/box"
 )
@@ -23,11 +24,74 @@ var identityPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-
 var scripts embed.FS
 
 type Runtime struct {
-	Path   string
-	Stderr io.Writer
+	Path         string
+	Stderr       io.Writer
+	probe        func(context.Context, box.Connection) error
+	wait         func(context.Context, time.Duration) error
+	readyTimeout time.Duration
 }
 
 func New(path string, stderr io.Writer) *Runtime { return &Runtime{Path: path, Stderr: stderr} }
+
+// WaitReady waits for a newly provisioned machine to accept and authenticate
+// an SSH connection. Only transport-level failures are retried; host identity
+// and authentication failures remain immediate and fail closed.
+func (r *Runtime) WaitReady(ctx context.Context, connection box.Connection) error {
+	timeout := r.readyTimeout
+	if timeout <= 0 {
+		timeout = 3 * time.Minute
+	}
+	readyContext, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	delay := time.Second
+	var last error
+	for {
+		probe := r.probeConnection
+		if r.probe != nil {
+			probe = r.probe
+		}
+		if err := probe(readyContext, connection); err == nil {
+			return nil
+		} else if box.ErrorCode(err) != "connection_failed" {
+			return err
+		} else {
+			last = err
+		}
+		wait := waitContext
+		if r.wait != nil {
+			wait = r.wait
+		}
+		if err := wait(readyContext, delay); err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return box.NewError("connection_failed", "SSH did not become ready within 3 minutes; retry box add to resume this Droplet", last)
+		}
+		if delay < 10*time.Second {
+			delay *= 2
+			if delay > 10*time.Second {
+				delay = 10 * time.Second
+			}
+		}
+	}
+}
+
+func (r *Runtime) probeConnection(ctx context.Context, connection box.Connection) error {
+	path, err := r.executable()
+	if err != nil {
+		return err
+	}
+	args := r.options(connection)
+	args = append(args, "-o", "ConnectTimeout=5", connection.Destination, "true")
+	cmd := exec.CommandContext(ctx, path, args...)
+	cmd.Stdout = io.Discard
+	var stderr limitedBuffer
+	cmd.Stderr = &stderr
+	if err = cmd.Run(); err != nil {
+		return classify(err, stderr.String())
+	}
+	return nil
+}
 
 func (r *Runtime) Resolve(ctx context.Context, connection box.Connection) error {
 	path, err := r.executable()
@@ -168,6 +232,9 @@ func (r *Runtime) runJSON(ctx context.Context, connection box.Connection, progra
 
 func (r *Runtime) options(connection box.Connection) []string {
 	args := []string{"-o", "LogLevel=ERROR"}
+	if connection.IdentityFile != "" {
+		args = append(args, "-i", connection.IdentityFile, "-o", "IdentitiesOnly=yes")
+	}
 	if connection.BatchMode {
 		args = append(args, "-o", "BatchMode=yes")
 	}
@@ -212,6 +279,17 @@ func validateArgument(value string) error {
 }
 
 func shellQuote(value string) string { return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'" }
+
+func waitContext(ctx context.Context, duration time.Duration) error {
+	timer := time.NewTimer(duration)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
 
 type limitedBuffer struct{ data []byte }
 

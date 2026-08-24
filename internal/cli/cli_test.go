@@ -12,7 +12,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/thewelshrich/schooner/internal/acquisition"
+	"github.com/thewelshrich/schooner/internal/box"
 	"github.com/thewelshrich/schooner/internal/cli"
+	"github.com/thewelshrich/schooner/internal/inventory/sqlite"
 )
 
 func TestHelp(t *testing.T) {
@@ -311,6 +314,126 @@ func TestInvalidBoxNameIsUsageError(t *testing.T) {
 	}
 }
 
+func TestDigitalOceanAddValidatesAutomationInputsBeforeNetwork(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_STATE_HOME", filepath.Join(home, "state"))
+	t.Setenv("DIGITALOCEAN_TOKEN", "")
+	for _, tt := range []struct {
+		args    []string
+		message string
+	}{
+		{args: []string{"box", "add", "work", "--provider", "digitalocean", "--ssh", "work-host", "--yes"}, message: "mutually exclusive"},
+		{args: []string{"box", "add", "work", "--provider", "digitalocean", "--yes"}, message: "--region"},
+		{args: []string{"box", "add", "work", "--provider", "digitalocean", "--region", "fra1", "--size", "small", "--image", "ubuntu-24-04-x64", "--yes"}, message: "--accept-new-host-key"},
+		{args: []string{"provider", "connect", "digitalocean", "personal"}, message: "DIGITALOCEAN_TOKEN"},
+	} {
+		code, stdout, stderr := run(t.Context(), tt.args, testBuild(), nil)
+		if code != 2 || stdout != "" || !strings.Contains(stderr, tt.message) {
+			t.Fatalf("args=%v code=%d stdout=%q stderr=%q", tt.args, code, stdout, stderr)
+		}
+	}
+}
+
+func TestDigitalOceanAddResumesInterruptedByName(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_STATE_HOME", filepath.Join(home, "state"))
+	t.Setenv("DIGITALOCEAN_TOKEN", "")
+
+	path, err := sqlite.DefaultPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := sqlite.Open(t.Context(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	op := acquisition.ProvisionOperation{
+		Name:          "work",
+		CorrelationID: "correlation-1",
+		Profile:       "digitalocean/default",
+		Region:        "fra1",
+		Size:          "small",
+		Image:         "ubuntu-24-04-x64",
+		ProjectRoot:   box.DefaultProjectRoot,
+		Checkpoint:    "provider_request_pending",
+		UpdatedAt:     time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC),
+	}
+	if _, err = store.BeginProvision(t.Context(), op); err != nil {
+		t.Fatal(err)
+	}
+	if err = store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := run(t.Context(), []string{"box", "add", "work", "--yes"}, testBuild(), nil)
+	if code != 2 || stdout != "" || !strings.Contains(stderr, "--accept-new-host-key") {
+		t.Fatalf("resume without accept-new: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+
+	code, stdout, stderr = run(t.Context(), []string{"box", "add", "work", "--yes", "--accept-new-host-key"}, testBuild(), nil)
+	if code == 2 && strings.Contains(stderr, "--region") {
+		t.Fatalf("interrupted name should resume without requiring region/size/image: stderr=%q", stderr)
+	}
+	if code == 0 || stdout != "" {
+		t.Fatalf("expected credential failure after resume, code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if strings.Contains(stderr, "--region") || strings.Contains(stderr, "--ssh") {
+		t.Fatalf("interrupted name should not fall back to fresh add validation: stderr=%q", stderr)
+	}
+	if !strings.Contains(stderr, "digitalocean/default") && !strings.Contains(stderr, "DIGITALOCEAN_TOKEN") && !strings.Contains(stderr, "credential") {
+		t.Fatalf("expected resume to load stored profile, stderr=%q", stderr)
+	}
+}
+
+func TestDatabaseDestroyRemovesOnlyActiveDatabaseFiles(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	directory := filepath.Join(home, "Library", "Application Support", "Schooner")
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	database := filepath.Join(directory, "state.db")
+	for _, path := range []string{database, database + "-wal", database + "-shm"} {
+		if err := os.WriteFile(path, []byte("local state"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	backup := database + ".pre-v2-backup"
+	identity := filepath.Join(directory, "ssh", "id_ed25519")
+	if err := os.MkdirAll(filepath.Dir(identity), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{backup, identity} {
+		if err := os.WriteFile(path, []byte("preserve"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	code, stdout, stderr := run(t.Context(), []string{"db", "destroy", "--yes", "--output", "json"}, testBuild(), nil)
+	if code != 0 || stderr != "" || stdout != "{\"schema_version\":\"1\",\"destroyed\":true}\n" {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	for _, path := range []string{database, database + "-wal", database + "-shm"} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Errorf("active database file still exists: %s", path)
+		}
+	}
+	for _, path := range []string{backup, identity} {
+		if _, err := os.Stat(path); err != nil {
+			t.Errorf("preserved file %s: %v", path, err)
+		}
+	}
+}
+
+func TestDatabaseDestroyRequiresConfirmationWithoutPrompts(t *testing.T) {
+	code, stdout, stderr := run(t.Context(), []string{"db", "destroy"}, testBuild(), nil)
+	if code != 2 || stdout != "" || !strings.Contains(stderr, "--yes is required") {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+}
+
 func TestInteractiveAccessibleDeclineThroughRun(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	input := &slowReader{reader: strings.NewReader("1\nn\n")}
@@ -320,6 +443,15 @@ func TestInteractiveAccessibleDeclineThroughRun(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "Existing SSH") || !strings.Contains(stderr.String(), "Review") {
 		t.Fatalf("stderr = %q", stderr.String())
+	}
+	acquisitionAt := strings.Index(stderr.String(), "Acquisition")
+	detailsAt := strings.Index(stderr.String(), "Box details")
+	reviewAt := strings.Index(stderr.String(), "Review")
+	if acquisitionAt < 0 || detailsAt <= acquisitionAt || reviewAt <= detailsAt {
+		t.Fatalf("steps are not retained in sequential order: %q", stderr.String())
+	}
+	if strings.Contains(stderr.String(), "Choices so far") || strings.Contains(stderr.String(), "│ Acquisition") {
+		t.Fatalf("cumulative choice table should not appear: %q", stderr.String())
 	}
 	if !strings.Contains(stderr.String(), "schooner\n▁▂▄▆▆▄▂▁") {
 		t.Fatalf("interactive heading missing from stderr: %q", stderr.String())
@@ -339,6 +471,9 @@ func TestInteractiveAbortExits130(t *testing.T) {
 	code := cli.Run(ctx, []string{"box", "add"}, cli.Streams{In: reader, Out: &stdout, Err: &stderr, InIsTerminal: true, ErrIsTerminal: true}, testBuild())
 	if code != 130 {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if !strings.HasPrefix(stderr.String(), "\x1b[2J\x1b[H") {
+		t.Fatalf("box add did not clear the terminal before rendering: %q", stderr.String())
 	}
 	if strings.Count(stderr.String(), "\x1b[?25l") != strings.Count(stderr.String(), "\x1b[?25h") {
 		t.Fatalf("cursor was not restored after abort: %q", stderr.String())
