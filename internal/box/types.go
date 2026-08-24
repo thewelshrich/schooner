@@ -17,6 +17,7 @@ const (
 	StepConnect       Step = "connect"
 	StepInspect       Step = "inspect"
 	StepIdentity      Step = "identity"
+	StepRuntime       Step = "runtime"
 	StepPrerequisites Step = "prerequisites"
 	StepWorkspaceRoot Step = "workspace_root"
 	StepVerify        Step = "verify"
@@ -51,17 +52,34 @@ type Tool struct {
 	Version   string `json:"version,omitempty"`
 }
 
+// HostRuntime describes the bounded Schooner executable installed on a box.
+// Path is recorded locally so subsequent operations never depend on remote PATH.
+type HostRuntime struct {
+	Path            string   `json:"path"`
+	Version         string   `json:"version"`
+	ProtocolVersion string   `json:"protocol_version"`
+	Capabilities    []string `json:"capabilities"`
+}
+
+type HostInstallRequest struct {
+	Path             string
+	OS               string
+	Architecture     string
+	ExpectedIdentity string
+}
+
 type Capabilities struct {
-	OSID                string `json:"os_id"`
-	OSVersion           string `json:"os_version"`
-	Architecture        string `json:"architecture"`
-	Home                string `json:"home"`
-	RemoteIdentity      string `json:"remote_identity,omitempty"`
-	WorkspaceRoot       string `json:"workspace_root,omitempty"`
-	WorkspaceRootExists bool   `json:"workspace_root_exists"`
-	Git                 Tool   `json:"git"`
-	Tmux                Tool   `json:"tmux"`
-	PasswordlessSudo    bool   `json:"passwordless_sudo"`
+	OSID                string      `json:"os_id"`
+	OSVersion           string      `json:"os_version"`
+	Architecture        string      `json:"architecture"`
+	Home                string      `json:"home"`
+	RemoteIdentity      string      `json:"remote_identity,omitempty"`
+	WorkspaceRoot       string      `json:"workspace_root,omitempty"`
+	WorkspaceRootExists bool        `json:"workspace_root_exists"`
+	Git                 Tool        `json:"git"`
+	Tmux                Tool        `json:"tmux"`
+	PasswordlessSudo    bool        `json:"passwordless_sudo"`
+	Host                HostRuntime `json:"host_runtime"`
 }
 
 type Record struct {
@@ -71,6 +89,7 @@ type Record struct {
 	SSHDestination        string
 	IdentityFile          string
 	RemoteIdentity        string
+	RuntimePath           string
 	WorkspaceRoot         string
 	Provider              string
 	ProviderResourceID    string
@@ -163,6 +182,8 @@ type Runtime interface {
 	Resolve(context.Context, Connection) error
 	Inspect(context.Context, Connection, string) (Capabilities, error)
 	EnsureIdentity(context.Context, Connection, string) (string, error)
+	EnsureHost(context.Context, Connection, HostInstallRequest) (HostRuntime, error)
+	InspectHost(context.Context, Connection, HostRuntime, string, string) (Capabilities, error)
 	InstallTools(context.Context, Connection, []string) error
 	EnsureWorkspaceRoot(context.Context, Connection, string) (string, error)
 }
@@ -175,6 +196,7 @@ type Inventory interface {
 	BeginAdd(context.Context, AddOperation) error
 	CheckpointAdd(context.Context, AddOperation) error
 	CompleteAdd(context.Context, AddOperation, Record, Observation) error
+	UpdateRuntimePath(context.Context, string, string) error
 	SaveObservation(context.Context, Observation) error
 	LastObservation(context.Context, string) (Observation, error)
 	Remove(context.Context, string) (Record, error)

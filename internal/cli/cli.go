@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/thewelshrich/schooner/internal/acquisition"
+	"github.com/thewelshrich/schooner/internal/artifact"
 	"github.com/thewelshrich/schooner/internal/box"
 	"github.com/thewelshrich/schooner/internal/credentials"
 	invsqlite "github.com/thewelshrich/schooner/internal/inventory/sqlite"
@@ -46,6 +47,7 @@ type BuildInfo struct {
 }
 
 type globalOptions struct {
+	build         BuildInfo
 	output        string
 	noInput       bool
 	color         string
@@ -59,7 +61,7 @@ func Run(ctx context.Context, args []string, streams Streams, build BuildInfo) i
 	if err := ctx.Err(); err != nil {
 		return exitAbort
 	}
-	options := &globalOptions{}
+	options := &globalOptions{build: build}
 	root := newRootCommand(build, streams, options)
 	root.SetArgs(args)
 	root.SetIn(streams.In)
@@ -125,14 +127,16 @@ func newRootCommand(build BuildInfo, streams Streams, options *globalOptions) *c
 	root.PersistentFlags().StringVar(&options.theme, "theme", "auto", "terminal theme: auto, light, or dark")
 	root.PersistentFlags().BoolVar(&options.accessible, "accessible", false, "use screen-reader-friendly prompts and progress")
 	root.AddCommand(newVersionCommand(build, options))
+	root.AddCommand(newDoctorCommand(build, streams, options))
+	root.AddCommand(newHostCommand(build, streams))
 	root.AddCommand(newDatabaseCommand(streams, options))
 	root.AddCommand(newProviderCommand(streams, options))
 	root.AddCommand(newBoxCommand(streams, options))
 	return root
 }
 
-func openBoxService(ctx context.Context, streams Streams) (*box.Service, func(), error) {
-	services, closeServices, err := openApplication(ctx, streams)
+func openBoxService(ctx context.Context, streams Streams, build BuildInfo) (*box.Service, func(), error) {
+	services, closeServices, err := openApplication(ctx, streams, build)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -153,7 +157,7 @@ func (s sshIdentitySource) Ensure(ctx context.Context) (acquisition.Identity, er
 	return acquisition.Identity{PublicKey: identity.PublicKey, PrivateKey: identity.PrivateKey}, err
 }
 
-func openApplication(ctx context.Context, streams Streams) (*application, func(), error) {
+func openApplication(ctx context.Context, streams Streams, build BuildInfo) (*application, func(), error) {
 	path, err := invsqlite.DefaultPath()
 	if err != nil {
 		return nil, nil, err
@@ -162,7 +166,8 @@ func openApplication(ctx context.Context, streams Streams) (*application, func()
 	if err != nil {
 		return nil, nil, err
 	}
-	runtime := sshRuntime.New("", streams.Err)
+	artifacts := artifact.NewDeferredDefault()
+	runtime := sshRuntime.NewHost("", streams.Err, defaultString(build.Version, "dev"), artifacts)
 	boxes := box.New(runtime, store)
 	cloud := digitalOcean.New()
 	credentialManager := credentials.New(store, credentials.KeyringStore{}, cloud)
@@ -188,7 +193,7 @@ func (e abortError) Unwrap() error { return e.cause }
 type exitStatusError struct{ code int }
 
 func (e exitStatusError) Error() string {
-	return fmt.Sprintf("SSH connection exited with status %d", e.code)
+	return fmt.Sprintf("command exited with status %d", e.code)
 }
 
 type reportedExecutionError struct{ cause error }

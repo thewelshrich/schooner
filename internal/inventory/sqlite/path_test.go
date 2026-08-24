@@ -3,8 +3,24 @@ package sqlite
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
+
+func TestDefaultPathPreservesDarwinLocationBeforeXDG(t *testing.T) {
+	home := t.TempDir()
+	state := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_STATE_HOME", state)
+	got, err := DefaultPath()
+	want := filepath.Join(state, "schooner", "state.db")
+	if runtime.GOOS == "darwin" {
+		want = filepath.Join(home, "Library", "Application Support", "Schooner", "state.db")
+	}
+	if err != nil || got != want {
+		t.Fatalf("DefaultPath() = %q, %v; want %q", got, err, want)
+	}
+}
 
 func TestDestroyIsIdempotentAndPreservesBackup(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.db")

@@ -13,7 +13,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
+
+	"github.com/thewelshrich/schooner/internal/semver"
 )
 
 const (
@@ -76,8 +79,17 @@ type Resolver struct {
 	client      *http.Client
 }
 
+// DeferredResolver postpones cache discovery until a host artifact is
+// actually requested. Most CLI commands never need the artifact subsystem.
+type DeferredResolver struct {
+	config   Config
+	once     sync.Once
+	resolver *Resolver
+	err      error
+}
+
 func New(config Config) (*Resolver, error) {
-	if config.CacheDir == "" {
+	if config.CacheDir == "" && config.OverrideDir == "" {
 		root, err := os.UserCacheDir()
 		if err != nil {
 			return nil, cacheError("resolve the local cache directory", err)
@@ -104,6 +116,24 @@ func New(config Config) (*Resolver, error) {
 
 func NewDefault() (*Resolver, error) {
 	return New(Config{OverrideDir: os.Getenv("SCHOONER_ARTIFACT_DIR")})
+}
+
+func NewDeferred(config Config) *DeferredResolver {
+	return &DeferredResolver{config: config}
+}
+
+func NewDeferredDefault() *DeferredResolver {
+	return NewDeferred(Config{OverrideDir: os.Getenv("SCHOONER_ARTIFACT_DIR")})
+}
+
+func (r *DeferredResolver) Resolve(ctx context.Context, version string, platform Platform) (Result, error) {
+	r.once.Do(func() {
+		r.resolver, r.err = New(r.config)
+	})
+	if r.err != nil {
+		return Result{}, r.err
+	}
+	return r.resolver.Resolve(ctx, version, platform)
 }
 
 func Name(version string, platform Platform) (string, error) {
@@ -156,67 +186,7 @@ func fileName(version string, platform Platform) string {
 }
 
 func validVersion(version string) bool {
-	if len(version) < 2 || version[0] != 'v' {
-		return false
-	}
-	value := version[1:]
-	coreAndPre, build, hasBuild := strings.Cut(value, "+")
-	if hasBuild && !validIdentifiers(build, false) {
-		return false
-	}
-	if strings.Contains(build, "+") {
-		return false
-	}
-	core, prerelease, hasPrerelease := strings.Cut(coreAndPre, "-")
-	if hasPrerelease && !validIdentifiers(prerelease, true) {
-		return false
-	}
-	parts := strings.Split(core, ".")
-	if len(parts) != 3 {
-		return false
-	}
-	for _, part := range parts {
-		if !validNumeric(part) {
-			return false
-		}
-	}
-	return true
-}
-
-func validIdentifiers(value string, rejectLeadingZero bool) bool {
-	if value == "" {
-		return false
-	}
-	for _, identifier := range strings.Split(value, ".") {
-		if identifier == "" {
-			return false
-		}
-		numeric := true
-		for _, char := range identifier {
-			if (char < '0' || char > '9') && (char < 'A' || char > 'Z') && (char < 'a' || char > 'z') && char != '-' {
-				return false
-			}
-			if char < '0' || char > '9' {
-				numeric = false
-			}
-		}
-		if rejectLeadingZero && numeric && len(identifier) > 1 && identifier[0] == '0' {
-			return false
-		}
-	}
-	return true
-}
-
-func validNumeric(value string) bool {
-	if value == "" || (len(value) > 1 && value[0] == '0') {
-		return false
-	}
-	for _, char := range value {
-		if char < '0' || char > '9' {
-			return false
-		}
-	}
-	return true
+	return semver.Valid(version)
 }
 
 func resolveDirectory(directory, version string, platform Platform, name string) (Result, error) {

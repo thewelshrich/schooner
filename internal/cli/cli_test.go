@@ -3,8 +3,10 @@ package cli_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -268,8 +270,22 @@ func TestBoxLifecycleJSONThroughRun(t *testing.T) {
 	if err := os.WriteFile(sshPath, []byte(fakeSSH), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	artifactDir := filepath.Join(home, "artifacts")
+	if err := os.MkdirAll(artifactDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	artifactName := "schooner_v0.1.0-test_linux_amd64"
+	artifactContents := []byte("verified test artifact")
+	if err := os.WriteFile(filepath.Join(artifactDir, artifactName), artifactContents, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	digest := fmt.Sprintf("%x", sha256.Sum256(artifactContents))
+	if err := os.WriteFile(filepath.Join(artifactDir, "SHA256SUMS"), []byte(digest+"  "+artifactName+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_STATE_HOME", filepath.Join(home, "state"))
+	t.Setenv("SCHOONER_ARTIFACT_DIR", artifactDir)
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	code, stdout, stderr := run(t.Context(), []string{"box", "add", "work", "--ssh", "work-host", "--yes", "--accept-new-host-key", "--output", "json"}, testBuild(), nil)
@@ -753,6 +769,22 @@ type failingWriter struct {
 const fakeSSH = `#!/bin/sh
 case " $* " in
   *" -G "*) exit 0 ;;
+esac
+state="$HOME/fake-host-installed"
+hello='{"schema_version":"1","protocol_version":"1","schooner_version":"v0.1.0-test","commit":"abc1234","box_identity":"11111111-1111-4111-8111-111111111111","os":"linux","architecture":"amd64","capabilities":["host.doctor.v1","host.hello.v1","host.inspect.v1"]}'
+inspection='{"schema_version":"1","protocol_version":"1","os_id":"ubuntu","os_version":"24.04","architecture":"amd64","home":"/home/alice","box_identity":"11111111-1111-4111-8111-111111111111","workspace_root":"/home/alice/schooner","workspace_root_exists":true,"git":{"available":true,"version":"git version 2.43.0"},"tmux":{"available":true,"version":"tmux 3.4"},"passwordless_sudo":true}'
+case " $* " in
+  *"host hello"*)
+    command=; for argument do command=$argument; done
+    runtime_path=$(printf %s "${command##* }" | base64 -d)
+    case "$runtime_path" in *.stage-*) printf '%s\n' "$hello"; exit 0 ;; esac
+    if [ -f "$state" ]; then printf '%s\n' "$hello"; exit 0; fi
+    exit 127 ;;
+  *"host inspect"*) dd bs=4096 >/dev/null 2>&1; printf '%s\n' "$inspection"; exit 0 ;;
+  *"flock -x 9"*) : > "$state"; exit 0 ;;
+  *"cat >&3"*) dd bs=4096 >/dev/null 2>&1; exit 0 ;;
+  *"printf \"%s\\n\" missing"*) printf '%s\n' missing; exit 0 ;;
+  *"rm -f --"*) exit 0 ;;
 esac
 program=$(dd bs=4096 2>/dev/null)
 case "$program" in

@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"sort"
 	"time"
+
+	hostprotocol "github.com/thewelshrich/schooner/internal/runtime"
 )
 
 type Service struct {
@@ -87,6 +89,24 @@ func (s *Service) Add(ctx context.Context, req AddRequest) (AddResult, error) {
 		return AddResult{}, err
 	}
 
+	runtimePath, err := hostprotocol.InstallPath(capabilities.Home)
+	if err != nil {
+		return AddResult{}, NewError("unsupported", err.Error(), err)
+	}
+	var installedRuntime HostRuntime
+	if err = s.runStep(ctx, req.Progress, StepRuntime, "Install or verify the Schooner host runtime", func() error {
+		var runtimeErr error
+		installedRuntime, runtimeErr = s.runtime.EnsureHost(ctx, conn, HostInstallRequest{
+			Path:             runtimePath,
+			OS:               "linux",
+			Architecture:     capabilities.Architecture,
+			ExpectedIdentity: identity,
+		})
+		return runtimeErr
+	}); err != nil {
+		return AddResult{}, err
+	}
+
 	missing := missingTools(capabilities)
 	if err := s.runStep(ctx, req.Progress, StepPrerequisites, "Install or verify Git and tmux", func() error {
 		if len(missing) == 0 {
@@ -111,7 +131,7 @@ func (s *Service) Add(ctx context.Context, req AddRequest) (AddResult, error) {
 
 	if err := s.runStep(ctx, req.Progress, StepVerify, "Verify box readiness", func() error {
 		var err error
-		capabilities, err = s.runtime.Inspect(ctx, conn, workspaceRoot)
+		capabilities, err = s.runtime.InspectHost(ctx, conn, installedRuntime, workspaceRoot, identity)
 		if err != nil {
 			return err
 		}
@@ -141,12 +161,12 @@ func (s *Service) Add(ctx context.Context, req AddRequest) (AddResult, error) {
 	if acquisition == "" {
 		acquisition = "adopted"
 	}
-	record := Record{ID: recordID, Name: req.Name, Acquisition: acquisition, SSHDestination: req.SSHDestination, IdentityFile: req.IdentityFile, RemoteIdentity: identity, WorkspaceRoot: workspaceRoot, Provider: req.Provider, ProviderResourceID: req.ProviderResourceID, ProviderCorrelationID: req.ProviderCorrelationID, CredentialProfile: req.CredentialProfile, ProviderRegion: req.ProviderRegion, CreatedAt: now, UpdatedAt: now}
+	record := Record{ID: recordID, Name: req.Name, Acquisition: acquisition, SSHDestination: req.SSHDestination, IdentityFile: req.IdentityFile, RemoteIdentity: identity, RuntimePath: runtimePath, WorkspaceRoot: workspaceRoot, Provider: req.Provider, ProviderResourceID: req.ProviderResourceID, ProviderCorrelationID: req.ProviderCorrelationID, CredentialProfile: req.CredentialProfile, ProviderRegion: req.ProviderRegion, CreatedAt: now, UpdatedAt: now}
 	observation := Observation{BoxID: record.ID, ObservedAt: now, Capabilities: capabilities}
 	if err := s.runStep(ctx, req.Progress, StepSave, "Save local inventory", func() error { return s.store.CompleteAdd(ctx, op, record, observation) }); err != nil {
 		return AddResult{}, err
 	}
-	verified := []string{"git", "tmux"}
+	verified := []string{"git", "schooner", "tmux"}
 	return AddResult{Box: record, Capabilities: capabilities, Installed: missing, Verified: verified}, nil
 }
 
@@ -162,8 +182,47 @@ func (s *Service) Status(ctx context.Context, req StatusRequest) (StatusResult, 
 	var capabilities Capabilities
 	err = s.runStep(ctx, req.Progress, StepConnect, "Check live box status", func() error {
 		var inspectErr error
-		capabilities, inspectErr = s.runtime.Inspect(ctx, conn, record.WorkspaceRoot)
-		return inspectErr
+		if record.RuntimePath == "" {
+			inspectErr = NewError("host_runtime_missing", "the box does not have a recorded host runtime path", nil)
+		} else {
+			capabilities, inspectErr = s.runtime.InspectHost(ctx, conn, HostRuntime{Path: record.RuntimePath}, record.WorkspaceRoot, record.RemoteIdentity)
+		}
+		if !runtimeRepairable(inspectErr) {
+			return inspectErr
+		}
+
+		probe, repairErr := s.runtime.Inspect(ctx, conn, record.WorkspaceRoot)
+		if repairErr != nil {
+			return repairErr
+		}
+		if repairErr = certify(probe); repairErr != nil {
+			return repairErr
+		}
+		if probe.RemoteIdentity != record.RemoteIdentity {
+			return &Error{Code: "conflict", Message: "the connected machine does not match the recorded box identity"}
+		}
+		runtimePath := record.RuntimePath
+		if runtimePath == "" || ErrorCode(inspectErr) == "host_runtime_missing" {
+			runtimePath, repairErr = hostprotocol.InstallPath(probe.Home)
+			if repairErr != nil {
+				return NewError("unsupported", repairErr.Error(), repairErr)
+			}
+		}
+		installed, repairErr := s.runtime.EnsureHost(ctx, conn, HostInstallRequest{Path: runtimePath, OS: "linux", Architecture: probe.Architecture, ExpectedIdentity: record.RemoteIdentity})
+		if repairErr != nil {
+			return repairErr
+		}
+		capabilities, repairErr = s.runtime.InspectHost(ctx, conn, installed, record.WorkspaceRoot, record.RemoteIdentity)
+		if repairErr != nil {
+			return repairErr
+		}
+		if record.RuntimePath != runtimePath {
+			if repairErr = s.store.UpdateRuntimePath(ctx, record.ID, runtimePath); repairErr != nil {
+				return repairErr
+			}
+			record.RuntimePath = runtimePath
+		}
+		return nil
 	})
 	if err != nil {
 		if last, lastErr := s.store.LastObservation(ctx, record.ID); lastErr == nil {
@@ -297,6 +356,14 @@ func missingTools(c Capabilities) []string {
 	}
 	sort.Strings(result)
 	return result
+}
+
+func runtimeRepairable(err error) bool {
+	if err == nil {
+		return false
+	}
+	code := ErrorCode(err)
+	return code == "host_runtime_missing" || code == "host_runtime_incompatible"
 }
 
 func invalid(err error) error { return &Error{Code: "invalid_input", Message: err.Error(), Cause: err} }

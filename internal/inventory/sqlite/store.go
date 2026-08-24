@@ -204,7 +204,7 @@ func (s *Store) CompleteAdd(ctx context.Context, op box.AddOperation, record box
 	} else {
 		region = ""
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO boxes(id,name,acquisition,ssh_destination,identity_file,remote_identity,workspace_root,provider,provider_resource_id,provider_correlation_id,credential_profile,provider_region,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, record.ID, record.Name, record.Acquisition, record.SSHDestination, record.IdentityFile, record.RemoteIdentity, record.WorkspaceRoot, providerID, resourceID, correlationID, profile, region, formatTime(record.CreatedAt), formatTime(record.UpdatedAt))
+	_, err = tx.ExecContext(ctx, `INSERT INTO boxes(id,name,acquisition,ssh_destination,identity_file,remote_identity,runtime_path,workspace_root,provider,provider_resource_id,provider_correlation_id,credential_profile,provider_region,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, record.ID, record.Name, record.Acquisition, record.SSHDestination, record.IdentityFile, record.RemoteIdentity, record.RuntimePath, record.WorkspaceRoot, providerID, resourceID, correlationID, profile, region, formatTime(record.CreatedAt), formatTime(record.UpdatedAt))
 	if err == nil {
 		err = saveObservation(ctx, tx, observation)
 	}
@@ -221,17 +221,36 @@ func (s *Store) SaveObservation(ctx context.Context, observation box.Observation
 	return saveObservation(ctx, s.db, observation)
 }
 
+func (s *Store) UpdateRuntimePath(ctx context.Context, boxID, runtimePath string) error {
+	result, err := s.db.ExecContext(ctx, `UPDATE boxes SET runtime_path=? WHERE id=?`, runtimePath, boxID)
+	if err != nil {
+		return fmt.Errorf("update host runtime path: %w", err)
+	}
+	updated, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("confirm host runtime path update: %w", err)
+	}
+	if updated == 0 {
+		return box.NotFound(boxID)
+	}
+	return nil
+}
+
 func (s *Store) LastObservation(ctx context.Context, boxID string) (box.Observation, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT observed_at,os_id,os_version,architecture,home,remote_identity,workspace_root,workspace_root_exists,git_available,git_version,tmux_available,tmux_version,passwordless_sudo FROM observations WHERE box_id=?`, boxID)
+	row := s.db.QueryRowContext(ctx, `SELECT observed_at,os_id,os_version,architecture,home,remote_identity,workspace_root,workspace_root_exists,git_available,git_version,tmux_available,tmux_version,passwordless_sudo,host_runtime_path,host_runtime_version,host_protocol_version,host_capabilities_json FROM observations WHERE box_id=?`, boxID)
 	var result box.Observation
 	var observed string
+	var hostCapabilities string
 	result.BoxID = boxID
-	err := row.Scan(&observed, &result.Capabilities.OSID, &result.Capabilities.OSVersion, &result.Capabilities.Architecture, &result.Capabilities.Home, &result.Capabilities.RemoteIdentity, &result.Capabilities.WorkspaceRoot, &result.Capabilities.WorkspaceRootExists, &result.Capabilities.Git.Available, &result.Capabilities.Git.Version, &result.Capabilities.Tmux.Available, &result.Capabilities.Tmux.Version, &result.Capabilities.PasswordlessSudo)
+	err := row.Scan(&observed, &result.Capabilities.OSID, &result.Capabilities.OSVersion, &result.Capabilities.Architecture, &result.Capabilities.Home, &result.Capabilities.RemoteIdentity, &result.Capabilities.WorkspaceRoot, &result.Capabilities.WorkspaceRootExists, &result.Capabilities.Git.Available, &result.Capabilities.Git.Version, &result.Capabilities.Tmux.Available, &result.Capabilities.Tmux.Version, &result.Capabilities.PasswordlessSudo, &result.Capabilities.Host.Path, &result.Capabilities.Host.Version, &result.Capabilities.Host.ProtocolVersion, &hostCapabilities)
 	if errors.Is(err, sql.ErrNoRows) {
 		return box.Observation{}, box.NotFound(boxID)
 	}
 	if err != nil {
 		return box.Observation{}, err
+	}
+	if err = json.Unmarshal([]byte(hostCapabilities), &result.Capabilities.Host.Capabilities); err != nil {
+		return box.Observation{}, fmt.Errorf("decode cached host capabilities: %w", err)
 	}
 	result.ObservedAt, err = time.Parse(time.RFC3339Nano, observed)
 	return result, err
@@ -259,14 +278,14 @@ func (s *Store) Remove(ctx context.Context, name string) (box.Record, error) {
 	return record, nil
 }
 
-const selectRecord = `SELECT id,name,acquisition,ssh_destination,identity_file,remote_identity,workspace_root,COALESCE(provider,''),COALESCE(provider_resource_id,''),COALESCE(provider_correlation_id,''),COALESCE(credential_profile,''),COALESCE(provider_region,''),created_at,updated_at FROM boxes`
+const selectRecord = `SELECT id,name,acquisition,ssh_destination,identity_file,remote_identity,runtime_path,workspace_root,COALESCE(provider,''),COALESCE(provider_resource_id,''),COALESCE(provider_correlation_id,''),COALESCE(credential_profile,''),COALESCE(provider_region,''),created_at,updated_at FROM boxes`
 
 type scanner interface{ Scan(...any) error }
 
 func scanRecord(row scanner, key string) (box.Record, error) {
 	var result box.Record
 	var created, updated string
-	err := row.Scan(&result.ID, &result.Name, &result.Acquisition, &result.SSHDestination, &result.IdentityFile, &result.RemoteIdentity, &result.WorkspaceRoot, &result.Provider, &result.ProviderResourceID, &result.ProviderCorrelationID, &result.CredentialProfile, &result.ProviderRegion, &created, &updated)
+	err := row.Scan(&result.ID, &result.Name, &result.Acquisition, &result.SSHDestination, &result.IdentityFile, &result.RemoteIdentity, &result.RuntimePath, &result.WorkspaceRoot, &result.Provider, &result.ProviderResourceID, &result.ProviderCorrelationID, &result.CredentialProfile, &result.ProviderRegion, &created, &updated)
 	if errors.Is(err, sql.ErrNoRows) {
 		return box.Record{}, box.NotFound(key)
 	}
@@ -286,8 +305,14 @@ type executor interface {
 
 func saveObservation(ctx context.Context, db executor, o box.Observation) error {
 	c := o.Capabilities
-	_, err := db.ExecContext(ctx, `INSERT INTO observations(box_id,observed_at,os_id,os_version,architecture,home,remote_identity,workspace_root,workspace_root_exists,git_available,git_version,tmux_available,tmux_version,passwordless_sudo)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(box_id) DO UPDATE SET observed_at=excluded.observed_at,os_id=excluded.os_id,os_version=excluded.os_version,architecture=excluded.architecture,home=excluded.home,remote_identity=excluded.remote_identity,workspace_root=excluded.workspace_root,workspace_root_exists=excluded.workspace_root_exists,git_available=excluded.git_available,git_version=excluded.git_version,tmux_available=excluded.tmux_available,tmux_version=excluded.tmux_version,passwordless_sudo=excluded.passwordless_sudo`, o.BoxID, formatTime(o.ObservedAt), c.OSID, c.OSVersion, c.Architecture, c.Home, c.RemoteIdentity, c.WorkspaceRoot, c.WorkspaceRootExists, c.Git.Available, c.Git.Version, c.Tmux.Available, c.Tmux.Version, c.PasswordlessSudo)
+	hostCapabilities := append([]string(nil), c.Host.Capabilities...)
+	sort.Strings(hostCapabilities)
+	encodedCapabilities, err := json.Marshal(hostCapabilities)
+	if err != nil {
+		return fmt.Errorf("encode host capabilities: %w", err)
+	}
+	_, err = db.ExecContext(ctx, `INSERT INTO observations(box_id,observed_at,os_id,os_version,architecture,home,remote_identity,workspace_root,workspace_root_exists,git_available,git_version,tmux_available,tmux_version,passwordless_sudo,host_runtime_path,host_runtime_version,host_protocol_version,host_capabilities_json)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(box_id) DO UPDATE SET observed_at=excluded.observed_at,os_id=excluded.os_id,os_version=excluded.os_version,architecture=excluded.architecture,home=excluded.home,remote_identity=excluded.remote_identity,workspace_root=excluded.workspace_root,workspace_root_exists=excluded.workspace_root_exists,git_available=excluded.git_available,git_version=excluded.git_version,tmux_available=excluded.tmux_available,tmux_version=excluded.tmux_version,passwordless_sudo=excluded.passwordless_sudo,host_runtime_path=excluded.host_runtime_path,host_runtime_version=excluded.host_runtime_version,host_protocol_version=excluded.host_protocol_version,host_capabilities_json=excluded.host_capabilities_json`, o.BoxID, formatTime(o.ObservedAt), c.OSID, c.OSVersion, c.Architecture, c.Home, c.RemoteIdentity, c.WorkspaceRoot, c.WorkspaceRootExists, c.Git.Available, c.Git.Version, c.Tmux.Available, c.Tmux.Version, c.PasswordlessSudo, c.Host.Path, c.Host.Version, c.Host.ProtocolVersion, string(encodedCapabilities))
 	return err
 }
 

@@ -46,7 +46,7 @@ func newBoxAddCommand(streams Streams, global *globalOptions) *cobra.Command {
 			}
 			interactive := interactionAllowed(streams, global)
 			if name != "" && providerID == "" && !cmd.Flags().Changed("ssh") {
-				if op, resumeErr := interruptedDigitalOceanAdd(cmd.Context(), streams, name); resumeErr == nil {
+				if op, resumeErr := interruptedDigitalOceanAdd(cmd.Context(), streams, global.build, name); resumeErr == nil {
 					if interactive {
 						clearBoxAddScreen(streams, global)
 					}
@@ -134,7 +134,7 @@ func newBoxAddCommand(streams Streams, global *globalOptions) *cobra.Command {
 			} else if !yes {
 				return usageError{cause: fmt.Errorf("--yes is required when prompts are unavailable")}
 			}
-			service, closeService, err := openBoxService(cmd.Context(), streams)
+			service, closeService, err := openBoxService(cmd.Context(), streams, global.build)
 			if err != nil {
 				return executionError{cause: err}
 			}
@@ -180,8 +180,8 @@ type digitalOceanAddOptions struct {
 	Resume                                                                                  bool
 }
 
-func interruptedDigitalOceanAdd(ctx context.Context, streams Streams, name string) (acquisition.ProvisionOperation, error) {
-	services, closeServices, err := openApplication(ctx, streams)
+func interruptedDigitalOceanAdd(ctx context.Context, streams Streams, build BuildInfo, name string) (acquisition.ProvisionOperation, error) {
+	services, closeServices, err := openApplication(ctx, streams, build)
 	if err != nil {
 		return acquisition.ProvisionOperation{}, err
 	}
@@ -221,7 +221,7 @@ func runDigitalOceanAdd(cmd *cobra.Command, streams Streams, global *globalOptio
 	if err := box.ValidateWorkspaceRoot(options.WorkspaceRoot); err != nil {
 		return usageError{cause: err}
 	}
-	services, closeServices, err := openApplication(cmd.Context(), streams)
+	services, closeServices, err := openApplication(cmd.Context(), streams, global.build)
 	if err != nil {
 		return executionError{cause: err}
 	}
@@ -513,7 +513,7 @@ func newBoxListCommand(streams Streams, global *globalOptions) *cobra.Command {
 		Long:  "Show locally known boxes without probing them. Reachability and last observed time come from the latest successful observation; use box status for a live check.",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			service, closeService, err := openBoxService(cmd.Context(), streams)
+			service, closeService, err := openBoxService(cmd.Context(), streams, global.build)
 			if err != nil {
 				return executionError{cause: err}
 			}
@@ -531,7 +531,7 @@ func newBoxStatusCommand(streams Streams, global *globalOptions) *cobra.Command 
 	return &cobra.Command{
 		Use: "status [name]", Short: "Show live box status", Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			service, closeService, err := openBoxService(cmd.Context(), streams)
+			service, closeService, err := openBoxService(cmd.Context(), streams, global.build)
 			if err != nil {
 				return executionError{cause: err}
 			}
@@ -594,7 +594,7 @@ func newBoxSSHCommand(streams Streams, global *globalOptions) *cobra.Command {
 				return usageError{cause: fmt.Errorf("box ssh requires an interactive terminal")}
 			}
 
-			services, closeServices, err := openApplication(cmd.Context(), streams)
+			services, closeServices, err := openApplication(cmd.Context(), streams, global.build)
 			if err != nil {
 				return executionError{cause: err}
 			}
@@ -662,7 +662,7 @@ func newBoxRemoveCommand(streams Streams, global *globalOptions) *cobra.Command 
 	cmd := &cobra.Command{
 		Use: "remove [name]", Short: "Forget a box without changing its machine", Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			service, closeService, err := openBoxService(cmd.Context(), streams)
+			service, closeService, err := openBoxService(cmd.Context(), streams, global.build)
 			if err != nil {
 				return executionError{cause: err}
 			}
@@ -737,7 +737,7 @@ func newBoxDestroyCommand(streams Streams, global *globalOptions) *cobra.Command
 	var yes bool
 	cmd := &cobra.Command{Use: "destroy [name]", Short: "Permanently destroy provider infrastructure and remove its box", Args: cobra.MaximumNArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		interactive := interactionAllowed(streams, global)
-		services, closeServices, err := openApplication(cmd.Context(), streams)
+		services, closeServices, err := openApplication(cmd.Context(), streams, global.build)
 		if err != nil {
 			return executionError{cause: err}
 		}
@@ -842,6 +842,7 @@ type boxDocument struct {
 	Acquisition    string            `json:"acquisition"`
 	SSHDestination string            `json:"ssh_destination"`
 	RemoteIdentity string            `json:"remote_identity"`
+	RuntimePath    string            `json:"runtime_path"`
 	WorkspaceRoot  string            `json:"workspace_root"`
 	Provider       *providerDocument `json:"provider,omitempty"`
 }
@@ -856,22 +857,23 @@ type capabilitiesDocument struct {
 		ID      string `json:"id"`
 		Version string `json:"version"`
 	} `json:"os"`
-	Architecture        string   `json:"architecture"`
-	WorkspaceRoot       string   `json:"workspace_root"`
-	WorkspaceRootExists bool     `json:"workspace_root_exists"`
-	Git                 box.Tool `json:"git"`
-	Tmux                box.Tool `json:"tmux"`
+	Architecture        string          `json:"architecture"`
+	WorkspaceRoot       string          `json:"workspace_root"`
+	WorkspaceRootExists bool            `json:"workspace_root_exists"`
+	Git                 box.Tool        `json:"git"`
+	Tmux                box.Tool        `json:"tmux"`
+	HostRuntime         box.HostRuntime `json:"host_runtime"`
 }
 
 func documentBox(record box.Record) boxDocument {
-	doc := boxDocument{ID: record.ID, Name: record.Name, Acquisition: record.Acquisition, SSHDestination: record.SSHDestination, RemoteIdentity: record.RemoteIdentity, WorkspaceRoot: record.WorkspaceRoot}
+	doc := boxDocument{ID: record.ID, Name: record.Name, Acquisition: record.Acquisition, SSHDestination: record.SSHDestination, RemoteIdentity: record.RemoteIdentity, RuntimePath: record.RuntimePath, WorkspaceRoot: record.WorkspaceRoot}
 	if record.Provider != "" {
 		doc.Provider = &providerDocument{ID: record.Provider, ResourceID: record.ProviderResourceID, CredentialProfile: record.CredentialProfile, Region: record.ProviderRegion}
 	}
 	return doc
 }
 func documentCapabilities(value box.Capabilities) capabilitiesDocument {
-	result := capabilitiesDocument{Architecture: value.Architecture, WorkspaceRoot: value.WorkspaceRoot, WorkspaceRootExists: value.WorkspaceRootExists, Git: value.Git, Tmux: value.Tmux}
+	result := capabilitiesDocument{Architecture: value.Architecture, WorkspaceRoot: value.WorkspaceRoot, WorkspaceRootExists: value.WorkspaceRootExists, Git: value.Git, Tmux: value.Tmux, HostRuntime: value.Host}
 	result.OS.ID, result.OS.Version = value.OSID, value.OSVersion
 	return result
 }
@@ -1016,6 +1018,7 @@ func writeAddResult(w io.Writer, output string, result box.AddResult, theme *uit
 		summaryRow{Label: "SSH", Value: result.Box.SSHDestination},
 		summaryRow{Label: "Workspace root", Value: result.Box.WorkspaceRoot},
 		summaryRow{Label: "OS", Value: formatOS(result.Capabilities)},
+		summaryRow{Label: "Schooner", Value: formatHostRuntime(result.Capabilities.Host)},
 		summaryRow{Label: "Git", Value: result.Capabilities.Git.Version},
 		summaryRow{Label: "tmux", Value: result.Capabilities.Tmux.Version},
 	)
@@ -1070,6 +1073,13 @@ func formatOS(capabilities box.Capabilities) string {
 	return fmt.Sprintf("%s %s (%s)", name, capabilities.OSVersion, capabilities.Architecture)
 }
 
+func formatHostRuntime(runtime box.HostRuntime) string {
+	if runtime.Version == "" {
+		return "unknown"
+	}
+	return fmt.Sprintf("%s (protocol %s)", runtime.Version, runtime.ProtocolVersion)
+}
+
 func writeDestroyResult(w interface{ Write([]byte) (int, error) }, output string, result acquisition.DestroyResult) error {
 	if output == "json" {
 		return json.NewEncoder(w).Encode(struct {
@@ -1105,7 +1115,7 @@ func writeStatusResult(w interface{ Write([]byte) (int, error) }, output string,
 	if !c.WorkspaceRootExists {
 		workspaceRoot += " (missing)"
 	}
-	_, err := fmt.Fprintf(w, "%s is reachable\nSSH: %s\nObserved: %s\nUbuntu: %s (%s)\nWorkspace root: %s\nGit: %s\ntmux: %s\n", result.Box.Name, result.Box.SSHDestination, result.Observation.ObservedAt.Format(time.RFC3339), c.OSVersion, c.Architecture, workspaceRoot, c.Git.Version, c.Tmux.Version)
+	_, err := fmt.Fprintf(w, "%s is reachable\nSSH: %s\nObserved: %s\nUbuntu: %s (%s)\nWorkspace root: %s\nSchooner: %s\nRuntime path: %s\nCapabilities: %s\nGit: %s\ntmux: %s\n", result.Box.Name, result.Box.SSHDestination, result.Observation.ObservedAt.Format(time.RFC3339), c.OSVersion, c.Architecture, workspaceRoot, formatHostRuntime(c.Host), c.Host.Path, strings.Join(c.Host.Capabilities, ", "), c.Git.Version, c.Tmux.Version)
 	return err
 }
 

@@ -159,6 +159,33 @@ func TestResolveUsesVerifiedDevelopmentOverride(t *testing.T) {
 	}
 }
 
+func TestOverrideAndDeferredResolverDoNotRequireCacheHome(t *testing.T) {
+	t.Setenv("HOME", "")
+	t.Setenv("XDG_CACHE_HOME", "")
+	directory := t.TempDir()
+	name := "schooner_dev_linux_amd64"
+	contents := []byte("development binary")
+	if err := os.WriteFile(filepath.Join(directory, name), contents, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(directory, manifestName), []byte(fmt.Sprintf("%s  %s\n", checksum(contents), name)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	resolver, err := New(Config{OverrideDir: directory})
+	if err != nil {
+		t.Fatalf("override resolver required a cache home: %v", err)
+	}
+	if _, err = resolver.Resolve(t.Context(), "dev", Platform{OS: "linux", Arch: "amd64"}); err != nil {
+		t.Fatal(err)
+	}
+
+	deferred := NewDeferred(Config{})
+	if _, err = deferred.Resolve(t.Context(), "v1.2.3", Platform{OS: "linux", Arch: "amd64"}); ErrorCode(err) != CodeCacheFailure {
+		t.Fatalf("deferred cache error = %v", err)
+	}
+}
+
 func TestResolveRequiresOverrideForDevelopmentBuild(t *testing.T) {
 	resolver, err := New(Config{CacheDir: t.TempDir()})
 	if err != nil {
