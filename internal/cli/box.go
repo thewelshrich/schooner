@@ -30,7 +30,7 @@ func newBoxCommand(streams Streams, global *globalOptions) *cobra.Command {
 }
 
 func newBoxAddCommand(streams Streams, global *globalOptions) *cobra.Command {
-	var destination, workspaceRoot, providerID, profileName, region, size, image, vpc string
+	var destination, worktreeRoot, providerID, profileName, region, size, image, vpc string
 	var accountKeys []string
 	var yes, acceptNew, noAccountKeys, backups, ipv6 bool
 	ipv6 = true
@@ -84,11 +84,11 @@ func newBoxAddCommand(streams Streams, global *globalOptions) *cobra.Command {
 				return usageError{cause: fmt.Errorf("--provider and --ssh are mutually exclusive")}
 			}
 			if providerID == string(providerdomain.DigitalOcean) {
-				return runDigitalOceanAdd(cmd, streams, global, digitalOceanAddOptions{Name: name, WorkspaceRoot: workspaceRoot, Profile: profileName, Region: region, Size: size, Image: image, VPC: vpc, AccountKeys: accountKeys, NoAccountKeys: noAccountKeys, Backups: backups, IPv6: ipv6, Yes: yes, AcceptNew: acceptNew, Interactive: interactive, IntroShown: introShown, AcquisitionShown: acquisitionShown})
+				return runDigitalOceanAdd(cmd, streams, global, digitalOceanAddOptions{Name: name, WorktreeRoot: worktreeRoot, Profile: profileName, Region: region, Size: size, Image: image, VPC: vpc, AccountKeys: accountKeys, NoAccountKeys: noAccountKeys, Backups: backups, IPv6: ipv6, Yes: yes, AcceptNew: acceptNew, Interactive: interactive, IntroShown: introShown, AcquisitionShown: acquisitionShown})
 			}
 			nameSet := name != ""
 			sshSet := cmd.Flags().Changed("ssh")
-			rootSet := cmd.Flags().Changed("workspace-root")
+			rootSet := cmd.Flags().Changed("worktree-root")
 			if (!nameSet || !sshSet) && !interactive {
 				return usageError{cause: fmt.Errorf("name and --ssh are required when prompts are unavailable")}
 			}
@@ -103,12 +103,12 @@ func newBoxAddCommand(streams Streams, global *globalOptions) *cobra.Command {
 				}
 			}
 			if rootSet {
-				if err := box.ValidateWorkspaceRoot(workspaceRoot); err != nil {
+				if err := box.ValidateWorktreeRoot(worktreeRoot); err != nil {
 					return usageError{cause: err}
 				}
 			}
 			if !rootSet {
-				workspaceRoot = box.DefaultWorkspaceRoot
+				worktreeRoot = box.DefaultWorktreeRoot
 			}
 			if interactive && (!yes || !nameSet || !sshSet) {
 				if !introShown {
@@ -119,7 +119,7 @@ func newBoxAddCommand(streams Streams, global *globalOptions) *cobra.Command {
 				if !acquisitionShown {
 					prompts.ShowAcquisition(promptOptions(streams, global), "ssh")
 				}
-				draft, confirmed, err := prompts.Add(cmd.Context(), promptOptions(streams, global), prompts.AddDraft{Name: name, SSHDestination: destination, WorkspaceRoot: workspaceRoot}, nameSet, sshSet, rootSet, yes)
+				draft, confirmed, err := prompts.Add(cmd.Context(), promptOptions(streams, global), prompts.AddDraft{Name: name, SSHDestination: destination, WorktreeRoot: worktreeRoot}, nameSet, sshSet, rootSet, yes)
 				if errors.Is(err, prompts.ErrAborted) {
 					return abortError{cause: err}
 				}
@@ -130,7 +130,7 @@ func newBoxAddCommand(streams Streams, global *globalOptions) *cobra.Command {
 					_, _ = fmt.Fprintln(streams.Out, "Cancelled. No changes made.")
 					return nil
 				}
-				name, destination, workspaceRoot = draft.Name, draft.SSHDestination, draft.WorkspaceRoot
+				name, destination, worktreeRoot = draft.Name, draft.SSHDestination, draft.WorktreeRoot
 			} else if !yes {
 				return usageError{cause: fmt.Errorf("--yes is required when prompts are unavailable")}
 			}
@@ -145,7 +145,7 @@ func newBoxAddCommand(streams Streams, global *globalOptions) *cobra.Command {
 				defer renderer.Close()
 				progress = renderer.Event
 			}
-			result, err := service.Add(cmd.Context(), box.AddRequest{Name: name, SSHDestination: destination, WorkspaceRoot: workspaceRoot, AcceptNewHostKey: acceptNew, BatchMode: !interactive, Progress: progress})
+			result, err := service.Add(cmd.Context(), box.AddRequest{Name: name, SSHDestination: destination, WorktreeRoot: worktreeRoot, AcceptNewHostKey: acceptNew, BatchMode: !interactive, Progress: progress})
 			if err != nil {
 				return executionError{cause: err}
 			}
@@ -166,14 +166,14 @@ func newBoxAddCommand(streams Streams, global *globalOptions) *cobra.Command {
 	cmd.Flags().BoolVar(&noAccountKeys, "no-account-ssh-keys", false, "do not add existing DigitalOcean account SSH keys")
 	cmd.Flags().BoolVar(&backups, "backups", false, "enable DigitalOcean automatic backups")
 	cmd.Flags().BoolVar(&ipv6, "ipv6", true, "enable DigitalOcean IPv6")
-	cmd.Flags().StringVar(&workspaceRoot, "workspace-root", "", "remote workspace root")
+	cmd.Flags().StringVar(&worktreeRoot, "worktree-root", "", "remote worktree root")
 	cmd.Flags().BoolVar(&yes, "yes", false, "confirm the remote setup")
 	cmd.Flags().BoolVar(&acceptNew, "accept-new-host-key", false, "allow OpenSSH to trust a new host key (never a changed key)")
 	return cmd
 }
 
 type digitalOceanAddOptions struct {
-	Name, WorkspaceRoot, Profile, Region, Size, Image, VPC                                  string
+	Name, WorktreeRoot, Profile, Region, Size, Image, VPC                                   string
 	AccountKeys                                                                             []string
 	LocalPublicKeys                                                                         []providerdomain.PublicKey
 	NoAccountKeys, Backups, IPv6, Yes, AcceptNew, Interactive, IntroShown, AcquisitionShown bool
@@ -191,7 +191,7 @@ func interruptedDigitalOceanAdd(ctx context.Context, streams Streams, build Buil
 
 func digitalOceanOptionsFromInterrupted(op acquisition.ProvisionOperation, base digitalOceanAddOptions) digitalOceanAddOptions {
 	base.Name = op.Name
-	base.WorkspaceRoot = op.WorkspaceRoot
+	base.WorktreeRoot = op.WorktreeRoot
 	base.Profile = string(op.Profile)
 	base.Region = op.Region
 	base.Size = op.Size
@@ -209,16 +209,16 @@ func runDigitalOceanAdd(cmd *cobra.Command, streams Streams, global *globalOptio
 	if options.NoAccountKeys && len(options.AccountKeys) > 0 {
 		return usageError{cause: fmt.Errorf("--no-account-ssh-keys and --account-ssh-key are mutually exclusive")}
 	}
-	nameSet, rootSet := options.Name != "", cmd.Flags().Changed("workspace-root")
-	if options.WorkspaceRoot == "" {
-		options.WorkspaceRoot = box.DefaultWorkspaceRoot
+	nameSet, rootSet := options.Name != "", cmd.Flags().Changed("worktree-root")
+	if options.WorktreeRoot == "" {
+		options.WorktreeRoot = box.DefaultWorktreeRoot
 	}
 	if options.Name != "" {
 		if err := box.ValidateName(options.Name); err != nil {
 			return usageError{cause: err}
 		}
 	}
-	if err := box.ValidateWorkspaceRoot(options.WorkspaceRoot); err != nil {
+	if err := box.ValidateWorktreeRoot(options.WorktreeRoot); err != nil {
 		return usageError{cause: err}
 	}
 	services, closeServices, err := openApplication(cmd.Context(), streams, global.build)
@@ -257,14 +257,14 @@ func runDigitalOceanAdd(cmd *cobra.Command, streams Streams, global *globalOptio
 		if !options.AcquisitionShown {
 			prompts.ShowAcquisition(promptOptions(streams, global), "digitalocean")
 		}
-		draft, err := prompts.ProvisionBasics(cmd.Context(), promptOptions(streams, global), prompts.ProvisionDraft{Name: options.Name, WorkspaceRoot: options.WorkspaceRoot}, nameSet, rootSet)
+		draft, err := prompts.ProvisionBasics(cmd.Context(), promptOptions(streams, global), prompts.ProvisionDraft{Name: options.Name, WorktreeRoot: options.WorktreeRoot}, nameSet, rootSet)
 		if errors.Is(err, prompts.ErrAborted) {
 			return abortError{cause: err}
 		}
 		if err != nil {
 			return executionError{cause: err}
 		}
-		options.Name, options.WorkspaceRoot = draft.Name, draft.WorkspaceRoot
+		options.Name, options.WorktreeRoot = draft.Name, draft.WorktreeRoot
 	}
 	ref, err := profileRef(options.Profile)
 	if err != nil {
@@ -376,7 +376,7 @@ func runDigitalOceanAdd(cmd *cobra.Command, streams Streams, global *globalOptio
 			options.AccountKeys = append(options.AccountKeys, key.ID)
 		}
 	}
-	draft := prompts.ProvisionDraft{Name: options.Name, WorkspaceRoot: options.WorkspaceRoot, Region: options.Region, Size: options.Size, Image: options.Image, NetworkID: normalizeVPC(options.VPC), AccessKeyIDs: options.AccountKeys, LocalPublicKeys: selectedLocalKeys, AutomaticBackups: options.Backups, IPv6: options.IPv6}
+	draft := prompts.ProvisionDraft{Name: options.Name, WorktreeRoot: options.WorktreeRoot, Region: options.Region, Size: options.Size, Image: options.Image, NetworkID: normalizeVPC(options.VPC), AccessKeyIDs: options.AccountKeys, LocalPublicKeys: selectedLocalKeys, AutomaticBackups: options.Backups, IPv6: options.IPv6}
 	if options.Interactive {
 		draft, err = prompts.DigitalOceanProvision(cmd.Context(), promptOptions(streams, global), draft, catalog, localKeys, cmd.Flags().Changed("region"), cmd.Flags().Changed("size"), cmd.Flags().Changed("image"), cmd.Flags().Changed("vpc"), keysSet)
 		if errors.Is(err, prompts.ErrAborted) {
@@ -405,7 +405,7 @@ func runDigitalOceanAdd(cmd *cobra.Command, streams Streams, global *globalOptio
 		defer renderer.Close()
 		progress = renderer.Event
 	}
-	result, err := services.acquisition.Provision(cmd.Context(), acquisition.ProvisionRequest{Name: draft.Name, Profile: ref, Region: draft.Region, Size: draft.Size, Image: draft.Image, NetworkID: draft.NetworkID, AccessKeyIDs: draft.AccessKeyIDs, LocalPublicKeys: draft.LocalPublicKeys, AutomaticBackups: draft.AutomaticBackups, IPv6: draft.IPv6, WorkspaceRoot: draft.WorkspaceRoot, AcceptNewHostKey: options.AcceptNew || options.Interactive, BatchMode: true, Progress: progress})
+	result, err := services.acquisition.Provision(cmd.Context(), acquisition.ProvisionRequest{Name: draft.Name, Profile: ref, Region: draft.Region, Size: draft.Size, Image: draft.Image, NetworkID: draft.NetworkID, AccessKeyIDs: draft.AccessKeyIDs, LocalPublicKeys: draft.LocalPublicKeys, AutomaticBackups: draft.AutomaticBackups, IPv6: draft.IPv6, WorktreeRoot: draft.WorktreeRoot, AcceptNewHostKey: options.AcceptNew || options.Interactive, BatchMode: true, Progress: progress})
 	if err != nil {
 		return executionError{cause: err}
 	}
@@ -433,7 +433,7 @@ func resumeDigitalOceanAdd(cmd *cobra.Command, streams Streams, global *globalOp
 	}
 	draft := prompts.ProvisionDraft{
 		Name:             options.Name,
-		WorkspaceRoot:    options.WorkspaceRoot,
+		WorktreeRoot:     options.WorktreeRoot,
 		Region:           options.Region,
 		Size:             options.Size,
 		Image:            options.Image,
@@ -480,7 +480,7 @@ func resumeDigitalOceanAdd(cmd *cobra.Command, streams Streams, global *globalOp
 		defer renderer.Close()
 		progress = renderer.Event
 	}
-	result, err := services.acquisition.Provision(cmd.Context(), acquisition.ProvisionRequest{Name: draft.Name, Profile: ref, Region: draft.Region, Size: draft.Size, Image: draft.Image, NetworkID: draft.NetworkID, AccessKeyIDs: draft.AccessKeyIDs, LocalPublicKeys: draft.LocalPublicKeys, AutomaticBackups: draft.AutomaticBackups, IPv6: draft.IPv6, WorkspaceRoot: draft.WorkspaceRoot, AcceptNewHostKey: options.AcceptNew || options.Interactive, BatchMode: true, Progress: progress})
+	result, err := services.acquisition.Provision(cmd.Context(), acquisition.ProvisionRequest{Name: draft.Name, Profile: ref, Region: draft.Region, Size: draft.Size, Image: draft.Image, NetworkID: draft.NetworkID, AccessKeyIDs: draft.AccessKeyIDs, LocalPublicKeys: draft.LocalPublicKeys, AutomaticBackups: draft.AutomaticBackups, IPv6: draft.IPv6, WorktreeRoot: draft.WorktreeRoot, AcceptNewHostKey: options.AcceptNew || options.Interactive, BatchMode: true, Progress: progress})
 	if err != nil {
 		return executionError{cause: err}
 	}
@@ -903,7 +903,7 @@ type boxDocument struct {
 	SSHDestination string            `json:"ssh_destination"`
 	RemoteIdentity string            `json:"remote_identity"`
 	RuntimePath    string            `json:"runtime_path"`
-	WorkspaceRoot  string            `json:"workspace_root"`
+	WorktreeRoot   string            `json:"worktree_root"`
 	Provider       *providerDocument `json:"provider,omitempty"`
 }
 type providerDocument struct {
@@ -917,12 +917,12 @@ type capabilitiesDocument struct {
 		ID      string `json:"id"`
 		Version string `json:"version"`
 	} `json:"os"`
-	Architecture        string              `json:"architecture"`
-	WorkspaceRoot       string              `json:"workspace_root"`
-	WorkspaceRootExists bool                `json:"workspace_root_exists"`
-	Git                 toolDocument        `json:"git"`
-	Tmux                toolDocument        `json:"tmux"`
-	HostRuntime         hostRuntimeDocument `json:"host_runtime"`
+	Architecture       string              `json:"architecture"`
+	WorktreeRoot       string              `json:"worktree_root"`
+	WorktreeRootExists bool                `json:"worktree_root_exists"`
+	Git                toolDocument        `json:"git"`
+	Tmux               toolDocument        `json:"tmux"`
+	HostRuntime        hostRuntimeDocument `json:"host_runtime"`
 }
 
 type toolDocument struct {
@@ -945,14 +945,14 @@ type hostMaintenanceDocument struct {
 }
 
 func documentBox(record box.Record) boxDocument {
-	doc := boxDocument{ID: record.ID, Name: record.Name, Acquisition: record.Acquisition, SSHDestination: record.SSHDestination, RemoteIdentity: record.RemoteIdentity, RuntimePath: record.RuntimePath, WorkspaceRoot: record.WorkspaceRoot}
+	doc := boxDocument{ID: record.ID, Name: record.Name, Acquisition: record.Acquisition, SSHDestination: record.SSHDestination, RemoteIdentity: record.RemoteIdentity, RuntimePath: record.RuntimePath, WorktreeRoot: record.WorktreeRoot}
 	if record.Provider != "" {
 		doc.Provider = &providerDocument{ID: record.Provider, ResourceID: record.ProviderResourceID, CredentialProfile: record.CredentialProfile, Region: record.ProviderRegion}
 	}
 	return doc
 }
 func documentCapabilities(value box.Capabilities) capabilitiesDocument {
-	result := capabilitiesDocument{Architecture: value.Architecture, WorkspaceRoot: value.WorkspaceRoot, WorkspaceRootExists: value.WorkspaceRootExists, Git: toolDocument{Available: value.Git.Available, Version: value.Git.Version}, Tmux: toolDocument{Available: value.Tmux.Available, Version: value.Tmux.Version}, HostRuntime: documentHostRuntime(value.Host)}
+	result := capabilitiesDocument{Architecture: value.Architecture, WorktreeRoot: value.WorktreeRoot, WorktreeRootExists: value.WorktreeRootExists, Git: toolDocument{Available: value.Git.Available, Version: value.Git.Version}, Tmux: toolDocument{Available: value.Tmux.Available, Version: value.Tmux.Version}, HostRuntime: documentHostRuntime(value.Host)}
 	result.OS.ID, result.OS.Version = value.OSID, value.OSVersion
 	return result
 }
@@ -1125,7 +1125,7 @@ func writeAddResult(w io.Writer, output string, result box.AddResult, theme *uit
 	}
 	rows = append(rows,
 		summaryRow{Label: "SSH", Value: result.Box.SSHDestination},
-		summaryRow{Label: "Workspace root", Value: result.Box.WorkspaceRoot},
+		summaryRow{Label: "Worktree root", Value: result.Box.WorktreeRoot},
 		summaryRow{Label: "OS", Value: formatOS(result.Capabilities)},
 		summaryRow{Label: "Schooner", Value: formatHostRuntime(result.Capabilities.Host)},
 		summaryRow{Label: "Git", Value: result.Capabilities.Git.Version},
@@ -1153,7 +1153,7 @@ func writeSetupResult(w io.Writer, output string, result box.SetupResult, theme 
 	}
 	rows := []summaryRow{
 		{Label: "SSH", Value: result.Box.SSHDestination},
-		{Label: "Workspace root", Value: result.Box.WorkspaceRoot},
+		{Label: "Worktree root", Value: result.Box.WorktreeRoot},
 		{Label: "OS", Value: formatOS(result.Capabilities)},
 		{Label: "Schooner", Value: formatHostRuntime(result.Capabilities.Host)},
 		{Label: "Host action", Value: string(result.Host.Action)},
@@ -1271,11 +1271,11 @@ func writeStatusResult(w interface{ Write([]byte) (int, error) }, output string,
 		return json.NewEncoder(w).Encode(doc)
 	}
 	c := result.Observation.Capabilities
-	workspaceRoot := c.WorkspaceRoot
-	if !c.WorkspaceRootExists {
-		workspaceRoot += " (missing)"
+	worktreeRoot := c.WorktreeRoot
+	if !c.WorktreeRootExists {
+		worktreeRoot += " (missing)"
 	}
-	_, err := fmt.Fprintf(w, "%s is reachable\nSSH: %s\nObserved: %s\nUbuntu: %s (%s)\nWorkspace root: %s\nSchooner: %s\nRuntime path: %s\nCapabilities: %s\nGit: %s\ntmux: %s\n", result.Box.Name, result.Box.SSHDestination, result.Observation.ObservedAt.Format(time.RFC3339), c.OSVersion, c.Architecture, workspaceRoot, formatHostRuntime(c.Host), c.Host.Path, strings.Join(c.Host.Capabilities, ", "), c.Git.Version, c.Tmux.Version)
+	_, err := fmt.Fprintf(w, "%s is reachable\nSSH: %s\nObserved: %s\nUbuntu: %s (%s)\nWorktree root: %s\nSchooner: %s\nRuntime path: %s\nCapabilities: %s\nGit: %s\ntmux: %s\n", result.Box.Name, result.Box.SSHDestination, result.Observation.ObservedAt.Format(time.RFC3339), c.OSVersion, c.Architecture, worktreeRoot, formatHostRuntime(c.Host), c.Host.Path, strings.Join(c.Host.Capabilities, ", "), c.Git.Version, c.Tmux.Version)
 	return err
 }
 

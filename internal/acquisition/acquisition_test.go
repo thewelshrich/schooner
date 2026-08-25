@@ -11,7 +11,7 @@ import (
 
 func TestProvisionConvergesOnBoxPreparationAndDestroy(t *testing.T) {
 	store := newTestStore()
-	runtime := &testRuntime{capabilities: box.Capabilities{OSID: "ubuntu", OSVersion: "24.04", Architecture: "amd64", Home: "/root", WorkspaceRoot: "/root/schooner", WorkspaceRootExists: true, Git: box.Tool{Available: true}, Tmux: box.Tool{Available: true}}}
+	runtime := &testRuntime{capabilities: box.Capabilities{OSID: "ubuntu", OSVersion: "24.04", Architecture: "amd64", Home: "/root", WorktreeRoot: "/root/schooner", WorktreeRootExists: true, Git: box.Tool{Available: true}, Tmux: box.Tool{Available: true}}}
 	boxService := box.New(runtime, store)
 	cloud := &testCloud{}
 	waiter := &testWaiter{}
@@ -19,7 +19,7 @@ func TestProvisionConvergesOnBoxPreparationAndDestroy(t *testing.T) {
 	service.newID = func() (string, error) { return "correlation-1", nil }
 	localKey := provider.PublicKey{Name: "id_ed25519", Fingerprint: "SHA256:local", PublicKey: "ssh-ed25519 CCCC"}
 	var events []box.Event
-	result, err := service.Provision(t.Context(), ProvisionRequest{Name: "work", Region: "fra1", Size: "small", Image: "ubuntu-24-04-x64", LocalPublicKeys: []provider.PublicKey{localKey}, IPv6: true, WorkspaceRoot: box.DefaultWorkspaceRoot, AcceptNewHostKey: true, Progress: func(event box.Event) { events = append(events, event) }})
+	result, err := service.Provision(t.Context(), ProvisionRequest{Name: "work", Region: "fra1", Size: "small", Image: "ubuntu-24-04-x64", LocalPublicKeys: []provider.PublicKey{localKey}, IPv6: true, WorktreeRoot: box.DefaultWorktreeRoot, AcceptNewHostKey: true, Progress: func(event box.Event) { events = append(events, event) }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +59,7 @@ func TestInterruptedProvisionReturnsRecordedSelections(t *testing.T) {
 	if _, err := service.InterruptedProvision(t.Context(), "work"); !box.IsNotFound(err) {
 		t.Fatalf("err = %v", err)
 	}
-	op := ProvisionOperation{Name: "work", CorrelationID: "correlation-1", Profile: "digitalocean/default", Region: "fra1", Size: "small", Image: "ubuntu-24-04-x64", WorkspaceRoot: box.DefaultWorkspaceRoot, Checkpoint: "provider_request_pending"}
+	op := ProvisionOperation{Name: "work", CorrelationID: "correlation-1", Profile: "digitalocean/default", Region: "fra1", Size: "small", Image: "ubuntu-24-04-x64", WorktreeRoot: box.DefaultWorktreeRoot, Checkpoint: "provider_request_pending"}
 	if _, err := store.BeginProvision(t.Context(), op); err != nil {
 		t.Fatal(err)
 	}
@@ -71,15 +71,15 @@ func TestInterruptedProvisionReturnsRecordedSelections(t *testing.T) {
 
 func TestProvisionResumesExistingCorrelationWithoutDuplicateSelections(t *testing.T) {
 	store := newTestStore()
-	runtime := &testRuntime{capabilities: box.Capabilities{OSID: "ubuntu", OSVersion: "24.04", Architecture: "amd64", Home: "/root", WorkspaceRoot: "/root/schooner", WorkspaceRootExists: true, Git: box.Tool{Available: true}, Tmux: box.Tool{Available: true}}}
+	runtime := &testRuntime{capabilities: box.Capabilities{OSID: "ubuntu", OSVersion: "24.04", Architecture: "amd64", Home: "/root", WorktreeRoot: "/root/schooner", WorktreeRootExists: true, Git: box.Tool{Available: true}, Tmux: box.Tool{Available: true}}}
 	cloud := &testCloud{}
 	service := New(box.New(runtime, store), store, testResolver{}, cloud, testIdentity{}, &testWaiter{})
 	service.newID = func() (string, error) { return "correlation-new", nil }
-	existing := ProvisionOperation{Name: "work", CorrelationID: "correlation-1", Profile: "digitalocean/default", Region: "fra1", Size: "small", Image: "ubuntu-24-04-x64", WorkspaceRoot: box.DefaultWorkspaceRoot, ResourceID: "42", Checkpoint: "resource_identified", IdentityFile: "/state/id_ed25519"}
+	existing := ProvisionOperation{Name: "work", CorrelationID: "correlation-1", Profile: "digitalocean/default", Region: "fra1", Size: "small", Image: "ubuntu-24-04-x64", WorktreeRoot: box.DefaultWorktreeRoot, ResourceID: "42", Checkpoint: "resource_identified", IdentityFile: "/state/id_ed25519"}
 	if _, err := store.BeginProvision(t.Context(), existing); err != nil {
 		t.Fatal(err)
 	}
-	result, err := service.Provision(t.Context(), ProvisionRequest{Name: "work", Region: "fra1", Size: "small", Image: "ubuntu-24-04-x64", WorkspaceRoot: box.DefaultWorkspaceRoot, AcceptNewHostKey: true})
+	result, err := service.Provision(t.Context(), ProvisionRequest{Name: "work", Region: "fra1", Size: "small", Image: "ubuntu-24-04-x64", WorktreeRoot: box.DefaultWorktreeRoot, AcceptNewHostKey: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +157,7 @@ func (f *testRuntime) EnsureIdentity(_ context.Context, connection box.Connectio
 }
 func (f *testRuntime) EnsureHost(_ context.Context, connection box.Connection, request box.HostInstallRequest) (box.HostInstallResult, error) {
 	f.connection = connection
-	f.capabilities.Host = box.HostRuntime{Path: request.Path, Version: "v1.2.3", ProtocolVersion: "1", Capabilities: []string{"host.doctor.v1", "host.hello.v1", "host.inspect.v1"}}
+	f.capabilities.Host = box.HostRuntime{Path: request.Path, Version: "v1.2.3", ProtocolVersion: "1", Capabilities: []string{"host.configure.v1", "host.doctor.v1", "host.hello.v1", "host.inspect.v2", "worktree.inspect.v1", "worktree.list.v1"}}
 	return box.HostInstallResult{Runtime: f.capabilities.Host, TargetVersion: "v1.2.3", Action: box.HostInstalled}, nil
 }
 func (f *testRuntime) InspectHost(_ context.Context, connection box.Connection, installed box.HostRuntime, _ string, _ string) (box.Capabilities, error) {
@@ -166,9 +166,13 @@ func (f *testRuntime) InspectHost(_ context.Context, connection box.Connection, 
 	return f.capabilities, nil
 }
 func (*testRuntime) InstallTools(context.Context, box.Connection, []string) error { return nil }
-func (f *testRuntime) EnsureWorkspaceRoot(_ context.Context, connection box.Connection, _ string) (string, error) {
+func (f *testRuntime) EnsureWorktreeRoot(_ context.Context, connection box.Connection, _ string) (string, error) {
 	f.connection = connection
 	return "/root/schooner", nil
+}
+
+func (f *testRuntime) ConfigureHost(context.Context, box.Connection, box.HostRuntime, string, string) error {
+	return nil
 }
 
 type testStore struct {

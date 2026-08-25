@@ -15,7 +15,7 @@ A Schooner Box is a supported Linux machine that the user controls and can
 access independently through OpenSSH. A Box may be adopted through an existing
 SSH destination or provisioned through a supported provider. Acquisition only
 determines which infrastructure lifecycle operations are available. Every Box
-otherwise converges on the same preparation, Project, Workspace, Session, and
+otherwise converges on the same preparation, Repository, Worktree, Session, and
 recovery model.
 
 Schooner is installed on the local machine and on supported remote Boxes. The
@@ -26,23 +26,25 @@ processes.
 
 Schooner does not replace SSH, Git, tmux, terminals, editors, coding agents,
 source hosts, or cloud providers. It has no accounts or Schooner-operated
-backend. Live Workspace and Session state is authoritative on the Box. Local
+backend. Live Worktree and Session state is authoritative on the Box. Local
 inventory supports access, optional Local Links, synchronization, and recovery
 without becoming a hosted control plane.
 
 ## Product principles
 
-1. **Workspaces are remote-first.** A Workspace is a first-class remote
-   checkout. It does not depend on a local checkout, Local Link, or Agent.
+1. **Git state is remote-first.** A Worktree may exist without a local checkout,
+   Local Link, or Agent, while Git's Repository/Worktree model remains
+   authoritative.
 2. **Existing machines are first-class.** Adoption through OpenSSH is the
    foundational path, not an import or compatibility route.
 3. **Acquisition is separate from operation.** Provider adapters obtain or
-   destroy infrastructure; they do not define Projects, Workspaces, Sessions,
+   destroy infrastructure; they do not define Repositories, Worktrees, Sessions,
    or Box behavior.
 4. **Independent access is preserved.** Schooner uses the user's system
    OpenSSH client and never makes ordinary SSH access depend on Schooner.
-5. **Remote authority stays remote.** Projects, Workspaces, Sessions,
-   installed tools, and capabilities are observed from the Box.
+5. **Remote authority stays remote.** Git and the filesystem own Repositories
+   and Worktrees; tmux and live processes own Session state. Installed tools and
+   capabilities are observed from the Box.
 6. **Synchronization is explicit.** `push`, `pull`, and `sync` are one-shot,
    Git-aware operations. Schooner never runs a continuous file synchronizer or
    silently chooses a winner when states conflict.
@@ -71,7 +73,7 @@ It includes:
 - installing and invoking the same Schooner application on supported Ubuntu
   Boxes;
 - installing or verifying Git and tmux;
-- discovering and creating Projects and remote-only Workspaces;
+- discovering and creating Repositories and remote-only Worktrees;
 - creating a Local Link through an explicit `push` or `pull`;
 - explicit, one-shot, Git-aware `push`, `pull`, and `sync` operations;
 - discovering, starting, and resuming tmux-backed Sessions;
@@ -144,7 +146,7 @@ After this path is complete:
 
 1. DigitalOcean proves provider acquisition and destruction.
 2. Hetzner proves that the provider seam is deep rather than provider-shaped.
-3. Project and remote-only Workspace creation prove the remote-first model.
+3. Repository and remote-only Worktree creation prove the remote-first model.
 4. Session and optional Agent resumption prove tmux-backed persistence.
 5. Local Links, Sync Points, and explicit push/pull/sync prove safe directional
    synchronization without making local state authoritative.

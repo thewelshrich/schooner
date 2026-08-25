@@ -59,7 +59,7 @@ Do not build a Schooner command framework on top of Cobra.
    cleanup.
 
 Provider adapters acquire infrastructure. They do not install tools, discover
-Projects or Workspaces, manage Sessions, or define Box behavior.
+Repositories or Worktrees, manage Sessions, or define Box behavior.
 
 ## Adding remote behavior
 
@@ -87,19 +87,20 @@ separate architectural decision demonstrating behavior that must continue
 without a connected CLI. tmux owns persistence for user-visible Sessions and
 optional coding Agents.
 
-## Adding Project, Workspace, or synchronization behavior
+## Adding Repository, Worktree, or synchronization behavior
 
-1. Preserve Project as repository identity plus its shared Git object store and
-   Workspace as one concrete remote checkout or worktree.
-2. Make remote-only Workspaces complete product objects; never require a local
-   checkout or Local Link.
-3. Store Schooner metadata outside repositories; do not require a repository
-   configuration file.
-4. Keep `push` local-to-remote, `pull` remote-to-local, and `sync` a comparison
+1. Treat Git's canonical common directory as Repository identity and Git's
+   registered checkout paths as Worktree identity.
+2. Never add Repository/Worktree IDs, aliases, inventory records, managed flags,
+   or a parallel lifecycle.
+3. Use fixed Git operations and revalidate live state before acting on a path.
+4. Store only Schooner-owned Session and Operation metadata outside repositories;
+   do not require a repository configuration file.
+5. Keep `push` local-to-remote, `pull` remote-to-local, and `sync` a comparison
    of both sides against their Sync Point.
-5. Run synchronization only through explicit one-shot commands and update the
+6. Run synchronization only through explicit one-shot commands and update the
    Sync Point only after verifying the shared result.
-6. Return conflicts instead of silently choosing a winning checkout.
+7. Return conflicts instead of silently choosing a winning checkout.
 
 ## Adding a module
 

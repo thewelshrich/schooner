@@ -4,7 +4,7 @@ CREATE TABLE boxes (
     acquisition TEXT NOT NULL CHECK (acquisition = 'adopted'),
     ssh_destination TEXT NOT NULL,
     remote_identity TEXT NOT NULL UNIQUE,
-    workspace_root TEXT NOT NULL,
+    worktree_root TEXT NOT NULL,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 ) STRICT;
@@ -17,8 +17,8 @@ CREATE TABLE observations (
     architecture TEXT NOT NULL,
     home TEXT NOT NULL,
     remote_identity TEXT NOT NULL,
-    workspace_root TEXT NOT NULL,
-    workspace_root_exists INTEGER NOT NULL,
+    worktree_root TEXT NOT NULL,
+    worktree_root_exists INTEGER NOT NULL,
     git_available INTEGER NOT NULL,
     git_version TEXT NOT NULL,
     tmux_available INTEGER NOT NULL,
@@ -29,7 +29,7 @@ CREATE TABLE observations (
 CREATE TABLE add_operations (
     name TEXT PRIMARY KEY,
     ssh_destination TEXT NOT NULL,
-    workspace_root TEXT NOT NULL,
+    worktree_root TEXT NOT NULL,
     checkpoint TEXT NOT NULL,
     remote_identity TEXT NOT NULL,
     updated_at TEXT NOT NULL

@@ -16,6 +16,7 @@ import (
 
 	"github.com/thewelshrich/schooner/internal/artifact"
 	"github.com/thewelshrich/schooner/internal/box"
+	"github.com/thewelshrich/schooner/internal/repository"
 	hostruntime "github.com/thewelshrich/schooner/internal/runtime"
 	"github.com/thewelshrich/schooner/internal/semver"
 )
@@ -147,7 +148,7 @@ func compatibleHostDecision(targetVersion string, mode box.HostInstallMode, inst
 func (r *Runtime) assessHost(ctx context.Context, connection box.Connection, request box.HostInstallRequest) (*box.HostRuntime, string, error) {
 	hello, attempt, decodeErr := r.helloAt(ctx, connection, request.Path)
 	if decodeErr == nil && attempt.ExitCode == 0 {
-		if err := validateInstalledHello(hello, request.ExpectedIdentity); err == nil {
+		if err := validateReusableHello(hello, request.ExpectedIdentity); err == nil {
 			if hello.OS != request.OS || hello.Architecture != request.Architecture {
 				return nil, "", box.NewError("unsupported", fmt.Sprintf("host runtime reported %s/%s instead of %s/%s", hello.OS, hello.Architecture, request.OS, request.Architecture), nil)
 			}
@@ -190,7 +191,7 @@ func (r *Runtime) assessHost(ctx context.Context, connection box.Connection, req
 	return nil, remoteVersion, nil
 }
 
-func (r *Runtime) InspectHost(ctx context.Context, connection box.Connection, installed box.HostRuntime, workspaceRoot, expectedIdentity string) (box.Capabilities, error) {
+func (r *Runtime) InspectHost(ctx context.Context, connection box.Connection, installed box.HostRuntime, worktreeRoot, expectedIdentity string) (box.Capabilities, error) {
 	if err := validateRuntimePath(installed.Path); err != nil {
 		return box.Capabilities{}, err
 	}
@@ -207,8 +208,14 @@ func (r *Runtime) InspectHost(ctx context.Context, connection box.Connection, in
 	if err = validateInstalledHello(hello, expectedIdentity); err != nil {
 		return box.Capabilities{}, protocolError(err)
 	}
+	if err = hostruntime.ValidateHello(hello, expectedIdentity, hostruntime.CapabilityInspectV2); err != nil {
+		if hostruntime.ErrorCode(err) == hostruntime.CodeCapabilityUnavailable {
+			return box.Capabilities{}, box.NewError("host_runtime_incompatible", "the host runtime lacks required inspection support; run box update", err)
+		}
+		return box.Capabilities{}, protocolError(err)
+	}
 
-	request := hostruntime.NewInspectRequest(workspaceRoot)
+	request := hostruntime.NewInspectRequest(worktreeRoot)
 	payload, err := json.Marshal(request)
 	if err != nil {
 		return box.Capabilities{}, box.NewError("internal", "encode host inspection request", err)
@@ -232,6 +239,85 @@ func (r *Runtime) InspectHost(ctx context.Context, connection box.Connection, in
 		return box.Capabilities{}, box.NewError("host_runtime_incompatible", "host runtime handshake and inspection reported different platforms", nil)
 	}
 	return capabilities(inspection, installed.Path, hello), nil
+}
+
+func (r *Runtime) ConfigureHost(ctx context.Context, connection box.Connection, installed box.HostRuntime, worktreeRoot, expectedIdentity string) error {
+	request := hostruntime.NewConfigureRequest(worktreeRoot, expectedIdentity)
+	var result hostruntime.ConfigureResult
+	if err := r.invokeHostJSON(ctx, connection, installed, expectedIdentity, hostruntime.CapabilityConfigureV1, "host configure", request, &result); err != nil {
+		return err
+	}
+	if result.SchemaVersion != hostruntime.SchemaVersion || result.ProtocolVersion != hostruntime.ProtocolVersion || result.BoxIdentity != expectedIdentity || result.WorktreeRoot != worktreeRoot {
+		return box.NewError("host_runtime_incompatible", "host configuration returned an invalid result", nil)
+	}
+	return nil
+}
+
+func (r *Runtime) ListWorktrees(ctx context.Context, connection box.Connection, installed box.HostRuntime, expectedIdentity string) (repository.Catalog, error) {
+	var result hostruntime.WorktreeCatalog
+	if err := r.invokeHostJSON(ctx, connection, installed, expectedIdentity, hostruntime.CapabilityWorktreeListV1, "host worktree list", hostruntime.NewWorktreeRequest("", expectedIdentity), &result); err != nil {
+		return repository.Catalog{}, err
+	}
+	if result.SchemaVersion != hostruntime.SchemaVersion || result.ProtocolVersion != hostruntime.ProtocolVersion || result.BoxIdentity != expectedIdentity {
+		return repository.Catalog{}, box.NewError("host_runtime_incompatible", "worktree list returned an incompatible result", nil)
+	}
+	return result.Catalog, nil
+}
+
+func (r *Runtime) InspectWorktree(ctx context.Context, connection box.Connection, installed box.HostRuntime, expectedIdentity, selector string) (repository.Inspection, error) {
+	var result hostruntime.WorktreeInspection
+	if err := r.invokeHostJSON(ctx, connection, installed, expectedIdentity, hostruntime.CapabilityWorktreeInspectV1, "host worktree inspect", hostruntime.NewWorktreeRequest(selector, expectedIdentity), &result); err != nil {
+		return repository.Inspection{}, err
+	}
+	if result.SchemaVersion != hostruntime.SchemaVersion || result.ProtocolVersion != hostruntime.ProtocolVersion || result.BoxIdentity != expectedIdentity {
+		return repository.Inspection{}, box.NewError("host_runtime_incompatible", "worktree inspection returned an incompatible result", nil)
+	}
+	return result.Inspection, nil
+}
+
+func (r *Runtime) invokeHostJSON(ctx context.Context, connection box.Connection, installed box.HostRuntime, expectedIdentity, capability, operation string, request, target any) error {
+	if err := validateRuntimePath(installed.Path); err != nil {
+		return err
+	}
+	hello, attempt, err := r.helloAt(ctx, connection, installed.Path)
+	if err != nil {
+		if isProtocolError(err) {
+			return protocolError(err)
+		}
+		return err
+	}
+	if attempt.ExitCode != 0 {
+		return box.NewError("host_runtime_missing", "the recorded host runtime is unavailable and must be repaired", fmt.Errorf("remote exit status %d", attempt.ExitCode))
+	}
+	if err = hostruntime.ValidateHello(hello, expectedIdentity, capability); err != nil {
+		if hostruntime.ErrorCode(err) == hostruntime.CodeCapabilityUnavailable {
+			return box.NewError("host_runtime_incompatible", "the host runtime lacks required support; run box update", err)
+		}
+		return protocolError(err)
+	}
+	payload, err := json.Marshal(request)
+	if err != nil {
+		return box.NewError("internal", "encode host operation request", err)
+	}
+	command := fixedShellCommand(`runtime_path=$(printf %s "$1" | base64 -d) || exit 64; exec "$runtime_path" `+operation, installed.Path)
+	result, err := r.runRemote(ctx, connection, command, strings.NewReader(string(payload)))
+	if err != nil {
+		return err
+	}
+	if result.ExitCode != 0 {
+		return remoteFailure(operation, result)
+	}
+	operationError, present, err := hostruntime.DecodeOperationError(result.Stdout, expectedIdentity)
+	if err != nil {
+		return protocolError(err)
+	}
+	if present {
+		return box.NewError(string(operationError.Error.Code), operationError.Error.Message, nil)
+	}
+	if err = hostruntime.DecodeStrict(result.Stdout, target); err != nil {
+		return protocolError(err)
+	}
+	return nil
 }
 
 func (r *Runtime) installHost(ctx context.Context, connection box.Connection, request box.HostInstallRequest, result artifact.Result, baseline string) (box.HostRuntime, error) {
@@ -385,7 +471,11 @@ func validateRuntimePath(runtimePath string) error {
 }
 
 func validateInstalledHello(hello hostruntime.Hello, expectedIdentity string) error {
-	return hostruntime.ValidateHello(hello, expectedIdentity, hostruntime.CapabilityHelloV1, hostruntime.CapabilityInspectV1, hostruntime.CapabilityDoctorV1)
+	return hostruntime.ValidateHello(hello, expectedIdentity, hostruntime.CapabilityHelloV1)
+}
+
+func validateReusableHello(hello hostruntime.Hello, expectedIdentity string) error {
+	return hostruntime.ValidateHello(hello, expectedIdentity, hostruntime.CapabilityHelloV1, hostruntime.CapabilityConfigureV1, hostruntime.CapabilityInspectV2)
 }
 
 func validateCandidateHello(hello hostruntime.Hello, request box.HostInstallRequest, result artifact.Result) error {
@@ -493,17 +583,17 @@ func hostRuntime(runtimePath string, hello hostruntime.Hello) box.HostRuntime {
 
 func capabilities(inspection hostruntime.Inspection, runtimePath string, hello hostruntime.Hello) box.Capabilities {
 	return box.Capabilities{
-		OSID:                inspection.OSID,
-		OSVersion:           inspection.OSVersion,
-		Architecture:        inspection.Architecture,
-		Home:                inspection.Home,
-		RemoteIdentity:      inspection.BoxIdentity,
-		WorkspaceRoot:       inspection.WorkspaceRoot,
-		WorkspaceRootExists: inspection.WorkspaceRootExists,
-		Git:                 box.Tool{Available: inspection.Git.Available, Version: inspection.Git.Version},
-		Tmux:                box.Tool{Available: inspection.Tmux.Available, Version: inspection.Tmux.Version},
-		PasswordlessSudo:    inspection.PasswordlessSudo,
-		Host:                hostRuntime(runtimePath, hello),
+		OSID:               inspection.OSID,
+		OSVersion:          inspection.OSVersion,
+		Architecture:       inspection.Architecture,
+		Home:               inspection.Home,
+		RemoteIdentity:     inspection.BoxIdentity,
+		WorktreeRoot:       inspection.WorktreeRoot,
+		WorktreeRootExists: inspection.WorktreeRootExists,
+		Git:                box.Tool{Available: inspection.Git.Available, Version: inspection.Git.Version},
+		Tmux:               box.Tool{Available: inspection.Tmux.Available, Version: inspection.Tmux.Version},
+		PasswordlessSudo:   inspection.PasswordlessSudo,
+		Host:               hostRuntime(runtimePath, hello),
 	}
 }
 

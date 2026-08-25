@@ -8,12 +8,12 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/thewelshrich/schooner/internal/box"
+	"github.com/thewelshrich/schooner/internal/repository"
 	hostruntime "github.com/thewelshrich/schooner/internal/runtime"
-	"github.com/thewelshrich/schooner/internal/runtime/host"
 )
 
-func newHostCommand(build BuildInfo, streams Streams) *cobra.Command {
-	runtime := host.New(hostBuildInfo(build))
+func newHostCommand(streams Streams, options *globalOptions) *cobra.Command {
+	runtime := options.hostRuntime()
 	cmd := &cobra.Command{
 		Use:    "host",
 		Short:  "Run private host operations",
@@ -39,7 +39,7 @@ func newHostCommand(build BuildInfo, streams Streams) *cobra.Command {
 			Args:         cobra.NoArgs,
 			SilenceUsage: true,
 			RunE: func(cmd *cobra.Command, _ []string) error {
-				request, err := readHostRequest(streams, box.DefaultWorkspaceRoot)
+				request, err := readHostRequest(streams, box.DefaultWorktreeRoot)
 				if err != nil {
 					return executionError{cause: err}
 				}
@@ -55,7 +55,7 @@ func newHostCommand(build BuildInfo, streams Streams) *cobra.Command {
 			Args:         cobra.NoArgs,
 			SilenceUsage: true,
 			RunE: func(cmd *cobra.Command, _ []string) error {
-				request, err := readHostRequest(streams, box.DefaultWorkspaceRoot)
+				request, err := readHostRequest(streams, box.DefaultWorktreeRoot)
 				if err != nil {
 					return executionError{cause: err}
 				}
@@ -66,19 +66,76 @@ func newHostCommand(build BuildInfo, streams Streams) *cobra.Command {
 				return encodeHostResult(cmd.OutOrStdout(), result)
 			},
 		},
+		&cobra.Command{
+			Use:          "configure",
+			Args:         cobra.NoArgs,
+			SilenceUsage: true,
+			RunE: func(cmd *cobra.Command, _ []string) error {
+				var request hostruntime.ConfigureRequest
+				if err := readRequiredHostRequest(streams, &request); err != nil {
+					return executionError{cause: err}
+				}
+				result, err := runtime.Configure(request)
+				if err != nil {
+					return executionError{cause: err}
+				}
+				return encodeHostResult(cmd.OutOrStdout(), result)
+			},
+		},
 	)
+	worktree := &cobra.Command{Use: "worktree", Hidden: true, Args: cobra.NoArgs, RunE: helpRun}
+	worktree.AddCommand(
+		&cobra.Command{
+			Use: "list", Args: cobra.NoArgs, SilenceUsage: true,
+			RunE: func(cmd *cobra.Command, _ []string) error {
+				var request hostruntime.WorktreeRequest
+				if err := readRequiredHostRequest(streams, &request); err != nil {
+					return executionError{cause: err}
+				}
+				result, err := runtime.ListWorktrees(cmd.Context(), request)
+				if err != nil {
+					return executionError{cause: err}
+				}
+				return encodeHostResult(cmd.OutOrStdout(), result)
+			},
+		},
+		&cobra.Command{
+			Use: "inspect", Args: cobra.NoArgs, SilenceUsage: true,
+			RunE: func(cmd *cobra.Command, _ []string) error {
+				var request hostruntime.WorktreeRequest
+				if err := readRequiredHostRequest(streams, &request); err != nil {
+					return executionError{cause: err}
+				}
+				result, err := runtime.InspectWorktree(cmd.Context(), request)
+				if err != nil {
+					switch repository.ErrorCode(err) {
+					case repository.CodeNotFound:
+						return encodeHostResult(cmd.OutOrStdout(), hostruntime.NewOperationError(request.BoxIdentity, hostruntime.CodeNotFound, err.Error()))
+					case repository.CodeInvalidInput:
+						return encodeHostResult(cmd.OutOrStdout(), hostruntime.NewOperationError(request.BoxIdentity, hostruntime.CodeInvalidInput, err.Error()))
+					}
+					if hostruntime.ErrorCode(err) == hostruntime.CodeInvalidInput {
+						return encodeHostResult(cmd.OutOrStdout(), hostruntime.NewOperationError(request.BoxIdentity, hostruntime.CodeInvalidInput, err.Error()))
+					}
+					return executionError{cause: err}
+				}
+				return encodeHostResult(cmd.OutOrStdout(), result)
+			},
+		},
+	)
+	cmd.AddCommand(worktree)
 	return cmd
 }
 
-func newDoctorCommand(build BuildInfo, streams Streams, options *globalOptions) *cobra.Command {
+func newDoctorCommand(streams Streams, options *globalOptions) *cobra.Command {
 	return &cobra.Command{
 		Use:          "doctor",
 		Short:        "Check this machine for Schooner readiness",
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			runtime := host.New(hostBuildInfo(build))
-			report, err := runtime.Doctor(cmd.Context(), hostruntime.NewInspectRequest(box.DefaultWorkspaceRoot))
+			runtime := options.hostRuntime()
+			report, err := runtime.Doctor(cmd.Context(), hostruntime.NewInspectRequest(box.DefaultWorktreeRoot))
 			if err != nil {
 				return executionError{cause: err}
 			}
@@ -106,16 +163,16 @@ func writeDoctorResult(w io.Writer, output string, report hostruntime.DoctorRepo
 	return nil
 }
 
-func readHostRequest(streams Streams, defaultWorkspaceRoot string) (hostruntime.InspectRequest, error) {
+func readHostRequest(streams Streams, defaultWorktreeRoot string) (hostruntime.InspectRequest, error) {
 	if streams.InIsTerminal {
-		return hostruntime.NewInspectRequest(defaultWorkspaceRoot), nil
+		return hostruntime.NewInspectRequest(defaultWorktreeRoot), nil
 	}
 	contents, err := io.ReadAll(io.LimitReader(streams.In, hostruntime.MaxMessageBytes+1))
 	if err != nil {
 		return hostruntime.InspectRequest{}, fmt.Errorf("read host request: %w", err)
 	}
 	if len(strings.TrimSpace(string(contents))) == 0 {
-		return hostruntime.NewInspectRequest(defaultWorkspaceRoot), nil
+		return hostruntime.NewInspectRequest(defaultWorktreeRoot), nil
 	}
 	var request hostruntime.InspectRequest
 	if err := hostruntime.DecodeStrict(contents, &request); err != nil {
@@ -125,6 +182,17 @@ func readHostRequest(streams Streams, defaultWorkspaceRoot string) (hostruntime.
 		return hostruntime.InspectRequest{}, err
 	}
 	return request, nil
+}
+
+func readRequiredHostRequest(streams Streams, target any) error {
+	contents, err := io.ReadAll(io.LimitReader(streams.In, hostruntime.MaxMessageBytes+1))
+	if err != nil {
+		return fmt.Errorf("read host request: %w", err)
+	}
+	if len(strings.TrimSpace(string(contents))) == 0 {
+		return fmt.Errorf("host request is required")
+	}
+	return hostruntime.DecodeStrict(contents, target)
 }
 
 func writeDoctorReport(w io.Writer, report hostruntime.DoctorReport) error {

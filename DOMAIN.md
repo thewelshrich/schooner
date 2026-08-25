@@ -16,36 +16,44 @@ An SSH alias, hostname, address, or username is a connection locator, not Box
 identity. Schooner correlates a local Box record with a stable identity on the
 machine; OpenSSH host-key verification remains the authentication mechanism.
 
-### Project
+### Repository
 
-A **Project** is the identity and shared Git object store of a repository on a
-Box.
+A **Repository** is one Git common object and ref store. Git identifies it by
+its canonical common directory; Schooner does not assign it another identity.
 
-A Project may have multiple Workspaces. It is not a checkout, directory name,
-local repository, source-host account, or provider project.
+### Worktree
 
-### Workspace
+A **Worktree** is any checkout belonging to a Repository, including its primary
+checkout. Git and the filesystem own its identity and lifecycle.
 
-A **Workspace** is one concrete remote checkout or Git worktree belonging to a
-Project.
+### Primary worktree
 
-A Workspace is first-class and remote-first. It may exist without a local
-checkout, Local Link, Session, or Agent. **Worktree** is Git implementation
-language; **Workspace** is the Schooner domain term.
+A **Primary worktree** is the normal checkout created with a non-bare clone.
+
+### Linked worktree
+
+A **Linked worktree** is an additional checkout registered with its Repository
+through Git's worktree mechanism.
+
+### Worktree Root
+
+The **Worktree Root** is the configured parent directory beneath which Schooner
+discovers and creates Worktrees on a Box.
 
 ### Local Link
 
 A **Local Link** is an optional relationship between a local checkout and a
-remote Workspace.
+remote Worktree.
 
-A local checkout may link to one Workspace, while a Workspace may be linked
+A local checkout may link to one Worktree, while a Worktree may be linked
 from more than one local machine. The relationship lives in Schooner state,
 not in a required repository configuration file. An explicit `push` or `pull`
 may establish it.
 
 ### Session
 
-A **Session** is a persistent tmux session associated with a Workspace.
+A **Session** is a persistent tmux session associated with a revalidated
+Worktree path.
 
 The Session may outlive the invoking Schooner process and remains independently
 usable through tmux. It is not an SSH connection or a hidden background-job
@@ -56,21 +64,21 @@ mechanism.
 An **Agent** is an optional coding-agent process occupying a Session.
 
 A Session can exist without an Agent, and an Agent ending does not end the
-Session or Workspace. Schooner's on-demand remote application is never called
+Session or Worktree. Schooner's on-demand remote application is never called
 an Agent.
 
 ### Sync Point
 
 A **Sync Point** is the last verified shared state of a Local Link and remote
-Workspace.
+Worktree.
 
 It is evidence for later comparison, not authority over either checkout and
 not a promise that the two sides have remained unchanged.
 
 ## Synchronization language
 
-- **Push** synchronizes from a local checkout to its remote Workspace.
-- **Pull** synchronizes from a remote Workspace to its local checkout.
+- **Push** synchronizes from a local checkout to its remote Worktree.
+- **Pull** synchronizes from a remote Worktree to its local checkout.
 - **Sync** compares both sides with their Sync Point and reconciles only a
   safely determined result.
 
@@ -145,7 +153,8 @@ no background worker; later CLI invocations resume checkpointed Operations.
 | Box connection inventory and preferences | Local Schooner state |
 | SSH authentication and host trust | User's OpenSSH environment and explicit approval |
 | Remote Box identity | Identity stored on the Box |
-| Projects, Workspaces, Sessions, Agents, and capabilities | Live Box state |
+| Repository and Worktree identity and lifecycle | Git and the filesystem on the Box |
+| Sessions, Agents, and capabilities | Live Box state |
 | Local checkout contents | Local filesystem and Git repository |
 | Local Links and Sync Points | Local Schooner state plus verified observations of both sides |
 | Provider resource existence | Provider |

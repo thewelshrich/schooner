@@ -16,11 +16,11 @@ func TestAddPreparesAndPersistsBox(t *testing.T) {
 	runtime.capabilities.Git.Version = ""
 	service := testService(runtime, store)
 	var events []Event
-	result, err := service.Add(t.Context(), AddRequest{Name: "work-api", SSHDestination: "work", WorkspaceRoot: DefaultWorkspaceRoot, Progress: func(event Event) { events = append(events, event) }})
+	result, err := service.Add(t.Context(), AddRequest{Name: "work-api", SSHDestination: "work", WorktreeRoot: DefaultWorktreeRoot, Progress: func(event Event) { events = append(events, event) }})
 	if err != nil {
 		t.Fatalf("Add() error = %v", err)
 	}
-	if result.Box.Acquisition != "adopted" || result.Box.WorkspaceRoot != "/home/alice/schooner" || result.Box.RuntimePath != "/home/alice/.local/bin/schooner" {
+	if result.Box.Acquisition != "adopted" || result.Box.WorktreeRoot != "/home/alice/schooner" || result.Box.RuntimePath != "/home/alice/.local/bin/schooner" {
 		t.Fatalf("unexpected box: %+v", result.Box)
 	}
 	if !slices.Equal(result.Installed, []string{"git"}) {
@@ -32,7 +32,7 @@ func TestAddPreparesAndPersistsBox(t *testing.T) {
 	if _, ok := store.records["work-api"]; !ok {
 		t.Fatal("box was not persisted")
 	}
-	if len(events) != 18 || events[0].Step != StepResolve || events[len(events)-1].Step != StepSave {
+	if len(events) != 20 || events[0].Step != StepResolve || events[len(events)-1].Step != StepSave {
 		t.Fatalf("events = %+v", events)
 	}
 }
@@ -76,7 +76,7 @@ func TestAddRejectsClonedIdentityAfterOpenSSHTrustResolution(t *testing.T) {
 
 func TestStatusVerifiesIdentityAndCachesObservation(t *testing.T) {
 	store := newMemoryInventory()
-	store.records["work"] = Record{ID: "box-1", Name: "work", SSHDestination: "work", RemoteIdentity: "remote-1", RuntimePath: "/home/alice/.local/bin/schooner", WorkspaceRoot: "/home/alice/schooner"}
+	store.records["work"] = Record{ID: "box-1", Name: "work", SSHDestination: "work", RemoteIdentity: "remote-1", RuntimePath: "/home/alice/.local/bin/schooner", WorktreeRoot: "/home/alice/schooner"}
 	runtime := &fakeRuntime{capabilities: readyCapabilities()}
 	runtime.capabilities.Home = "/srv/alice"
 	runtime.capabilities.RemoteIdentity = "remote-1"
@@ -96,9 +96,25 @@ func TestStatusVerifiesIdentityAndCachesObservation(t *testing.T) {
 	}
 }
 
+func TestStatusRejectsPersistedWorktreeRootDrift(t *testing.T) {
+	store := newMemoryInventory()
+	store.records["work"] = Record{ID: "box-1", Name: "work", SSHDestination: "work", RemoteIdentity: "remote-1", RuntimePath: "/home/alice/.local/bin/schooner", WorktreeRoot: "/home/alice/schooner"}
+	runtime := &fakeRuntime{capabilities: readyCapabilities()}
+	runtime.capabilities.RemoteIdentity = "remote-1"
+	runtime.capabilities.WorktreeRoot = "/home/alice/other"
+	service := testService(runtime, store)
+	_, err := service.Status(t.Context(), StatusRequest{Name: "work"})
+	if ErrorCode(err) != "conflict" || !strings.Contains(err.Error(), "box setup work") {
+		t.Fatalf("error = %v, code = %s", err, ErrorCode(err))
+	}
+	if len(store.observations) != 0 {
+		t.Fatal("drifted host status was cached")
+	}
+}
+
 func TestStatusReportsMissingRuntimeWithoutRepair(t *testing.T) {
 	store := newMemoryInventory()
-	store.records["work"] = Record{ID: "box-1", Name: "work", SSHDestination: "work", RemoteIdentity: "remote-1", WorkspaceRoot: "/home/alice/schooner"}
+	store.records["work"] = Record{ID: "box-1", Name: "work", SSHDestination: "work", RemoteIdentity: "remote-1", WorktreeRoot: "/home/alice/schooner"}
 	runtime := &fakeRuntime{capabilities: readyCapabilities()}
 	runtime.capabilities.RemoteIdentity = "remote-1"
 	service := testService(runtime, store)
@@ -113,7 +129,7 @@ func TestStatusReportsMissingRuntimeWithoutRepair(t *testing.T) {
 
 func TestStatusReportsUnavailableRuntimeWithoutRepair(t *testing.T) {
 	store := newMemoryInventory()
-	store.records["work"] = Record{ID: "box-1", Name: "work", SSHDestination: "work", RemoteIdentity: "remote-1", RuntimePath: "/home/alice/.local/bin/schooner", WorkspaceRoot: "/home/alice/schooner"}
+	store.records["work"] = Record{ID: "box-1", Name: "work", SSHDestination: "work", RemoteIdentity: "remote-1", RuntimePath: "/home/alice/.local/bin/schooner", WorktreeRoot: "/home/alice/schooner"}
 	runtime := &fakeRuntime{capabilities: readyCapabilities(), inspectHostErr: NewError("host_runtime_missing", "missing", nil)}
 	runtime.capabilities.RemoteIdentity = "remote-1"
 	service := testService(runtime, store)
@@ -128,7 +144,7 @@ func TestStatusReportsUnavailableRuntimeWithoutRepair(t *testing.T) {
 
 func TestSetupRepairsRuntimePrerequisitesAndMovedHome(t *testing.T) {
 	store := newMemoryInventory()
-	store.records["work"] = Record{ID: "box-1", Name: "work", SSHDestination: "work", RemoteIdentity: "remote-1", RuntimePath: "/home/alice/.local/bin/schooner", WorkspaceRoot: "/home/alice/schooner"}
+	store.records["work"] = Record{ID: "box-1", Name: "work", SSHDestination: "work", RemoteIdentity: "remote-1", RuntimePath: "/home/alice/.local/bin/schooner", WorktreeRoot: "/home/alice/schooner"}
 	runtime := &fakeRuntime{capabilities: readyCapabilities()}
 	runtime.capabilities.Home = "/srv/alice"
 	runtime.capabilities.RemoteIdentity = "remote-1"
@@ -150,7 +166,7 @@ func TestSetupRepairsRuntimePrerequisitesAndMovedHome(t *testing.T) {
 
 func TestSetupFailsIdentityMismatchBeforeMutation(t *testing.T) {
 	store := newMemoryInventory()
-	store.records["work"] = Record{ID: "box-1", Name: "work", SSHDestination: "work", RemoteIdentity: "remote-1", WorkspaceRoot: "/home/alice/schooner"}
+	store.records["work"] = Record{ID: "box-1", Name: "work", SSHDestination: "work", RemoteIdentity: "remote-1", WorktreeRoot: "/home/alice/schooner"}
 	runtime := &fakeRuntime{capabilities: readyCapabilities()}
 	runtime.capabilities.RemoteIdentity = "remote-other"
 	service := testService(runtime, store)
@@ -163,7 +179,7 @@ func TestSetupFailsIdentityMismatchBeforeMutation(t *testing.T) {
 
 func TestUpdateUsesUpdateModeWithoutPrerequisiteMutation(t *testing.T) {
 	store := newMemoryInventory()
-	store.records["work"] = Record{ID: "box-1", Name: "work", SSHDestination: "work", RemoteIdentity: "remote-1", RuntimePath: "/home/alice/.local/bin/schooner", WorkspaceRoot: "/home/alice/schooner"}
+	store.records["work"] = Record{ID: "box-1", Name: "work", SSHDestination: "work", RemoteIdentity: "remote-1", RuntimePath: "/home/alice/.local/bin/schooner", WorktreeRoot: "/home/alice/schooner"}
 	runtime := &fakeRuntime{capabilities: readyCapabilities()}
 	runtime.capabilities.Home = "/srv/alice"
 	runtime.capabilities.RemoteIdentity = "remote-1"
@@ -278,7 +294,7 @@ func testService(runtime Runtime, store Inventory) *Service {
 }
 
 func readyCapabilities() Capabilities {
-	return Capabilities{OSID: "ubuntu", OSVersion: "24.04", Architecture: "amd64", Home: "/home/alice", WorkspaceRoot: "/home/alice/schooner", WorkspaceRootExists: true, Git: Tool{Available: true, Version: "git version 2.43.0"}, Tmux: Tool{Available: true, Version: "tmux 3.4"}, PasswordlessSudo: true, Host: HostRuntime{Path: "/home/alice/.local/bin/schooner", Version: "v1.2.3", ProtocolVersion: "1", Capabilities: []string{"host.doctor.v1", "host.hello.v1", "host.inspect.v1"}}}
+	return Capabilities{OSID: "ubuntu", OSVersion: "24.04", Architecture: "amd64", Home: "/home/alice", WorktreeRoot: "/home/alice/schooner", WorktreeRootExists: true, Git: Tool{Available: true, Version: "git version 2.43.0"}, Tmux: Tool{Available: true, Version: "tmux 3.4"}, PasswordlessSudo: true, Host: HostRuntime{Path: "/home/alice/.local/bin/schooner", Version: "v1.2.3", ProtocolVersion: "1", Capabilities: []string{"host.configure.v1", "host.doctor.v1", "host.hello.v1", "host.inspect.v2", "worktree.inspect.v1", "worktree.list.v1"}}}
 }
 
 type fakeRuntime struct {
@@ -316,7 +332,7 @@ func (f *fakeRuntime) EnsureHost(_ context.Context, _ Connection, request HostIn
 	f.calls++
 	f.ensureHostCalls++
 	f.ensured = request
-	f.capabilities.Host = HostRuntime{Path: request.Path, Version: "v1.2.3", ProtocolVersion: "1", Capabilities: []string{"host.doctor.v1", "host.hello.v1", "host.inspect.v1"}}
+	f.capabilities.Host = HostRuntime{Path: request.Path, Version: "v1.2.3", ProtocolVersion: "1", Capabilities: []string{"host.configure.v1", "host.doctor.v1", "host.hello.v1", "host.inspect.v2", "worktree.inspect.v1", "worktree.list.v1"}}
 	return HostInstallResult{Runtime: f.capabilities.Host, TargetVersion: "v1.2.3", Action: HostReused}, nil
 }
 func (f *fakeRuntime) InspectHost(_ context.Context, _ Connection, installed HostRuntime, _ string, _ string) (Capabilities, error) {
@@ -326,7 +342,7 @@ func (f *fakeRuntime) InspectHost(_ context.Context, _ Connection, installed Hos
 	if f.capabilities.Host.Version == "" {
 		f.capabilities.Host.Version = "v1.2.3"
 		f.capabilities.Host.ProtocolVersion = "1"
-		f.capabilities.Host.Capabilities = []string{"host.doctor.v1", "host.hello.v1", "host.inspect.v1"}
+		f.capabilities.Host.Capabilities = []string{"host.configure.v1", "host.doctor.v1", "host.hello.v1", "host.inspect.v2", "worktree.inspect.v1", "worktree.list.v1"}
 	}
 	if len(f.inspectHostErrors) > 0 {
 		err := f.inspectHostErrors[0]
@@ -353,9 +369,13 @@ func (f *fakeRuntime) InstallTools(_ context.Context, _ Connection, tools []stri
 	}
 	return nil
 }
-func (f *fakeRuntime) EnsureWorkspaceRoot(context.Context, Connection, string) (string, error) {
+func (f *fakeRuntime) EnsureWorktreeRoot(context.Context, Connection, string) (string, error) {
 	f.calls++
 	return "/home/alice/schooner", nil
+}
+
+func (f *fakeRuntime) ConfigureHost(context.Context, Connection, HostRuntime, string, string) error {
+	return nil
 }
 
 type memoryInventory struct {

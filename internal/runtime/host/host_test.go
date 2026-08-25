@@ -4,14 +4,18 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/user"
 	"path/filepath"
 	"testing"
 
+	"github.com/thewelshrich/schooner/internal/config"
 	hostruntime "github.com/thewelshrich/schooner/internal/runtime"
 )
 
 func TestRuntimeHelloInspectAndDoctor(t *testing.T) {
 	home := t.TempDir()
+	configurationPath := filepath.Join(home, "config.toml")
+	t.Setenv("SCHOONER_CONFIG", configurationPath)
 	identity := "11111111-1111-4111-8111-111111111111"
 	identityPath := filepath.Join(home, ".local", "state", "schooner")
 	if err := os.MkdirAll(identityPath, 0o700); err != nil {
@@ -20,8 +24,8 @@ func TestRuntimeHelloInspectAndDoctor(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(identityPath, "identity"), []byte(identity+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	workspace := filepath.Join(home, "schooner")
-	if err := os.Mkdir(workspace, 0o700); err != nil {
+	worktree := filepath.Join(home, "schooner")
+	if err := os.Mkdir(worktree, 0o700); err != nil {
 		t.Fatal(err)
 	}
 
@@ -51,13 +55,34 @@ func TestRuntimeHelloInspectAndDoctor(t *testing.T) {
 	if err != nil || hello.BoxIdentity != identity || hello.OS != "linux" || hello.Architecture != "arm64" {
 		t.Fatalf("Hello() = %+v, %v", hello, err)
 	}
-	expectedWorkspace, err := filepath.EvalSymlinks(workspace)
+	if got, identityErr := runtime.operationIdentity(identity); identityErr != nil || got != identity {
+		t.Fatalf("operationIdentity() = %q, %v", got, identityErr)
+	}
+	if _, identityErr := runtime.operationIdentity("22222222-2222-4222-8222-222222222222"); hostruntime.ErrorCode(identityErr) != hostruntime.CodeInvalidIdentity {
+		t.Fatalf("operation identity mismatch = %v", identityErr)
+	}
+	expectedWorktree, err := filepath.EvalSymlinks(worktree)
 	if err != nil {
 		t.Fatal(err)
 	}
 	inspection, err := runtime.Inspect(t.Context(), hostruntime.NewInspectRequest("~/schooner"))
-	if err != nil || inspection.OSID != "ubuntu" || inspection.WorkspaceRoot != expectedWorkspace || !inspection.Git.Available || !inspection.PasswordlessSudo {
+	if err != nil || inspection.OSID != "ubuntu" || inspection.WorktreeRoot != expectedWorktree || !inspection.Git.Available || !inspection.PasswordlessSudo {
 		t.Fatalf("Inspect() = %+v, %v", inspection, err)
+	}
+	configuredRoot := filepath.Join(home, "configured-worktrees")
+	if err = os.Mkdir(configuredRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err = config.Write(configurationPath, config.Host{WorktreeRoot: configuredRoot}); err != nil {
+		t.Fatal(err)
+	}
+	configuredRoot, err = filepath.EvalSymlinks(configuredRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inspection, err = runtime.Inspect(t.Context(), hostruntime.NewInspectRequest(expectedWorktree))
+	if err != nil || inspection.WorktreeRoot != configuredRoot || !inspection.WorktreeRootExists {
+		t.Fatalf("configured Inspect() = %+v, %v", inspection, err)
 	}
 	report, err := runtime.Doctor(t.Context(), hostruntime.NewInspectRequest("~/schooner"))
 	if err != nil || !report.Healthy || len(report.Checks) != 6 {
@@ -94,5 +119,20 @@ func TestRuntimeHelloInspectAndDoctor(t *testing.T) {
 	}
 	if _, err = runtime.Doctor(ctx, hostruntime.NewInspectRequest("~/schooner")); !errors.Is(err, context.Canceled) {
 		t.Fatalf("Doctor cancellation returned %v", err)
+	}
+}
+
+func TestCurrentHomeIgnoresOverriddenHOME(t *testing.T) {
+	current, err := user.Current()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", t.TempDir())
+	home, err := currentHome()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if home != filepath.Clean(current.HomeDir) {
+		t.Fatalf("home = %q, account home = %q", home, current.HomeDir)
 	}
 }

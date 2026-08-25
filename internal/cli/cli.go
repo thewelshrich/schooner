@@ -17,6 +17,7 @@ import (
 	"github.com/thewelshrich/schooner/internal/credentials"
 	invsqlite "github.com/thewelshrich/schooner/internal/inventory/sqlite"
 	digitalOcean "github.com/thewelshrich/schooner/internal/provider/digitalocean"
+	localHost "github.com/thewelshrich/schooner/internal/runtime/host"
 	sshRuntime "github.com/thewelshrich/schooner/internal/runtime/ssh"
 	"github.com/thewelshrich/schooner/internal/ui/prompts"
 )
@@ -54,14 +55,23 @@ type globalOptions struct {
 	theme         string
 	accessible    bool
 	choiceSummary *prompts.ChoiceSummary
+	hostRuntime   func() *localHost.Runtime
 }
 
 func Run(ctx context.Context, args []string, streams Streams, build BuildInfo) int {
+	return runWithHostRuntime(ctx, args, streams, build, func() *localHost.Runtime { return localHost.New(hostBuildInfo(build)) })
+}
+
+func RunAtHostHome(ctx context.Context, args []string, streams Streams, build BuildInfo, home string) int {
+	return runWithHostRuntime(ctx, args, streams, build, func() *localHost.Runtime { return localHost.NewAtHome(hostBuildInfo(build), home) })
+}
+
+func runWithHostRuntime(ctx context.Context, args []string, streams Streams, build BuildInfo, newHostRuntime func() *localHost.Runtime) int {
 	streams = normalizedStreams(streams)
 	if err := ctx.Err(); err != nil {
 		return exitAbort
 	}
-	options := &globalOptions{build: build}
+	options := &globalOptions{build: build, hostRuntime: newHostRuntime}
 	root := newRootCommand(build, streams, options)
 	root.SetArgs(args)
 	root.SetIn(streams.In)
@@ -127,11 +137,12 @@ func newRootCommand(build BuildInfo, streams Streams, options *globalOptions) *c
 	root.PersistentFlags().StringVar(&options.theme, "theme", "auto", "terminal theme: auto, light, or dark")
 	root.PersistentFlags().BoolVar(&options.accessible, "accessible", false, "use screen-reader-friendly prompts and progress")
 	root.AddCommand(newVersionCommand(build, options))
-	root.AddCommand(newDoctorCommand(build, streams, options))
-	root.AddCommand(newHostCommand(build, streams))
+	root.AddCommand(newDoctorCommand(streams, options))
+	root.AddCommand(newHostCommand(streams, options))
 	root.AddCommand(newDatabaseCommand(streams, options))
 	root.AddCommand(newProviderCommand(streams, options))
 	root.AddCommand(newBoxCommand(streams, options))
+	root.AddCommand(newWorktreeCommand(streams, options))
 	return root
 }
 

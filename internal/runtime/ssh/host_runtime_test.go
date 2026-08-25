@@ -3,6 +3,7 @@ package ssh
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -12,9 +13,30 @@ import (
 
 	"github.com/thewelshrich/schooner/internal/artifact"
 	"github.com/thewelshrich/schooner/internal/box"
+	hostruntime "github.com/thewelshrich/schooner/internal/runtime"
 )
 
 const hostTestIdentity = "11111111-1111-4111-8111-111111111111"
+
+func TestInspectWorktreePreservesRemoteNotFound(t *testing.T) {
+	testRemoteShell(t)
+	target := filepath.Join(t.TempDir(), "host-runtime")
+	hello := fmt.Sprintf(`{"schema_version":"1","protocol_version":"1","schooner_version":"v1.2.3","commit":"abc123","box_identity":%q,"os":"linux","architecture":"amd64","capabilities":["worktree.inspect.v1"]}`, hostTestIdentity)
+	notFound := hostruntime.NewOperationError(hostTestIdentity, hostruntime.CodeNotFound, `worktree "missing" was not found`)
+	encoded, err := json.Marshal(notFound)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contents := fmt.Sprintf("#!/bin/sh\ncase \"$1 $2 $3\" in\n  'host hello '*) printf '%%s\\n' '%s' ;;\n  'host worktree inspect') cat >/dev/null; printf '%%s\\n' '%s' ;;\n  *) exit 64 ;;\nesac\n", hello, encoded)
+	if err = os.WriteFile(target, []byte(contents), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runtime := NewHost(testSSHExecutable(t), nil, "v1.2.3", nil)
+	_, err = runtime.InspectWorktree(t.Context(), box.Connection{Destination: "trusted-host"}, box.HostRuntime{Path: target}, hostTestIdentity, "missing")
+	if box.ErrorCode(err) != "not_found" || !strings.Contains(err.Error(), "missing") {
+		t.Fatalf("error = %v, code = %s", err, box.ErrorCode(err))
+	}
+}
 
 func TestEnsureHostInstallsReusesAndInspectsTypedRuntime(t *testing.T) {
 	testRemoteShell(t)
@@ -45,6 +67,21 @@ func TestEnsureHostInstallsReusesAndInspectsTypedRuntime(t *testing.T) {
 	capabilities, err := runtime.InspectHost(t.Context(), box.Connection{Destination: "trusted-host", BatchMode: true}, reused.Runtime, "~/schooner", hostTestIdentity)
 	if err != nil || capabilities.RemoteIdentity != hostTestIdentity || capabilities.Host.Version != "v1.2.3" || !capabilities.Git.Available {
 		t.Fatalf("InspectHost() = %+v, %v", capabilities, err)
+	}
+}
+
+func TestInspectHostRejectsPreWorktreeInspectionCapabilityBeforeRequest(t *testing.T) {
+	testRemoteShell(t)
+	target := filepath.Join(t.TempDir(), "host-runtime")
+	artifact := writeHostArtifactAt(t, target, "v1.2.3", "1", "amd64")
+	legacy := strings.ReplaceAll(artifact.contents, "host.inspect.v2", "host.inspect.v1")
+	if err := os.WriteFile(target, []byte(legacy), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runtime := NewHost(testSSHExecutable(t), nil, "v1.2.3", nil)
+	_, err := runtime.InspectHost(t.Context(), box.Connection{Destination: "trusted-host", BatchMode: true}, box.HostRuntime{Path: target}, "/home/alice/schooner", hostTestIdentity)
+	if box.ErrorCode(err) != "host_runtime_incompatible" || !strings.Contains(err.Error(), "box update") {
+		t.Fatalf("error = %v", err)
 	}
 }
 
@@ -107,6 +144,27 @@ func TestEnsureHostRepairReplacesUnidentifiableRuntime(t *testing.T) {
 	contents, err := os.ReadFile(target)
 	if err != nil || string(contents) != want.contents {
 		t.Fatalf("installed repaired runtime: err=%v", err)
+	}
+}
+
+func TestEnsureHostRepairReplacesLegacyRuntimeMissingSetupCapabilities(t *testing.T) {
+	testRemoteShell(t)
+	root := t.TempDir()
+	target := filepath.Join(root, "home", ".local", "bin", "schooner")
+	legacy := writeHostArtifactAt(t, target, "v1.2.3", "1", "amd64")
+	legacyContents := strings.Replace(legacy.contents, `"host.configure.v1",`, "", 1)
+	if err := os.WriteFile(target, []byte(legacyContents), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	want := writeHostArtifact(t, root, "v1.2.3", "1", "amd64")
+	resolver := &staticArtifactResolver{result: want}
+	runtime := NewHost(testSSHExecutable(t), nil, "v1.2.3", resolver)
+	runtime.randomSuffix = func() (string, error) { return "777777777777777777777777", nil }
+	request := box.HostInstallRequest{Path: target, OS: "linux", Architecture: "amd64", ExpectedIdentity: hostTestIdentity, Mode: box.HostRepair}
+
+	result, err := runtime.EnsureHost(t.Context(), box.Connection{Destination: "trusted-host"}, request)
+	if err != nil || result.Action != box.HostReplaced || resolver.calls != 1 {
+		t.Fatalf("result=%+v err=%v calls=%d", result, err, resolver.calls)
 	}
 }
 
@@ -455,8 +513,8 @@ func writeHostArtifactAtIdentity(t *testing.T, target, version, protocol, archit
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	hello := fmt.Sprintf(`{"schema_version":"1","protocol_version":%q,"schooner_version":%q,"commit":"abc123","box_identity":%q,"os":"linux","architecture":%q,"capabilities":["host.doctor.v1","host.hello.v1","host.inspect.v1"]}`, protocol, version, identity, architecture)
-	inspection := fmt.Sprintf(`{"schema_version":"1","protocol_version":"1","os_id":"ubuntu","os_version":"24.04","architecture":%q,"home":"/home/alice","box_identity":%q,"workspace_root":"/home/alice/schooner","workspace_root_exists":true,"git":{"available":true,"version":"git version 2.43.0"},"tmux":{"available":true,"version":"tmux 3.4"},"passwordless_sudo":true}`, architecture, identity)
+	hello := fmt.Sprintf(`{"schema_version":"1","protocol_version":%q,"schooner_version":%q,"commit":"abc123","box_identity":%q,"os":"linux","architecture":%q,"capabilities":["host.configure.v1","host.doctor.v1","host.hello.v1","host.inspect.v2","worktree.inspect.v1","worktree.list.v1"]}`, protocol, version, identity, architecture)
+	inspection := fmt.Sprintf(`{"schema_version":"1","protocol_version":"1","os_id":"ubuntu","os_version":"24.04","architecture":%q,"home":"/home/alice","box_identity":%q,"worktree_root":"/home/alice/schooner","worktree_root_exists":true,"git":{"available":true,"version":"git version 2.43.0"},"tmux":{"available":true,"version":"tmux 3.4"},"passwordless_sudo":true}`, architecture, identity)
 	versionDocument := fmt.Sprintf(`{"schema_version":"1","version":%q,"commit":"abc123","built_at":null,"go_version":"go1.27.0","os":"linux","arch":%q}`, version, architecture)
 	contents := "#!/bin/sh\ncase \"$1 $2 $3\" in\n  'host hello '*) printf '%s\\n' '" + hello + "' ;;\n  'host inspect '*) cat >/dev/null; printf '%s\\n' '" + inspection + "' ;;\n  '--output json version') printf '%s\\n' '" + versionDocument + "' ;;\n  *) exit 64 ;;\nesac\n"
 	if err := os.WriteFile(target, []byte(contents), 0o755); err != nil {

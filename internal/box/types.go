@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-const DefaultWorkspaceRoot = "~/schooner"
+const DefaultWorktreeRoot = "~/schooner"
 
 type Step string
 
@@ -19,7 +19,8 @@ const (
 	StepIdentity      Step = "identity"
 	StepRuntime       Step = "runtime"
 	StepPrerequisites Step = "prerequisites"
-	StepWorkspaceRoot Step = "workspace_root"
+	StepWorktreeRoot  Step = "worktree_root"
+	StepConfigure     Step = "configure"
 	StepVerify        Step = "verify"
 	StepSave          Step = "save"
 )
@@ -93,17 +94,17 @@ type HostInstallResult struct {
 }
 
 type Capabilities struct {
-	OSID                string      `json:"os_id"`
-	OSVersion           string      `json:"os_version"`
-	Architecture        string      `json:"architecture"`
-	Home                string      `json:"home"`
-	RemoteIdentity      string      `json:"remote_identity,omitempty"`
-	WorkspaceRoot       string      `json:"workspace_root,omitempty"`
-	WorkspaceRootExists bool        `json:"workspace_root_exists"`
-	Git                 Tool        `json:"git"`
-	Tmux                Tool        `json:"tmux"`
-	PasswordlessSudo    bool        `json:"passwordless_sudo"`
-	Host                HostRuntime `json:"host_runtime"`
+	OSID               string      `json:"os_id"`
+	OSVersion          string      `json:"os_version"`
+	Architecture       string      `json:"architecture"`
+	Home               string      `json:"home"`
+	RemoteIdentity     string      `json:"remote_identity,omitempty"`
+	WorktreeRoot       string      `json:"worktree_root,omitempty"`
+	WorktreeRootExists bool        `json:"worktree_root_exists"`
+	Git                Tool        `json:"git"`
+	Tmux               Tool        `json:"tmux"`
+	PasswordlessSudo   bool        `json:"passwordless_sudo"`
+	Host               HostRuntime `json:"host_runtime"`
 }
 
 type Record struct {
@@ -114,7 +115,7 @@ type Record struct {
 	IdentityFile          string
 	RemoteIdentity        string
 	RuntimePath           string
-	WorkspaceRoot         string
+	WorktreeRoot          string
 	Provider              string
 	ProviderResourceID    string
 	ProviderCorrelationID string
@@ -134,7 +135,7 @@ type Observation struct {
 type AddOperation struct {
 	Name           string
 	SSHDestination string
-	WorkspaceRoot  string
+	WorktreeRoot   string
 	Checkpoint     Step
 	RemoteIdentity string
 	UpdatedAt      time.Time
@@ -144,7 +145,7 @@ type AddRequest struct {
 	Name                  string
 	SSHDestination        string
 	IdentityFile          string
-	WorkspaceRoot         string
+	WorktreeRoot          string
 	Acquisition           string
 	Provider              string
 	ProviderResourceID    string
@@ -234,8 +235,9 @@ type Runtime interface {
 	EnsureIdentity(context.Context, Connection, string) (string, error)
 	EnsureHost(context.Context, Connection, HostInstallRequest) (HostInstallResult, error)
 	InspectHost(context.Context, Connection, HostRuntime, string, string) (Capabilities, error)
+	ConfigureHost(context.Context, Connection, HostRuntime, string, string) error
 	InstallTools(context.Context, Connection, []string) error
-	EnsureWorkspaceRoot(context.Context, Connection, string) (string, error)
+	EnsureWorktreeRoot(context.Context, Connection, string) (string, error)
 }
 
 // Inventory is the consumer-owned seam for durable local box state.

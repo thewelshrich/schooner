@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -19,7 +20,7 @@ func TestValidateHelloNegotiatesProtocolCapabilitiesAndIdentity(t *testing.T) {
 		Architecture:    "amd64",
 		Capabilities:    Capabilities(),
 	}
-	if err := ValidateHello(hello, testIdentity, CapabilityHelloV1, CapabilityInspectV1); err != nil {
+	if err := ValidateHello(hello, testIdentity, CapabilityHelloV1, CapabilityInspectV2); err != nil {
 		t.Fatal(err)
 	}
 
@@ -29,7 +30,7 @@ func TestValidateHelloNegotiatesProtocolCapabilitiesAndIdentity(t *testing.T) {
 	}
 	hello.ProtocolVersion = ProtocolVersion
 	hello.Capabilities = []string{CapabilityHelloV1}
-	if err := ValidateHello(hello, testIdentity, CapabilityInspectV1); ErrorCode(err) != CodeCapabilityUnavailable {
+	if err := ValidateHello(hello, testIdentity, CapabilityInspectV2); ErrorCode(err) != CodeCapabilityUnavailable {
 		t.Fatalf("capability error = %v", err)
 	}
 	hello.Capabilities = Capabilities()
@@ -40,8 +41,8 @@ func TestValidateHelloNegotiatesProtocolCapabilitiesAndIdentity(t *testing.T) {
 
 func TestDecodeStrictRejectsUnknownTrailingAndOversizedMessages(t *testing.T) {
 	for _, input := range [][]byte{
-		[]byte(`{"schema_version":"1","protocol_version":"1","workspace_root":"~/schooner","unknown":true}`),
-		[]byte(`{"schema_version":"1","protocol_version":"1","workspace_root":"~/schooner"} {}`),
+		[]byte(`{"schema_version":"1","protocol_version":"1","worktree_root":"~/schooner","unknown":true}`),
+		[]byte(`{"schema_version":"1","protocol_version":"1","worktree_root":"~/schooner"} {}`),
 		bytes.Repeat([]byte("x"), MaxMessageBytes+1),
 	} {
 		var request InspectRequest
@@ -54,7 +55,7 @@ func TestDecodeStrictRejectsUnknownTrailingAndOversizedMessages(t *testing.T) {
 func TestInspectRequestAndInstallPathRejectHostilePaths(t *testing.T) {
 	for _, root := range []string{"relative/path", "~/bad\npath", ""} {
 		if err := ValidateInspectRequest(NewInspectRequest(root)); ErrorCode(err) != CodeInvalidMessage {
-			t.Fatalf("workspace root %q error = %v", root, err)
+			t.Fatalf("worktree root %q error = %v", root, err)
 		}
 	}
 	if got, err := InstallPath("/home/alice"); err != nil || got != "/home/alice/.local/bin/schooner" {
@@ -64,5 +65,58 @@ func TestInspectRequestAndInstallPathRejectHostilePaths(t *testing.T) {
 		if _, err := InstallPath(home); ErrorCode(err) != CodeInvalidMessage {
 			t.Fatalf("home %q error = %v", home, err)
 		}
+	}
+}
+
+func TestConfigureAndWorktreeRequestsAreStrict(t *testing.T) {
+	if err := ValidateConfigureRequest(NewConfigureRequest("/home/alice/schooner", testIdentity)); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateConfigureRequest(NewConfigureRequest("/home/alice/schooner", "wrong")); ErrorCode(err) != CodeInvalidIdentity {
+		t.Fatalf("configure identity error = %v", err)
+	}
+	for _, root := range []string{"~/schooner", "/home/alice/../alice/schooner", "/bad\nroot"} {
+		if err := ValidateConfigureRequest(NewConfigureRequest(root, testIdentity)); ErrorCode(err) != CodeInvalidMessage {
+			t.Fatalf("root %q error = %v", root, err)
+		}
+	}
+	if err := ValidateWorktreeRequest(NewWorktreeRequest("", testIdentity), false); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateWorktreeRequest(NewWorktreeRequest("owner/repo", testIdentity), true); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateWorktreeRequest(NewWorktreeRequest("", testIdentity), true); ErrorCode(err) != CodeInvalidInput {
+		t.Fatalf("missing selector error = %v", err)
+	}
+	if err := ValidateWorktreeRequest(NewWorktreeRequest("unexpected", testIdentity), false); ErrorCode(err) != CodeInvalidInput {
+		t.Fatalf("list selector error = %v", err)
+	}
+}
+
+func TestDecodeOperationErrorPreservesTypedNotFound(t *testing.T) {
+	document := NewOperationError(testIdentity, CodeNotFound, `worktree "missing" was not found`)
+	var encoded bytes.Buffer
+	if err := json.NewEncoder(&encoded).Encode(document); err != nil {
+		t.Fatal(err)
+	}
+	decoded, present, err := DecodeOperationError(encoded.Bytes(), testIdentity)
+	if err != nil || !present || decoded.Error.Code != CodeNotFound || decoded.Error.Message != document.Error.Message {
+		t.Fatalf("decoded = %+v, present = %t, err = %v", decoded, present, err)
+	}
+	if _, present, err = DecodeOperationError([]byte(`{"schema_version":"1"}`), testIdentity); err != nil || present {
+		t.Fatalf("success probe present = %t, err = %v", present, err)
+	}
+}
+
+func TestDecodeOperationErrorPreservesInvalidInput(t *testing.T) {
+	document := NewOperationError(testIdentity, CodeInvalidInput, "worktree selector must be canonical")
+	encoded, err := json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, present, err := DecodeOperationError(encoded, testIdentity)
+	if err != nil || !present || decoded.Error.Code != CodeInvalidInput {
+		t.Fatalf("decoded = %+v, present = %t, err = %v", decoded, present, err)
 	}
 }
