@@ -32,11 +32,13 @@ func RunWithoutEnvironment(ctx context.Context, maximum int, excluded []string, 
 }
 
 func run(ctx context.Context, maximum int, environment []string, name string, arguments ...string) ([]byte, error) {
-	command := exec.CommandContext(ctx, name, arguments...)
+	commandContext, cancel := context.WithCancel(ctx)
+	defer cancel()
+	command := exec.CommandContext(commandContext, name, arguments...)
 	if environment != nil {
 		command.Env = environment
 	}
-	output := &limitedBuffer{maximum: maximum}
+	output := &limitedBuffer{maximum: maximum, cancel: cancel}
 	command.Stdout = output
 	command.Stderr = io.Discard
 	err := command.Run()
@@ -61,6 +63,7 @@ type limitedBuffer struct {
 	maximum  int
 	data     []byte
 	overflow bool
+	cancel   context.CancelFunc
 }
 
 func (buffer *limitedBuffer) Write(value []byte) (int, error) {
@@ -75,6 +78,7 @@ func (buffer *limitedBuffer) Write(value []byte) (int, error) {
 	}
 	if len(value) > remaining {
 		buffer.overflow = true
+		buffer.cancel()
 	}
 	return written, nil
 }

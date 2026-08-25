@@ -2,8 +2,10 @@ package process
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRunBoundsOutputAndHonorsCancellation(t *testing.T) {
@@ -14,6 +16,15 @@ func TestRunBoundsOutputAndHonorsCancellation(t *testing.T) {
 	cancel()
 	if _, err := Run(ctx, 4, "/usr/bin/true"); err != context.Canceled {
 		t.Fatalf("cancel error = %v", err)
+	}
+}
+
+func TestRunStopsCommandWhenOutputLimitIsReached(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	_, err := Run(ctx, 4, "/bin/sh", "-c", "while :; do printf 12345; done")
+	if err == nil || errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "command output exceeded") {
+		t.Fatalf("error = %v", err)
 	}
 }
 

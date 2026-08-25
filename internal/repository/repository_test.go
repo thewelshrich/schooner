@@ -349,6 +349,20 @@ func TestSanitizeOriginRemovesUserInfoFromEveryURI(t *testing.T) {
 	if got := sanitizeOrigin("ssh://example.com/" + strings.Repeat("é", maxOriginBytes)); got != "" {
 		t.Fatalf("oversized origin length = %d", len(got))
 	}
+	if got := sanitizeOrigin("https://alice:secret@example.com/%zz.git"); got != "" {
+		t.Fatalf("unparsable URI origin = %q", got)
+	}
+}
+
+func TestGitDisablesOptionalLocksAndFSMonitor(t *testing.T) {
+	commands := &recordingRunner{}
+	if _, err := git(t.Context(), commands, "/root/repo", "status", "--porcelain=v2"); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"--no-optional-locks", "-c", "core.fsmonitor=false", "-C", "/root/repo", "status", "--porcelain=v2"}
+	if strings.Join(commands.arguments, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("arguments = %q", commands.arguments)
+	}
 }
 
 func TestRepositoryRelationshipFallsBackToRevalidatedIdentity(t *testing.T) {
@@ -419,3 +433,10 @@ func mustMkdir(t *testing.T, path string) {
 }
 func fmtInt(value int) string         { return strconv.Itoa(value) }
 func errorsIsCanceled(err error) bool { return errors.Is(err, context.Canceled) }
+
+type recordingRunner struct{ arguments []string }
+
+func (runner *recordingRunner) Run(_ context.Context, _ string, arguments ...string) ([]byte, error) {
+	runner.arguments = append([]string(nil), arguments...)
+	return nil, nil
+}

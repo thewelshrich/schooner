@@ -600,8 +600,8 @@ func within(root, path string) bool {
 }
 
 func git(ctx context.Context, commands runner, worktree string, arguments ...string) ([]byte, error) {
-	fixed := make([]string, 0, len(arguments)+4)
-	fixed = append(fixed, "-c", "core.fsmonitor=false", "-C", worktree)
+	fixed := make([]string, 0, len(arguments)+5)
+	fixed = append(fixed, "--no-optional-locks", "-c", "core.fsmonitor=false", "-C", worktree)
 	fixed = append(fixed, arguments...)
 	return commands.Run(ctx, "git", fixed...)
 }
@@ -610,12 +610,16 @@ func sanitizeOrigin(raw string) string {
 	if raw == "" || hasControl(raw) {
 		return ""
 	}
-	if parsed, err := url.Parse(raw); err == nil && parsed.Scheme != "" {
+	parsed, parseErr := url.Parse(raw)
+	if parseErr == nil && parsed.Scheme != "" {
 		parsed.User = nil
 		parsed.RawQuery = ""
 		parsed.Fragment = ""
 		parsed.Path = strings.TrimSuffix(parsed.Path, ".git")
 		return boundedOrigin(parsed.String())
+	}
+	if parseErr != nil && strings.Contains(raw, "://") {
+		return ""
 	}
 	if index := strings.IndexAny(raw, "?#"); index >= 0 {
 		raw = raw[:index]
