@@ -30,6 +30,12 @@ func TestSessionCommandsExposeConsistentBoxSelection(t *testing.T) {
 	}
 }
 
+func TestFirstArgumentPreservesExactSelector(t *testing.T) {
+	if got := firstArgument([]string{"  repo  "}); got != "  repo  " {
+		t.Fatalf("selector = %q", got)
+	}
+}
+
 func TestSessionOutputDistinguishesOwnershipAndAssociation(t *testing.T) {
 	now := time.Date(2026, 8, 25, 12, 0, 0, 0, time.UTC)
 	catalog := session.Catalog{WorktreeRoot: "/work", Sessions: []session.Session{

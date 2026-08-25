@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"strings"
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
@@ -428,5 +427,5 @@ func firstArgument(args []string) string {
 	if len(args) == 0 {
 		return ""
 	}
-	return strings.TrimSpace(args[0])
+	return args[0]
 }

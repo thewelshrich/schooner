@@ -4,7 +4,6 @@ import (
 	"context"
 	"os/exec"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -204,7 +203,7 @@ func TestServiceStartsReusesCapturesAndStopsManagedSession(t *testing.T) {
 		t.Fatalf("reuse = %+v, %v", reused, err)
 	}
 	attachment, err := manager.Attachment(t.Context(), testSessionID, false)
-	if err != nil || attachment.Path != "tmux" || !reflect.DeepEqual(attachment.Args, []string{"attach-session", "-t", "$4"}) {
+	if err != nil || attachment.Path != "tmux" || len(attachment.Args) != 7 || attachment.Args[0] != "if-shell" || !strings.Contains(attachment.Args[4], testSessionID) || attachment.Args[5] != "attach-session -t $4" {
 		t.Fatalf("attachment = %+v, %v", attachment, err)
 	}
 	logs, err := manager.Logs(t.Context(), testSessionID, 2)
@@ -217,6 +216,32 @@ func TestServiceStartsReusesCapturesAndStopsManagedSession(t *testing.T) {
 	}
 	if _, err = manager.Resolve(t.Context(), testSessionID); err == nil {
 		t.Fatal("stopped Session still resolved")
+	}
+}
+
+func TestLogsAndStopResolveOnlyExplicitSessionIDs(t *testing.T) {
+	root, worktree := initializeSessionWorktree(t)
+	fake := &fakeTmux{
+		path: worktree,
+		row:  "$4\tmanaged\t1720000000\t1720000000\t0\t" + SchemaVersion + "\t" + testSessionID + "\tshell\t2024-07-03T09:46:40Z\t" + worktree + "\n",
+	}
+	manager, err := New(root, filepath.Join(t.TempDir(), "operations", "git"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.commands = fake
+	for _, operation := range []string{"logs", "stop"} {
+		if operation == "logs" {
+			_, err = manager.Logs(t.Context(), "repo", 2)
+		} else {
+			_, err = manager.Stop(t.Context(), "repo")
+		}
+		if repository.ErrorCode(err) != repository.CodeNotFound {
+			t.Fatalf("%s error = %v", operation, err)
+		}
+	}
+	if fake.captured || fake.killed {
+		t.Fatalf("Worktree selector touched Session: captured=%t killed=%t", fake.captured, fake.killed)
 	}
 }
 

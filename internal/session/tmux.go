@@ -319,7 +319,13 @@ func (s *Service) Attachment(ctx context.Context, selector string, insideTmux bo
 	if insideTmux {
 		command = "switch-client"
 	}
-	return Attachment{Session: value, Path: "tmux", Args: []string{command, "-t", value.TmuxID}}, nil
+	args := []string{command, "-t", value.TmuxID}
+	if value.Ownership == Managed {
+		action := fmt.Sprintf("%s -t %s", command, value.TmuxID)
+		refusal := "display-message -p 'Schooner refused attachment because Session ownership changed.' ; run-shell \"exit 76\""
+		args = managedActionArguments(value, action, refusal)
+	}
+	return Attachment{Session: value, Path: "tmux", Args: args}, nil
 }
 
 func (s *Service) Logs(ctx context.Context, id string, lines int) (LogsResult, error) {
@@ -332,7 +338,7 @@ func (s *Service) Logs(ctx context.Context, id string, lines int) (LogsResult, e
 	if lines < 1 || lines > MaxLogLines {
 		return LogsResult{}, &repository.Error{Code: repository.CodeInvalidInput, Message: fmt.Sprintf("log lines must be between 1 and %d", MaxLogLines)}
 	}
-	value, err := s.Resolve(ctx, id)
+	value, err := s.resolveManagedID(ctx, id)
 	if err != nil {
 		return LogsResult{}, err
 	}
@@ -354,7 +360,7 @@ func (s *Service) Stop(ctx context.Context, id string) (StopResult, error) {
 	if !validManagedID(id) {
 		return StopResult{}, &repository.Error{Code: repository.CodeInvalidInput, Message: "stop requires a managed Session ID"}
 	}
-	value, err := s.Resolve(ctx, id)
+	value, err := s.resolveManagedID(ctx, id)
 	if err != nil {
 		return StopResult{}, err
 	}
@@ -377,10 +383,9 @@ func (s *Service) Stop(ctx context.Context, id string) (StopResult, error) {
 // therefore fail or be refused, but it cannot be reused as an unmanaged target
 // between validation and the capture or kill.
 func (s *Service) runManagedAction(ctx context.Context, value Session, maximum int, action string) (process.Result, error) {
-	condition := managedSessionCondition(value)
 	refusal := "display-message -p " + managedActionRefused
 	prefix := []byte(managedActionGranted + "\n")
-	result, err := s.commands.Run(ctx, maximum+len(prefix), "tmux", "if-shell", "-F", "-t", value.TmuxID, condition, action, refusal)
+	result, err := s.commands.Run(ctx, maximum+len(prefix), "tmux", managedActionArguments(value, action, refusal)...)
 	if err != nil {
 		return result, err
 	}
@@ -392,6 +397,30 @@ func (s *Service) runManagedAction(ctx context.Context, value Session, maximum i
 	}
 	result.Stdout = result.Stdout[len(prefix):]
 	return result, nil
+}
+
+func (s *Service) resolveManagedID(ctx context.Context, id string) (Session, error) {
+	catalog, err := s.List(ctx)
+	if err != nil {
+		return Session{}, err
+	}
+	matches := make([]Session, 0, 1)
+	for _, value := range catalog.Sessions {
+		if value.Ownership == Managed && value.ID == id {
+			matches = append(matches, value)
+		}
+	}
+	if len(matches) == 0 {
+		return Session{}, &repository.Error{Code: repository.CodeNotFound, Message: fmt.Sprintf("managed Session %q was not found", id)}
+	}
+	if len(matches) > 1 {
+		return Session{}, &repository.Error{Code: repository.CodeConflict, Message: fmt.Sprintf("managed Session ID %q is ambiguous", id)}
+	}
+	return matches[0], nil
+}
+
+func managedActionArguments(value Session, action, refusal string) []string {
+	return []string{"if-shell", "-F", "-t", value.TmuxID, managedSessionCondition(value), action, refusal}
 }
 
 func managedSessionCondition(value Session) string {
