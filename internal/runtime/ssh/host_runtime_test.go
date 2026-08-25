@@ -3,6 +3,7 @@ package ssh
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -12,9 +13,30 @@ import (
 
 	"github.com/thewelshrich/schooner/internal/artifact"
 	"github.com/thewelshrich/schooner/internal/box"
+	hostruntime "github.com/thewelshrich/schooner/internal/runtime"
 )
 
 const hostTestIdentity = "11111111-1111-4111-8111-111111111111"
+
+func TestInspectWorktreePreservesRemoteNotFound(t *testing.T) {
+	testRemoteShell(t)
+	target := filepath.Join(t.TempDir(), "host-runtime")
+	hello := fmt.Sprintf(`{"schema_version":"1","protocol_version":"1","schooner_version":"v1.2.3","commit":"abc123","box_identity":%q,"os":"linux","architecture":"amd64","capabilities":["worktree.inspect.v1"]}`, hostTestIdentity)
+	notFound := hostruntime.NewOperationError(hostTestIdentity, hostruntime.CodeNotFound, `worktree "missing" was not found`)
+	encoded, err := json.Marshal(notFound)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contents := fmt.Sprintf("#!/bin/sh\ncase \"$1 $2 $3\" in\n  'host hello '*) printf '%%s\\n' '%s' ;;\n  'host worktree inspect') cat >/dev/null; printf '%%s\\n' '%s' ;;\n  *) exit 64 ;;\nesac\n", hello, encoded)
+	if err = os.WriteFile(target, []byte(contents), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runtime := NewHost(testSSHExecutable(t), nil, "v1.2.3", nil)
+	_, err = runtime.InspectWorktree(t.Context(), box.Connection{Destination: "trusted-host"}, box.HostRuntime{Path: target}, hostTestIdentity, "missing")
+	if box.ErrorCode(err) != "not_found" || !strings.Contains(err.Error(), "missing") {
+		t.Fatalf("error = %v, code = %s", err, box.ErrorCode(err))
+	}
+}
 
 func TestEnsureHostInstallsReusesAndInspectsTypedRuntime(t *testing.T) {
 	testRemoteShell(t)

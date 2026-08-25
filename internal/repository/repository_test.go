@@ -137,6 +137,31 @@ func TestDiscoverIgnoresInheritedGitRepositorySelection(t *testing.T) {
 	}
 }
 
+func TestDiscoverDisablesRepositoryFSMonitorHooks(t *testing.T) {
+	root := t.TempDir()
+	repositoryPath := filepath.Join(root, "repo")
+	mustGit(t, "init", repositoryPath)
+	marker := filepath.Join(root, "fsmonitor-invoked")
+	hook := filepath.Join(root, "fsmonitor-hook")
+	mustWrite(t, hook, "#!/bin/sh\nprintf invoked >\"$SCHOONER_FSMONITOR_MARKER\"\nexit 1\n")
+	if err := os.Chmod(hook, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SCHOONER_FSMONITOR_MARKER", marker)
+	mustGitAt(t, repositoryPath, "config", "core.fsmonitor", hook)
+
+	catalog, err := Discover(t.Context(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(catalog.Repositories) != 1 || len(catalog.Warnings) != 0 {
+		t.Fatalf("catalog = %+v", catalog)
+	}
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("repository fsmonitor hook was invoked: %v", err)
+	}
+}
+
 func TestInspectRequiresExactConfinedPath(t *testing.T) {
 	root := t.TempDir()
 	repositoryPath := filepath.Join(root, "owner", "repo")
@@ -166,6 +191,14 @@ func TestInspectRequiresExactConfinedPath(t *testing.T) {
 	}
 	if _, err := Inspect(t.Context(), root, "alias"); err == nil {
 		t.Fatal("relative symlink selector succeeded")
+	}
+}
+
+func TestInspectReturnsTypedNotFoundForMissingExactPath(t *testing.T) {
+	root := t.TempDir()
+	_, err := Inspect(t.Context(), root, "missing")
+	if ErrorCode(err) != CodeNotFound || !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("error = %v, code = %q", err, ErrorCode(err))
 	}
 }
 

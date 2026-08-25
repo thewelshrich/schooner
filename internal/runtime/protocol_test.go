@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -90,5 +91,20 @@ func TestConfigureAndWorktreeRequestsAreStrict(t *testing.T) {
 	}
 	if err := ValidateWorktreeRequest(NewWorktreeRequest("unexpected", testIdentity), false); ErrorCode(err) != CodeInvalidMessage {
 		t.Fatalf("list selector error = %v", err)
+	}
+}
+
+func TestDecodeOperationErrorPreservesTypedNotFound(t *testing.T) {
+	document := NewOperationError(testIdentity, CodeNotFound, `worktree "missing" was not found`)
+	var encoded bytes.Buffer
+	if err := json.NewEncoder(&encoded).Encode(document); err != nil {
+		t.Fatal(err)
+	}
+	decoded, present, err := DecodeOperationError(encoded.Bytes(), testIdentity)
+	if err != nil || !present || decoded.Error.Code != CodeNotFound || decoded.Error.Message != document.Error.Message {
+		t.Fatalf("decoded = %+v, present = %t, err = %v", decoded, present, err)
+	}
+	if _, present, err = DecodeOperationError([]byte(`{"schema_version":"1"}`), testIdentity); err != nil || present {
+		t.Fatalf("success probe present = %t, err = %v", present, err)
 	}
 }

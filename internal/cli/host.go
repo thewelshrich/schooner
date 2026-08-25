@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/thewelshrich/schooner/internal/box"
+	"github.com/thewelshrich/schooner/internal/repository"
 	hostruntime "github.com/thewelshrich/schooner/internal/runtime"
 	"github.com/thewelshrich/schooner/internal/runtime/host"
 )
@@ -108,6 +109,9 @@ func newHostCommand(build BuildInfo, streams Streams) *cobra.Command {
 				}
 				result, err := runtime.InspectWorktree(cmd.Context(), request)
 				if err != nil {
+					if repository.ErrorCode(err) == repository.CodeNotFound {
+						return encodeHostResult(cmd.OutOrStdout(), hostruntime.NewOperationError(request.BoxIdentity, hostruntime.CodeNotFound, err.Error()))
+					}
 					return executionError{cause: err}
 				}
 				return encodeHostResult(cmd.OutOrStdout(), result)

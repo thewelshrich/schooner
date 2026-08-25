@@ -164,7 +164,7 @@ func runWorktreeInspect(ctx context.Context, streams Streams, global *globalOpti
 	if target.direct != nil {
 		result, err := target.direct.InspectWorktree(ctx, hostruntime.NewWorktreeRequest(selector, target.identity))
 		if err != nil {
-			return repository.Inspection{}, err
+			return repository.Inspection{}, publicRepositoryError(err)
 		}
 		if err = validateDirectWorktreeRoot(target, result.WorktreeRoot); err != nil {
 			return repository.Inspection{}, err
@@ -180,6 +180,13 @@ func runWorktreeInspect(ctx context.Context, streams Streams, global *globalOpti
 		return repository.Inspection{}, err
 	}
 	return inspection, nil
+}
+
+func publicRepositoryError(err error) error {
+	if repository.ErrorCode(err) == repository.CodeNotFound {
+		return box.NewError("not_found", err.Error(), err)
+	}
+	return err
 }
 
 func validateDirectWorktreeRoot(target worktreeTarget, actual string) error {

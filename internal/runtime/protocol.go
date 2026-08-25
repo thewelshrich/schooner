@@ -41,6 +41,7 @@ const (
 	CodeInvalidIdentity       Code = "invalid_identity"
 	CodeUnsupportedProtocol   Code = "unsupported_protocol"
 	CodeCapabilityUnavailable Code = "capability_unavailable"
+	CodeNotFound              Code = "not_found"
 )
 
 type Error struct {
@@ -122,6 +123,18 @@ type WorktreeInspection struct {
 	repository.Inspection
 }
 
+type OperationErrorDetail struct {
+	Code    Code   `json:"code"`
+	Message string `json:"message"`
+}
+
+type OperationError struct {
+	SchemaVersion   string               `json:"schema_version"`
+	ProtocolVersion string               `json:"protocol_version"`
+	BoxIdentity     string               `json:"box_identity"`
+	Error           OperationErrorDetail `json:"error"`
+}
+
 type Inspection struct {
 	SchemaVersion      string `json:"schema_version"`
 	ProtocolVersion    string `json:"protocol_version"`
@@ -167,6 +180,36 @@ func NewConfigureRequest(worktreeRoot, boxIdentity string) ConfigureRequest {
 
 func NewWorktreeRequest(selector, boxIdentity string) WorktreeRequest {
 	return WorktreeRequest{SchemaVersion: SchemaVersion, ProtocolVersion: ProtocolVersion, BoxIdentity: boxIdentity, Selector: selector}
+}
+
+func NewOperationError(boxIdentity string, code Code, message string) OperationError {
+	return OperationError{
+		SchemaVersion: SchemaVersion, ProtocolVersion: ProtocolVersion, BoxIdentity: boxIdentity,
+		Error: OperationErrorDetail{Code: code, Message: message},
+	}
+}
+
+func DecodeOperationError(data []byte, expectedIdentity string) (OperationError, bool, error) {
+	var probe struct {
+		Error json.RawMessage `json:"error"`
+	}
+	if err := json.Unmarshal(data, &probe); err != nil || len(probe.Error) == 0 || bytes.Equal(probe.Error, []byte("null")) {
+		return OperationError{}, false, nil
+	}
+	var result OperationError
+	if err := DecodeStrict(data, &result); err != nil {
+		return OperationError{}, true, err
+	}
+	if result.SchemaVersion != SchemaVersion || result.ProtocolVersion != ProtocolVersion {
+		return OperationError{}, true, &Error{Code: CodeUnsupportedProtocol, Message: "host operation error is incompatible"}
+	}
+	if result.BoxIdentity != expectedIdentity || !identityPattern.MatchString(result.BoxIdentity) {
+		return OperationError{}, true, &Error{Code: CodeInvalidIdentity, Message: "host operation error Box identity is invalid"}
+	}
+	if result.Error.Code != CodeNotFound || result.Error.Message == "" || strings.ContainsAny(result.Error.Message, "\x00\r\n") {
+		return OperationError{}, true, &Error{Code: CodeInvalidMessage, Message: "host operation error is invalid"}
+	}
+	return result, true, nil
 }
 
 func ValidateConfigureRequest(request ConfigureRequest) error {

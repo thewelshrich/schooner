@@ -88,3 +88,11 @@ func TestValidateDirectWorktreeRootRejectsCanonicalDrift(t *testing.T) {
 		t.Fatalf("error = %v", err)
 	}
 }
+
+func TestPublicRepositoryErrorMapsNotFound(t *testing.T) {
+	cause := &repository.Error{Code: repository.CodeNotFound, Message: `worktree "missing" was not found`}
+	err := publicRepositoryError(cause)
+	if box.ErrorCode(err) != "not_found" || !strings.Contains(err.Error(), "missing") {
+		t.Fatalf("error = %v, code = %s", err, box.ErrorCode(err))
+	}
+}

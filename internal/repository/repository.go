@@ -50,10 +50,31 @@ var gitRepositoryEnvironment = []string{
 
 type WorktreeKind string
 
+type Code string
+
 const (
 	Primary WorktreeKind = "primary"
 	Linked  WorktreeKind = "linked"
+
+	CodeNotFound Code = "not_found"
 )
+
+type Error struct {
+	Code    Code
+	Message string
+	Cause   error
+}
+
+func (e *Error) Error() string { return e.Message }
+func (e *Error) Unwrap() error { return e.Cause }
+
+func ErrorCode(err error) Code {
+	var target *Error
+	if errors.As(err, &target) {
+		return target.Code
+	}
+	return ""
+}
 
 type Status struct {
 	Staged     int `json:"staged"`
@@ -180,6 +201,9 @@ func inspect(ctx context.Context, root, selector string, commands runner) (Inspe
 	}
 	item, err := inspectCandidate(ctx, canonicalRoot, target, commands)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) || pathMissing(target) {
+			return Inspection{}, worktreeNotFound(selector, err)
+		}
 		return Inspection{}, fmt.Errorf("inspect worktree %q: %w", selector, err)
 	}
 	catalog, err := discover(ctx, canonicalRoot, commands)
@@ -189,6 +213,9 @@ func inspect(ctx context.Context, root, selector string, commands runner) (Inspe
 	repository := repositoryRelationship(catalog, item)
 	latest, err := inspectCandidate(ctx, canonicalRoot, target, commands)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) || pathMissing(target) {
+			return Inspection{}, worktreeNotFound(selector, err)
+		}
 		return Inspection{}, fmt.Errorf("revalidate worktree %q: %w", selector, err)
 	}
 	if latest.repository != item.repository {
@@ -517,7 +544,10 @@ func resolveSelector(root, selector string) (string, error) {
 	}
 	canonical, err := canonicalDirectory(target)
 	if err != nil {
-		return "", fmt.Errorf("worktree %q was not found", selector)
+		if errors.Is(err, os.ErrNotExist) {
+			return "", worktreeNotFound(selector, err)
+		}
+		return "", err
 	}
 	if !within(root, canonical) {
 		return "", fmt.Errorf("worktree selector escapes configured root")
@@ -526,6 +556,15 @@ func resolveSelector(root, selector string) (string, error) {
 		return "", fmt.Errorf("worktree selector must not resolve through symlinks")
 	}
 	return canonical, nil
+}
+
+func worktreeNotFound(selector string, cause error) error {
+	return &Error{Code: CodeNotFound, Message: fmt.Sprintf("worktree %q was not found", selector), Cause: cause}
+}
+
+func pathMissing(path string) bool {
+	_, err := os.Stat(path)
+	return errors.Is(err, os.ErrNotExist)
 }
 
 func canonicalDirectory(path string) (string, error) {
@@ -561,8 +600,8 @@ func within(root, path string) bool {
 }
 
 func git(ctx context.Context, commands runner, worktree string, arguments ...string) ([]byte, error) {
-	fixed := make([]string, 0, len(arguments)+2)
-	fixed = append(fixed, "-C", worktree)
+	fixed := make([]string, 0, len(arguments)+4)
+	fixed = append(fixed, "-c", "core.fsmonitor=false", "-C", worktree)
 	fixed = append(fixed, arguments...)
 	return commands.Run(ctx, "git", fixed...)
 }

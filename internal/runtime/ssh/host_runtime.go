@@ -307,6 +307,13 @@ func (r *Runtime) invokeHostJSON(ctx context.Context, connection box.Connection,
 	if result.ExitCode != 0 {
 		return remoteFailure(operation, result)
 	}
+	operationError, present, err := hostruntime.DecodeOperationError(result.Stdout, expectedIdentity)
+	if err != nil {
+		return protocolError(err)
+	}
+	if present {
+		return box.NewError(string(operationError.Error.Code), operationError.Error.Message, nil)
+	}
 	if err = hostruntime.DecodeStrict(result.Stdout, target); err != nil {
 		return protocolError(err)
 	}
