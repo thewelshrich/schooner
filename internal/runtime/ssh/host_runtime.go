@@ -123,7 +123,10 @@ func compatibleHostDecision(targetVersion string, mode box.HostInstallMode, inst
 	}
 	if targetVersion == "dev" || installed.Version == "dev" {
 		if targetVersion == installed.Version {
-			return result, false, nil
+			// Development builds have no ordered version or stable build identity.
+			// An explicit update must promote the currently verified artifact so a
+			// rebuilt local binary is not mistaken for the installed executable.
+			return result, true, nil
 		}
 		return box.HostInstallResult{}, false, box.NewError("host_runtime_incompatible", fmt.Sprintf("host runtime version %q cannot be safely compared with local version %q", installed.Version, targetVersion), nil)
 	}
