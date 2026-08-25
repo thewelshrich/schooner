@@ -92,21 +92,23 @@ type MutationResult struct {
 }
 
 type operationRecord struct {
-	SchemaVersion   int       `json:"schema_version"`
-	ID              string    `json:"id"`
-	Kind            string    `json:"kind"`
-	IntentSHA256    string    `json:"intent_sha256"`
-	TargetPath      string    `json:"target_path"`
-	StagingPath     string    `json:"staging_path,omitempty"`
-	Checkpoint      string    `json:"checkpoint"`
-	CommonDirectory string    `json:"common_directory,omitempty"`
-	Branch          string    `json:"branch,omitempty"`
-	HEAD            string    `json:"head,omitempty"`
-	Origin          string    `json:"origin,omitempty"`
-	Detached        bool      `json:"detached,omitempty"`
-	OwnershipToken  string    `json:"ownership_token,omitempty"`
-	RefSHA256       string    `json:"ref_sha256,omitempty"`
-	UpdatedAt       time.Time `json:"updated_at"`
+	SchemaVersion    int       `json:"schema_version"`
+	ID               string    `json:"id"`
+	Kind             string    `json:"kind"`
+	IntentSHA256     string    `json:"intent_sha256"`
+	TargetPath       string    `json:"target_path"`
+	StagingPath      string    `json:"staging_path,omitempty"`
+	Checkpoint       string    `json:"checkpoint"`
+	CommonDirectory  string    `json:"common_directory,omitempty"`
+	Branch           string    `json:"branch,omitempty"`
+	HEAD             string    `json:"head,omitempty"`
+	Origin           string    `json:"origin,omitempty"`
+	Detached         bool      `json:"detached,omitempty"`
+	OwnershipToken   string    `json:"ownership_token,omitempty"`
+	RefSHA256        string    `json:"ref_sha256,omitempty"`
+	RepositorySHA256 string    `json:"repository_sha256,omitempty"`
+	GitDirectory     string    `json:"git_directory,omitempty"`
+	UpdatedAt        time.Time `json:"updated_at"`
 }
 
 type mutationRunner interface {
@@ -196,6 +198,9 @@ func (l *Lifecycle) Clone(ctx context.Context, request CloneRequest) (MutationRe
 			return MutationResult{}, err
 		}
 		if _, inspectErr := Inspect(ctx, l.root, record.StagingPath); inspectErr != nil {
+			if err = l.validateDiscoverableTarget(ctx, target, false); err != nil {
+				return MutationResult{}, err
+			}
 			if removeErr := removeOwnedStage(record); removeErr != nil {
 				return MutationResult{}, removeErr
 			}
@@ -259,13 +264,18 @@ func (l *Lifecycle) Add(ctx context.Context, request AddRequest) (MutationResult
 	if err != nil {
 		return MutationResult{}, err
 	}
-	repositoryInspection, err := Inspect(ctx, l.root, request.RepositoryPath)
+	repositoryPath, err := l.newPath(request.RepositoryPath)
+	if err != nil {
+		return MutationResult{}, err
+	}
+	repositoryHash := fingerprint(repositoryPath)
+	repositoryInspection, err := Inspect(ctx, l.root, repositoryPath)
 	intent := ""
 	if err != nil {
 		if ErrorCode(err) != CodeNotFound {
 			return MutationResult{}, err
 		}
-		recoveredRecord, found, recoverErr := l.findAddRecovery(target, fingerprint(request.Branch))
+		recoveredRecord, found, recoverErr := l.findAddRecovery(target, fingerprint(request.Branch), repositoryHash)
 		if recoverErr != nil {
 			return MutationResult{}, recoverErr
 		}
@@ -280,11 +290,11 @@ func (l *Lifecycle) Add(ctx context.Context, request AddRequest) (MutationResult
 	commonDirectory := repositoryInspection.Repository.CommonDirectory
 	selectorHash := fingerprint(request.Branch)
 	return l.withOperation(ctx, "worktree_add", target, intent, func(record *operationRecord, recovered bool) (MutationResult, error) {
-		if record.RefSHA256 != "" && record.RefSHA256 != selectorHash || record.CommonDirectory != "" && record.CommonDirectory != commonDirectory {
+		if record.RefSHA256 != "" && record.RefSHA256 != selectorHash || record.CommonDirectory != "" && record.CommonDirectory != commonDirectory || record.RepositorySHA256 != "" && record.RepositorySHA256 != repositoryHash {
 			return MutationResult{}, &Error{Code: CodeOutcomeUnknown, Message: "Worktree add checkpoint does not match its repository or ref selector"}
 		}
-		if record.RefSHA256 == "" || record.CommonDirectory == "" {
-			record.RefSHA256, record.CommonDirectory = selectorHash, commonDirectory
+		if record.RefSHA256 == "" || record.CommonDirectory == "" || record.RepositorySHA256 == "" {
+			record.RefSHA256, record.CommonDirectory, record.RepositorySHA256 = selectorHash, commonDirectory, repositoryHash
 			if err = l.save(record); err != nil {
 				return MutationResult{}, err
 			}
@@ -301,9 +311,6 @@ func (l *Lifecycle) Add(ctx context.Context, request AddRequest) (MutationResult
 			}
 			return MutationResult{}, &Error{Code: CodeConflict, Message: fmt.Sprintf("Worktree destination %q already exists", target)}
 		}
-		if err = l.validateDiscoverableTarget(ctx, target, false); err != nil {
-			return MutationResult{}, err
-		}
 		if _, statErr := os.Lstat(target); statErr == nil || !errors.Is(statErr, os.ErrNotExist) {
 			return MutationResult{}, &Error{Code: CodeConflict, Message: fmt.Sprintf("Worktree destination %q already exists", target), Cause: statErr}
 		}
@@ -314,6 +321,9 @@ func (l *Lifecycle) Add(ctx context.Context, request AddRequest) (MutationResult
 			return MutationResult{}, err
 		}
 		if _, inspectErr := Inspect(ctx, l.root, record.StagingPath); inspectErr != nil {
+			if err = l.validateDiscoverableTarget(ctx, target, false); err != nil {
+				return MutationResult{}, err
+			}
 			_, _ = l.runGit(ctx, "--git-dir", commonDirectory, "worktree", "remove", "--", record.StagingPath)
 			_, _ = l.runGit(ctx, "--git-dir", commonDirectory, "worktree", "prune")
 			if err = removeOwnedStage(record); err != nil {
@@ -427,6 +437,9 @@ func (l *Lifecycle) Remove(ctx context.Context, selector string) (MutationResult
 		if current.Worktree.Kind != Linked {
 			return MutationResult{}, &Error{Code: CodeConflict, Message: "primary Worktrees require a separate repository-removal workflow"}
 		}
+		if (record.Checkpoint == "remove_pending" || record.Checkpoint == "complete") && !worktreeIdentityMatchesRecord(current, record, target) {
+			return MutationResult{}, &Error{Code: CodeConflict, Message: "Worktree removal target has been replaced since the recorded operation"}
+		}
 		if dirty(current.Worktree.Status) {
 			return MutationResult{}, &Error{Code: CodeConflict, Message: fmt.Sprintf("Worktree %q contains local changes or ignored files", current.Worktree.RelativePath)}
 		}
@@ -443,7 +456,8 @@ func (l *Lifecycle) Remove(ctx context.Context, selector string) (MutationResult
 		if inspectErr != nil || dirty(current.Worktree.Status) {
 			return MutationResult{}, &Error{Code: CodeConflict, Message: "Worktree changed during removal validation", Cause: inspectErr}
 		}
-		record.CommonDirectory, record.Checkpoint = current.Repository.CommonDirectory, "remove_pending"
+		recordSnapshot(record, current)
+		record.Checkpoint = "remove_pending"
 		if err = l.save(record); err != nil {
 			return MutationResult{}, err
 		}
@@ -654,6 +668,17 @@ func recordSnapshot(record *operationRecord, inspected Inspection) {
 	record.HEAD = inspected.Worktree.HEAD
 	record.Origin = inspected.Repository.Origin
 	record.Detached = inspected.Worktree.Detached
+	record.GitDirectory = inspected.Worktree.GitDirectory
+}
+
+func worktreeIdentityMatchesRecord(inspected Inspection, record *operationRecord, target string) bool {
+	return record.CommonDirectory != "" && record.GitDirectory != "" && record.HEAD != "" &&
+		inspected.Worktree.Path == target &&
+		inspected.Repository.CommonDirectory == record.CommonDirectory &&
+		inspected.Worktree.GitDirectory == record.GitDirectory &&
+		inspected.Worktree.Branch == record.Branch &&
+		inspected.Worktree.HEAD == record.HEAD &&
+		inspected.Worktree.Detached == record.Detached
 }
 
 func cloneMatchesRecord(inspected Inspection, record *operationRecord, target string) bool {
@@ -700,7 +725,9 @@ func (l *Lifecycle) validateDiscoverableTarget(ctx context.Context, target strin
 				break
 			}
 		}
-		if err = validateDiscoveryCapacity(metrics, missingDirectories); err != nil {
+		// The operation-owned staging layout adds one more directory than the
+		// final target layout while Git is populating it.
+		if err = validateDiscoveryCapacity(metrics, missingDirectories+1); err != nil {
 			return err
 		}
 	}
@@ -726,7 +753,7 @@ func validateDiscoveryCapacity(metrics discoveryMetrics, additionalDirectories i
 	return nil
 }
 
-func (l *Lifecycle) findAddRecovery(target, selectorHash string) (operationRecord, bool, error) {
+func (l *Lifecycle) findAddRecovery(target, selectorHash, repositoryHash string) (operationRecord, bool, error) {
 	entries, err := os.ReadDir(l.state)
 	if errors.Is(err, os.ErrNotExist) {
 		return operationRecord{}, false, nil
@@ -745,7 +772,7 @@ func (l *Lifecycle) findAddRecovery(target, selectorHash string) (operationRecor
 		if loadErr != nil {
 			return operationRecord{}, false, loadErr
 		}
-		if !present || record.Kind != "worktree_add" || record.TargetPath != target || record.RefSHA256 != selectorHash || record.CommonDirectory == "" {
+		if !present || record.Kind != "worktree_add" || record.TargetPath != target || record.RefSHA256 != selectorHash || record.RepositorySHA256 != repositoryHash || record.CommonDirectory == "" {
 			continue
 		}
 		if found {
@@ -778,6 +805,9 @@ func (l *Lifecycle) registeredWorktree(ctx context.Context, commonDirectory, tar
 	result, err := l.runGit(ctx, "--git-dir", commonDirectory, "worktree", "list", "--porcelain", "-z")
 	if err != nil {
 		return false, err
+	}
+	if result.Truncated {
+		return false, &Error{Code: CodeOutcomeUnknown, Message: "Git worktree registration output exceeded the verification limit"}
 	}
 	members, err := parseWorktreeList(result.Stdout)
 	if err != nil {

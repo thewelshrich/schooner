@@ -87,7 +87,9 @@ type Status struct {
 	Unstaged   int `json:"unstaged"`
 	Untracked  int `json:"untracked"`
 	Conflicted int `json:"conflicted"`
-	Ignored    int `json:"ignored"`
+	// Ignored is used for local removal safety but intentionally remains out of
+	// the version-1 wire shape, whose strict clients know only the four fields above.
+	Ignored int `json:"-"`
 }
 
 type Worktree struct {

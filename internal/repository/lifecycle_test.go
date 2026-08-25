@@ -438,6 +438,28 @@ func TestValidateDiscoveryCapacityRejectsCandidateAndVisitExhaustion(t *testing.
 			}
 		})
 	}
+	if err := validateDiscoveryCapacity(discoveryMetrics{Visited: maxVisited - 1}, 2); ErrorCode(err) != CodeConflict {
+		t.Fatalf("staging reservation error = %v", err)
+	}
+}
+
+func TestLifecycleCloneRejectsExhaustedDiscoveryCapacity(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "root")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for index := 0; index < maxCandidates; index++ {
+		if err := os.MkdirAll(filepath.Join(root, fmtInt(index), ".git"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	lifecycle, err := NewLifecycle(root, filepath.Join(t.TempDir(), "state"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = lifecycle.Clone(t.Context(), CloneRequest{Source: createLifecycleSource(t)}); ErrorCode(err) != CodeConflict {
+		t.Fatalf("capacity-limited clone error = %v", err)
+	}
 }
 
 func TestLifecycleAddRecoversWhenSourceWorktreeWasRemoved(t *testing.T) {
@@ -467,10 +489,61 @@ func TestLifecycleAddRecoversWhenSourceWorktreeWasRemoved(t *testing.T) {
 	if _, err = lifecycle.Remove(t.Context(), sourceLinked.Path); err != nil {
 		t.Fatal(err)
 	}
+	if _, err = lifecycle.Add(t.Context(), AddRequest{RepositoryPath: "unrelated-missing", Path: "target-linked", Branch: "target-linked"}); ErrorCode(err) != CodeNotFound {
+		t.Fatalf("unrelated missing source recovery error = %v", err)
+	}
 
 	recovered, err := lifecycle.Add(t.Context(), AddRequest{RepositoryPath: sourceLinked.Path, Path: "target-linked", Branch: "target-linked"})
 	if err != nil || !recovered.Recovered || recovered.Path != targetLinked.Path {
 		t.Fatalf("missing source recovery = %+v, %v", recovered, err)
+	}
+}
+
+func TestLifecycleRemoveDoesNotDeleteReplacementWorktree(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "root")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	lifecycle, err := NewLifecycle(root, filepath.Join(t.TempDir(), "state"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cloned, err := lifecycle.Clone(t.Context(), CloneRequest{Source: createLifecycleSource(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runLifecycleGit(t, cloned.Path, "branch", "original")
+	original, err := lifecycle.Add(t.Context(), AddRequest{RepositoryPath: cloned.Path, Path: "replace", Branch: "original"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = lifecycle.Remove(t.Context(), original.Path); err != nil {
+		t.Fatal(err)
+	}
+	runLifecycleGit(t, cloned.Path, "branch", "replacement")
+	replacement, err := lifecycle.Add(t.Context(), AddRequest{RepositoryPath: cloned.Path, Path: "replace", Branch: "replacement"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = lifecycle.Remove(t.Context(), original.Path); ErrorCode(err) != CodeConflict {
+		t.Fatalf("replacement removal error = %v", err)
+	}
+	if inspected, inspectErr := Inspect(t.Context(), root, replacement.Path); inspectErr != nil || inspected.Worktree.Branch != "replacement" {
+		t.Fatalf("replacement Worktree changed: %+v, %v", inspected, inspectErr)
+	}
+}
+
+func TestRegisteredWorktreeRejectsTruncatedOutput(t *testing.T) {
+	root := t.TempDir()
+	lifecycle, err := NewLifecycle(root, filepath.Join(t.TempDir(), "state"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lifecycle.commands = lifecycleRunnerFunc(func(context.Context, string, ...string) (process.Result, error) {
+		return process.Result{Stdout: []byte("worktree /partial\x00"), Truncated: true}, nil
+	})
+	if _, err = lifecycle.registeredWorktree(t.Context(), filepath.Join(root, ".git"), filepath.Join(root, "target")); ErrorCode(err) != CodeOutcomeUnknown {
+		t.Fatalf("truncated registration error = %v", err)
 	}
 }
 

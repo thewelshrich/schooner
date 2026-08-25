@@ -318,6 +318,16 @@ func TestParseStatusCountsConflictAndRename(t *testing.T) {
 	}
 }
 
+func TestStatusIgnoredCountIsNotAddedToVersionOneJSON(t *testing.T) {
+	data, err := json.Marshal(Status{Ignored: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "ignored") {
+		t.Fatalf("version-one status JSON changed: %s", data)
+	}
+}
+
 func TestDiscoverBoundsWarningsAndHonorsCancellation(t *testing.T) {
 	root := t.TempDir()
 	for index := 0; index < maxWarnings+20; index++ {
