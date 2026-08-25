@@ -6,6 +6,7 @@ Usage:
 
 Available Commands:
   box         Add and operate development boxes
+  clone       Clone a normal primary Git Worktree
   completion  Generate the autocompletion script for the specified shell
   db          Manage local Schooner database state
   doctor      Check this machine for Schooner readiness

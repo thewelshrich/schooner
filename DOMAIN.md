@@ -59,6 +59,13 @@ The Session may outlive the invoking Schooner process and remains independently
 usable through tmux. It is not an SSH connection or a hidden background-job
 mechanism.
 
+A managed tmux Session is identified by session-scoped
+`@schooner_session_schema`, `@schooner_session_id`, and
+`@schooner_worktree_path` metadata. Worktree removal and Session creation share
+the same per-Worktree mutation lock so neither can pass live validation while
+the other is committing its effect. Unmanaged tmux sessions remain outside
+Schooner lifecycle ownership.
+
 ### Agent
 
 An **Agent** is an optional coding-agent process occupying a Session.

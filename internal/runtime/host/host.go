@@ -19,6 +19,7 @@ import (
 	"github.com/thewelshrich/schooner/internal/config"
 	"github.com/thewelshrich/schooner/internal/repository"
 	hostruntime "github.com/thewelshrich/schooner/internal/runtime"
+	"github.com/thewelshrich/schooner/internal/session"
 )
 
 const commandOutputLimit = 64 << 10
@@ -240,6 +241,90 @@ func (r *Runtime) InspectWorktree(ctx context.Context, request hostruntime.Workt
 		return hostruntime.WorktreeInspection{}, err
 	}
 	return hostruntime.WorktreeInspection{SchemaVersion: hostruntime.SchemaVersion, ProtocolVersion: hostruntime.ProtocolVersion, BoxIdentity: identity, Inspection: inspection}, nil
+}
+
+func (r *Runtime) CloneRepository(ctx context.Context, request hostruntime.CloneRequest) (hostruntime.LifecycleResult, error) {
+	if err := hostruntime.ValidateCloneRequest(request); err != nil {
+		return hostruntime.LifecycleResult{}, err
+	}
+	lifecycle, identity, err := r.lifecycle(request.BoxIdentity, request.WorktreeRoot, request.NonInteractive)
+	if err != nil {
+		return hostruntime.LifecycleResult{}, err
+	}
+	result, err := lifecycle.Clone(ctx, repository.CloneRequest{Source: request.Source, Branch: request.Branch})
+	if err != nil {
+		return hostruntime.LifecycleResult{}, err
+	}
+	return hostruntime.LifecycleResult{SchemaVersion: hostruntime.SchemaVersion, ProtocolVersion: hostruntime.ProtocolVersion, BoxIdentity: identity, MutationResult: result}, nil
+}
+
+func (r *Runtime) AddWorktree(ctx context.Context, request hostruntime.WorktreeMutationRequest) (hostruntime.LifecycleResult, error) {
+	if err := hostruntime.ValidateWorktreeMutationRequest(request, "add"); err != nil {
+		return hostruntime.LifecycleResult{}, err
+	}
+	lifecycle, identity, err := r.lifecycle(request.BoxIdentity, request.WorktreeRoot, request.NonInteractive)
+	if err != nil {
+		return hostruntime.LifecycleResult{}, err
+	}
+	result, err := lifecycle.Add(ctx, repository.AddRequest{RepositoryPath: request.RepositoryPath, Path: request.Path, Branch: request.Branch})
+	if err != nil {
+		return hostruntime.LifecycleResult{}, err
+	}
+	return hostruntime.LifecycleResult{SchemaVersion: hostruntime.SchemaVersion, ProtocolVersion: hostruntime.ProtocolVersion, BoxIdentity: identity, MutationResult: result}, nil
+}
+
+func (r *Runtime) RemoveWorktree(ctx context.Context, request hostruntime.WorktreeMutationRequest) (hostruntime.LifecycleResult, error) {
+	if err := hostruntime.ValidateWorktreeMutationRequest(request, "remove"); err != nil {
+		return hostruntime.LifecycleResult{}, err
+	}
+	lifecycle, identity, err := r.lifecycle(request.BoxIdentity, request.WorktreeRoot, request.NonInteractive)
+	if err != nil {
+		return hostruntime.LifecycleResult{}, err
+	}
+	result, err := lifecycle.Remove(ctx, request.Path)
+	if err != nil {
+		return hostruntime.LifecycleResult{}, err
+	}
+	return hostruntime.LifecycleResult{SchemaVersion: hostruntime.SchemaVersion, ProtocolVersion: hostruntime.ProtocolVersion, BoxIdentity: identity, MutationResult: result}, nil
+}
+
+func (r *Runtime) PruneWorktrees(ctx context.Context, request hostruntime.WorktreeMutationRequest) (hostruntime.LifecycleResult, error) {
+	if err := hostruntime.ValidateWorktreeMutationRequest(request, "prune"); err != nil {
+		return hostruntime.LifecycleResult{}, err
+	}
+	lifecycle, identity, err := r.lifecycle(request.BoxIdentity, request.WorktreeRoot, request.NonInteractive)
+	if err != nil {
+		return hostruntime.LifecycleResult{}, err
+	}
+	result, err := lifecycle.Prune(ctx)
+	if err != nil {
+		return hostruntime.LifecycleResult{}, err
+	}
+	return hostruntime.LifecycleResult{SchemaVersion: hostruntime.SchemaVersion, ProtocolVersion: hostruntime.ProtocolVersion, BoxIdentity: identity, MutationResult: result}, nil
+}
+
+func (r *Runtime) lifecycle(expectedIdentity, expectedWorktreeRoot string, nonInteractive bool) (*repository.Lifecycle, string, error) {
+	identity, err := r.operationIdentity(expectedIdentity)
+	if err != nil {
+		return nil, "", err
+	}
+	configured, err := config.ReadDefault()
+	if err != nil {
+		return nil, "", err
+	}
+	if configured.WorktreeRoot != expectedWorktreeRoot {
+		return nil, "", &hostruntime.Error{Code: hostruntime.CodeConflict, Message: "configured Worktree Root does not match the lifecycle request"}
+	}
+	home, err := r.home()
+	if err != nil {
+		return nil, "", err
+	}
+	stateDirectory, err := repository.OperationStateDirectory(home)
+	if err != nil {
+		return nil, "", err
+	}
+	lifecycle, err := repository.NewLifecycleWithOptions(configured.WorktreeRoot, stateDirectory, session.NewTmuxUse(), repository.LifecycleOptions{NonInteractive: nonInteractive})
+	return lifecycle, identity, err
 }
 
 func (r *Runtime) operationIdentity(expected string) (string, error) {

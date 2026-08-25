@@ -9,7 +9,10 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 )
+
+const commandPipeWaitDelay = time.Second
 
 func Run(ctx context.Context, maximum int, name string, arguments ...string) ([]byte, error) {
 	return run(ctx, maximum, nil, name, arguments...)
@@ -31,10 +34,58 @@ func RunWithoutEnvironment(ctx context.Context, maximum int, excluded []string, 
 	return run(ctx, maximum, environment, name, arguments...)
 }
 
+// Result contains bounded command output. Output beyond the configured limit
+// is discarded without interrupting the command, which is important for
+// mutations whose external effect must not be coupled to progress volume.
+type Result struct {
+	Stdout    []byte
+	Stderr    []byte
+	Truncated bool
+}
+
+func RunCapturedWithoutEnvironment(ctx context.Context, maximum int, excluded []string, extra []string, name string, arguments ...string) (Result, error) {
+	blocked := make(map[string]struct{}, len(excluded)+len(extra))
+	for _, key := range excluded {
+		blocked[key] = struct{}{}
+	}
+	for _, entry := range extra {
+		if key, _, found := strings.Cut(entry, "="); found {
+			blocked[key] = struct{}{}
+		}
+	}
+	environment := make([]string, 0, len(os.Environ())+len(extra))
+	for _, entry := range os.Environ() {
+		key, _, found := strings.Cut(entry, "=")
+		if _, remove := blocked[key]; found && remove {
+			continue
+		}
+		environment = append(environment, entry)
+	}
+	environment = append(environment, extra...)
+	command := exec.CommandContext(ctx, name, arguments...)
+	configureCommandCancellation(command)
+	command.WaitDelay = commandPipeWaitDelay
+	command.Env = environment
+	stdout := &boundedWriter{maximum: maximum}
+	stderr := &boundedWriter{maximum: maximum}
+	command.Stdout = stdout
+	command.Stderr = stderr
+	err := command.Run()
+	if errors.Is(err, exec.ErrWaitDelay) {
+		err = nil
+	}
+	if ctx.Err() != nil {
+		return Result{Stdout: stdout.data, Stderr: stderr.data, Truncated: stdout.truncated || stderr.truncated}, ctx.Err()
+	}
+	return Result{Stdout: stdout.data, Stderr: stderr.data, Truncated: stdout.truncated || stderr.truncated}, err
+}
+
 func run(ctx context.Context, maximum int, environment []string, name string, arguments ...string) ([]byte, error) {
 	commandContext, cancel := context.WithCancel(ctx)
 	defer cancel()
 	command := exec.CommandContext(commandContext, name, arguments...)
+	configureCommandCancellation(command)
+	command.WaitDelay = commandPipeWaitDelay
 	if environment != nil {
 		command.Env = environment
 	}
@@ -42,6 +93,9 @@ func run(ctx context.Context, maximum int, environment []string, name string, ar
 	command.Stdout = output
 	command.Stderr = io.Discard
 	err := command.Run()
+	if errors.Is(err, exec.ErrWaitDelay) {
+		err = nil
+	}
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
@@ -64,6 +118,24 @@ type limitedBuffer struct {
 	data     []byte
 	overflow bool
 	cancel   context.CancelFunc
+}
+
+type boundedWriter struct {
+	maximum   int
+	data      []byte
+	truncated bool
+}
+
+func (buffer *boundedWriter) Write(value []byte) (int, error) {
+	written := len(value)
+	remaining := buffer.maximum - len(buffer.data)
+	if remaining > 0 {
+		buffer.data = append(buffer.data, value[:min(len(value), remaining)]...)
+	}
+	if len(value) > remaining {
+		buffer.truncated = true
+	}
+	return written, nil
 }
 
 func (buffer *limitedBuffer) Write(value []byte) (int, error) {

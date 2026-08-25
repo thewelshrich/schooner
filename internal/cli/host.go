@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -124,7 +125,85 @@ func newHostCommand(streams Streams, options *globalOptions) *cobra.Command {
 		},
 	)
 	cmd.AddCommand(worktree)
+	repositoryCommand := &cobra.Command{Use: "repository", Hidden: true, Args: cobra.NoArgs, RunE: helpRun}
+	repositoryCommand.AddCommand(&cobra.Command{
+		Use: "clone", Args: cobra.NoArgs, SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			var request hostruntime.CloneRequest
+			if err := readRequiredHostRequest(streams, &request); err != nil {
+				return executionError{cause: err}
+			}
+			request.NonInteractive = options.noInput
+			result, err := runtime.CloneRepository(cmd.Context(), request)
+			if err != nil {
+				return encodeLifecycleError(cmd.OutOrStdout(), request.BoxIdentity, err)
+			}
+			return encodeHostResult(cmd.OutOrStdout(), result)
+		},
+	})
+	cmd.AddCommand(repositoryCommand)
+	worktree.AddCommand(
+		&cobra.Command{
+			Use: "add", Args: cobra.NoArgs, SilenceUsage: true,
+			RunE: func(cmd *cobra.Command, _ []string) error {
+				var request hostruntime.WorktreeMutationRequest
+				if err := readRequiredHostRequest(streams, &request); err != nil {
+					return executionError{cause: err}
+				}
+				request.NonInteractive = options.noInput
+				result, err := runtime.AddWorktree(cmd.Context(), request)
+				if err != nil {
+					return encodeLifecycleError(cmd.OutOrStdout(), request.BoxIdentity, err)
+				}
+				return encodeHostResult(cmd.OutOrStdout(), result)
+			},
+		},
+		&cobra.Command{
+			Use: "remove", Args: cobra.NoArgs, SilenceUsage: true,
+			RunE: func(cmd *cobra.Command, _ []string) error {
+				var request hostruntime.WorktreeMutationRequest
+				if err := readRequiredHostRequest(streams, &request); err != nil {
+					return executionError{cause: err}
+				}
+				request.NonInteractive = options.noInput
+				result, err := runtime.RemoveWorktree(cmd.Context(), request)
+				if err != nil {
+					return encodeLifecycleError(cmd.OutOrStdout(), request.BoxIdentity, err)
+				}
+				return encodeHostResult(cmd.OutOrStdout(), result)
+			},
+		},
+		&cobra.Command{
+			Use: "prune", Args: cobra.NoArgs, SilenceUsage: true,
+			RunE: func(cmd *cobra.Command, _ []string) error {
+				var request hostruntime.WorktreeMutationRequest
+				if err := readRequiredHostRequest(streams, &request); err != nil {
+					return executionError{cause: err}
+				}
+				request.NonInteractive = options.noInput
+				result, err := runtime.PruneWorktrees(cmd.Context(), request)
+				if err != nil {
+					return encodeLifecycleError(cmd.OutOrStdout(), request.BoxIdentity, err)
+				}
+				return encodeHostResult(cmd.OutOrStdout(), result)
+			},
+		},
+	)
 	return cmd
+}
+
+func encodeLifecycleError(writer io.Writer, identity string, err error) error {
+	code := repository.ErrorCode(err)
+	switch code {
+	case repository.CodeNotFound, repository.CodeInvalidInput, repository.CodeConflict, repository.CodeAuthentication, repository.CodePermissionDenied, repository.CodeOperationInProgress, repository.CodeOutcomeUnknown:
+		return encodeHostResult(writer, hostruntime.NewOperationError(identity, hostruntime.Code(code), err.Error()))
+	default:
+		hostCode := hostruntime.ErrorCode(err)
+		if slices.Contains([]hostruntime.Code{hostruntime.CodeInvalidInput, hostruntime.CodeConflict, hostruntime.CodeAuthentication, hostruntime.CodePermissionDenied, hostruntime.CodeOperationInProgress, hostruntime.CodeOutcomeUnknown}, hostCode) {
+			return encodeHostResult(writer, hostruntime.NewOperationError(identity, hostCode, err.Error()))
+		}
+		return executionError{cause: err}
+	}
 }
 
 func newDoctorCommand(streams Streams, options *globalOptions) *cobra.Command {

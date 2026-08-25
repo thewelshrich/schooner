@@ -3,6 +3,8 @@ package process
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -37,5 +39,52 @@ func TestRunWithoutEnvironmentRemovesOnlySelectedVariables(t *testing.T) {
 	}
 	if strings.TrimSpace(string(output)) != ":visible" {
 		t.Fatalf("output = %q", output)
+	}
+}
+
+func TestRunCapturedBoundsWithoutCancellingCommand(t *testing.T) {
+	t.Setenv("SCHOONER_PROCESS_OVERRIDE", "old")
+	result, err := RunCapturedWithoutEnvironment(t.Context(), 4, nil, nil, "/bin/sh", "-c", "printf 123456; printf abcdef >&2; exit 7")
+	if ExitCode(err) != 7 {
+		t.Fatalf("exit error = %v", err)
+	}
+	if string(result.Stdout) != "1234" || string(result.Stderr) != "abcd" || !result.Truncated {
+		t.Fatalf("result = %+v", result)
+	}
+	overridden, err := RunCapturedWithoutEnvironment(t.Context(), 16, nil, []string{"SCHOONER_PROCESS_OVERRIDE=new"}, "/bin/sh", "-c", `printf %s "$SCHOONER_PROCESS_OVERRIDE"`)
+	if err != nil || string(overridden.Stdout) != "new" {
+		t.Fatalf("override = %+v, %v", overridden, err)
+	}
+}
+
+func TestRunCapturedBoundsInheritedPipeWait(t *testing.T) {
+	started := time.Now()
+	result, err := RunCapturedWithoutEnvironment(t.Context(), 64, nil, nil, "/bin/sh", "-c", "(sleep 2) & printf done")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(result.Stdout) != "done" {
+		t.Fatalf("stdout = %q", result.Stdout)
+	}
+	if elapsed := time.Since(started); elapsed > 1500*time.Millisecond {
+		t.Fatalf("inherited pipe kept command blocked for %s", elapsed)
+	}
+}
+
+func TestRunCapturedCancellationTerminatesDescendants(t *testing.T) {
+	output := filepath.Join(t.TempDir(), "descendant-output")
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	_, err := RunCapturedWithoutEnvironment(ctx, 64, nil, nil, "/bin/sh", "-c", `(sleep 0.3; printf leaked > "$1") & wait`, "sh", output)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("cancellation error = %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > 250*time.Millisecond {
+		t.Fatalf("cancellation waited for descendant: %v", elapsed)
+	}
+	time.Sleep(350 * time.Millisecond)
+	if _, err = os.Stat(output); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("descendant survived cancellation: %v", err)
 	}
 }
