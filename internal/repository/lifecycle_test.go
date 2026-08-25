@@ -609,6 +609,44 @@ func TestLifecycleRemovalRejectsReplacementDuringSessionCheck(t *testing.T) {
 	}
 }
 
+func TestLifecycleRemovalReconcilesDisappearanceDuringSessionCheck(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "root")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var primary, linked string
+	removed := false
+	usage := lifecycleWorktreeUseFunc(func(context.Context, string) ([]string, error) {
+		if !removed {
+			removed = true
+			runLifecycleGit(t, primary, "worktree", "remove", "--", linked)
+		}
+		return nil, nil
+	})
+	lifecycle, err := NewLifecycle(root, filepath.Join(t.TempDir(), "state"), usage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cloned, err := lifecycle.Clone(t.Context(), CloneRequest{Source: createLifecycleSource(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	primary = cloned.Path
+	runLifecycleGit(t, primary, "branch", "disappear-race")
+	added, err := lifecycle.Add(t.Context(), AddRequest{RepositoryPath: primary, Path: "disappear-race", Branch: "disappear-race"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	linked = added.Path
+	result, err := lifecycle.Remove(t.Context(), linked)
+	if err != nil || !result.Recovered {
+		t.Fatalf("disappeared removal recovery = %+v, %v", result, err)
+	}
+	if conflict, conflictErr := lifecycle.incompleteConflict(linked, fingerprint("fresh-operation")); conflictErr != nil || conflict {
+		t.Fatalf("retired removal record blocked another target operation: %t, %v", conflict, conflictErr)
+	}
+}
+
 func TestCompletedAddRetryPreservesUserWorktreeLock(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "root")
 	if err := os.MkdirAll(root, 0o755); err != nil {
@@ -772,6 +810,93 @@ func TestLifecycleAddRecoversAfterRenameBeforeGitRepair(t *testing.T) {
 	}
 }
 
+func TestLifecycleAddRejectsChangedMovePendingStage(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "root")
+	state := filepath.Join(t.TempDir(), "state")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	lifecycle, err := NewLifecycle(root, state, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cloned, err := lifecycle.Clone(t.Context(), CloneRequest{Source: createLifecycleSource(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runLifecycleGit(t, cloned.Path, "branch", "snapshot-original")
+	runLifecycleGit(t, cloned.Path, "branch", "snapshot-changed")
+	failed := false
+	lifecycle.commands = lifecycleRunnerFunc(func(ctx context.Context, name string, args ...string) (process.Result, error) {
+		if slices.Contains(args, "submodule") && !failed {
+			failed = true
+			return process.Result{}, errors.New("injected pre-move failure")
+		}
+		return (osMutationRunner{}).Run(ctx, name, args...)
+	})
+	request := AddRequest{RepositoryPath: cloned.Path, Path: "snapshot-target", Branch: "snapshot-original"}
+	if _, err = lifecycle.Add(t.Context(), request); err == nil {
+		t.Fatal("pre-move interruption unexpectedly succeeded")
+	}
+	target, err := lifecycle.newPath(request.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, found, err := lifecycle.findAddRecovery(target, fingerprint(request.Branch), fingerprint(cloned.Path))
+	if err != nil || !found || record.Checkpoint != "move_pending" {
+		t.Fatalf("move-pending record = %+v, %t, %v", record, found, err)
+	}
+	runLifecycleGit(t, record.StagingPath, "checkout", "snapshot-changed")
+	lifecycle.commands = osMutationRunner{}
+	if _, err = lifecycle.Add(t.Context(), request); ErrorCode(err) != CodeOutcomeUnknown {
+		t.Fatalf("changed staged snapshot error = %v", err)
+	}
+	if _, statErr := os.Stat(record.StagingPath); statErr != nil {
+		t.Fatalf("changed staging Worktree was not preserved: %v", statErr)
+	}
+}
+
+func TestLifecycleCompletedAddRecoveryCleansOwnedStage(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "root")
+	state := filepath.Join(t.TempDir(), "state")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	lifecycle, err := NewLifecycle(root, state, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cloned, err := lifecycle.Clone(t.Context(), CloneRequest{Source: createLifecycleSource(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runLifecycleGit(t, cloned.Path, "branch", "cleanup-stage")
+	request := AddRequest{RepositoryPath: cloned.Path, Path: "cleanup-stage", Branch: "cleanup-stage"}
+	added, err := lifecycle.Add(t.Context(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent := fingerprint("worktree_add", added.Path, cloned.Inspection.Repository.CommonDirectory, request.Branch)
+	record, found, err := lifecycle.load(intent)
+	if err != nil || !found {
+		t.Fatalf("completed add record = %+v, %t, %v", record, found, err)
+	}
+	if err = lifecycle.createOwnedStage(&record); err != nil {
+		t.Fatal(err)
+	}
+	record.Checkpoint = "move_pending"
+	if err = lifecycle.save(&record); err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := lifecycle.Add(t.Context(), request)
+	if err != nil || !recovered.Recovered {
+		t.Fatalf("completed recovery = %+v, %v", recovered, err)
+	}
+	if _, statErr := os.Lstat(filepath.Dir(record.StagingPath)); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("owned staging parent remains after recovery: %v", statErr)
+	}
+}
+
 func TestCatalogDiscoveryTruncationBlocksPrune(t *testing.T) {
 	for _, message := range []string{"filesystem entry limit of 10000 reached", "checkout candidate limit of 500 reached", "catalog output limit of 786432 bytes reached"} {
 		if !catalogDiscoveryTruncated(Catalog{Warnings: []Warning{{Message: message}}}) {
@@ -876,6 +1001,48 @@ func TestLifecycleRemoveRejectsIgnoredFiles(t *testing.T) {
 	}
 	if contents, err := os.ReadFile(ignored); err != nil || string(contents) != "secret" {
 		t.Fatalf("ignored file changed: %q, %v", contents, err)
+	}
+}
+
+func TestLifecycleRemovalQuarantinesAndPreservesConcurrentIgnoredFile(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "root")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	lifecycle, err := NewLifecycle(root, filepath.Join(t.TempDir(), "state"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cloned, err := lifecycle.Clone(t.Context(), CloneRequest{Source: createLifecycleSource(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(filepath.Join(cloned.Path, ".gitignore"), []byte(".env\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runLifecycleGit(t, cloned.Path, "add", ".gitignore")
+	runLifecycleGit(t, cloned.Path, "-c", "user.name=Schooner Test", "-c", "user.email=test@example.com", "commit", "-m", "ignore env")
+	runLifecycleGit(t, cloned.Path, "branch", "quarantine-race")
+	linked, err := lifecycle.Add(t.Context(), AddRequest{RepositoryPath: cloned.Path, Path: "quarantine-race", Branch: "quarantine-race"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrote := false
+	lifecycle.commands = lifecycleRunnerFunc(func(ctx context.Context, name string, args ...string) (process.Result, error) {
+		result, runErr := (osMutationRunner{}).Run(ctx, name, args...)
+		if runErr == nil && slices.Contains(args, "repair") && strings.Contains(args[len(args)-1], ".schooner-stage-") && !wrote {
+			wrote = true
+			if writeErr := os.WriteFile(filepath.Join(args[len(args)-1], ".env"), []byte("secret"), 0o600); writeErr != nil {
+				t.Fatal(writeErr)
+			}
+		}
+		return result, runErr
+	})
+	if _, err = lifecycle.Remove(t.Context(), linked.Path); ErrorCode(err) != CodeConflict {
+		t.Fatalf("concurrent ignored-file removal error = %v", err)
+	}
+	if contents, readErr := os.ReadFile(filepath.Join(linked.Path, ".env")); readErr != nil || string(contents) != "secret" {
+		t.Fatalf("concurrent ignored file was not restored: %q, %v", contents, readErr)
 	}
 }
 

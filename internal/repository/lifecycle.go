@@ -321,7 +321,9 @@ func (l *Lifecycle) Add(ctx context.Context, request AddRequest) (MutationResult
 		}
 		if existing, inspectErr := Inspect(ctx, l.root, target); inspectErr == nil {
 			if (record.Checkpoint == "complete" || record.Checkpoint == "move_pending") && worktreeMatchesRecord(existing, record, target, commonDirectory) {
-				recordSnapshot(record, existing)
+				if err = removeOwnedStage(record); err != nil {
+					return MutationResult{}, err
+				}
 				record.Checkpoint = "complete"
 				if err = l.saveAfterEffect(record); err != nil {
 					return MutationResult{}, err
@@ -401,10 +403,16 @@ func (l *Lifecycle) Add(ctx context.Context, request AddRequest) (MutationResult
 		if record.Checkpoint == "add_pending" {
 			return MutationResult{}, &Error{Code: CodeOutcomeUnknown, Message: "staged linked Worktree exists but successful Git completion was not checkpointed"}
 		}
-		recordSnapshot(record, staged)
-		record.Checkpoint = "move_pending"
-		if err = l.saveAfterEffect(record); err != nil {
-			return MutationResult{}, err
+		if record.Checkpoint == "move_pending" {
+			if !worktreeMatchesRecord(staged, record, record.StagingPath, commonDirectory) {
+				return MutationResult{}, &Error{Code: CodeOutcomeUnknown, Message: "staged linked Worktree changed after its promotion snapshot was recorded"}
+			}
+		} else {
+			recordSnapshot(record, staged)
+			record.Checkpoint = "move_pending"
+			if err = l.saveAfterEffect(record); err != nil {
+				return MutationResult{}, err
+			}
 		}
 		if err = l.unlockStagedWorktree(ctx, commonDirectory, record.StagingPath); err != nil {
 			return MutationResult{}, err
@@ -487,7 +495,7 @@ func (l *Lifecycle) Remove(ctx context.Context, selector string) (MutationResult
 			return MutationResult{}, findErr
 		}
 		if found {
-			return l.reconcileRemoved(ctx, target, &record, true)
+			return l.reconcileRemovalState(ctx, target, &record, true)
 		}
 		return MutationResult{}, err
 	}
@@ -508,12 +516,20 @@ func (l *Lifecycle) Remove(ctx context.Context, selector string) (MutationResult
 	recordSnapshot(&seed, initial)
 	intent := fingerprint("worktree_remove", target, initial.Repository.CommonDirectory, seed.IncarnationSHA256)
 	return l.withOperationLocked(ctx, "worktree_remove", target, intent, func(record *operationRecord, recovered bool) (MutationResult, error) {
+		if record.CommonDirectory == "" {
+			record.CommonDirectory = seed.CommonDirectory
+			record.Branch = seed.Branch
+			record.HEAD = seed.HEAD
+			record.Detached = seed.Detached
+			record.GitDirectory = seed.GitDirectory
+			record.IncarnationSHA256 = seed.IncarnationSHA256
+			if err = l.save(record); err != nil {
+				return MutationResult{}, err
+			}
+		}
 		current, inspectErr := Inspect(ctx, l.root, target)
 		if ErrorCode(inspectErr) == CodeNotFound {
-			if record.Checkpoint != "remove_pending" && record.Checkpoint != "complete" {
-				return MutationResult{}, &Error{Code: CodeOutcomeUnknown, Message: "Worktree disappeared before Git removal could be established"}
-			}
-			return l.reconcileRemoved(ctx, target, record, true)
+			return l.reconcileRemovalState(ctx, target, record, true)
 		}
 		if inspectErr != nil {
 			return MutationResult{}, inspectErr
@@ -543,6 +559,9 @@ func (l *Lifecycle) Remove(ctx context.Context, selector string) (MutationResult
 			}
 		}
 		current, inspectErr = Inspect(ctx, l.root, target)
+		if ErrorCode(inspectErr) == CodeNotFound {
+			return l.reconcileRemovalState(ctx, target, record, true)
+		}
 		if inspectErr != nil || dirty(current.Worktree.Status) {
 			return MutationResult{}, &Error{Code: CodeConflict, Message: "Worktree changed during removal validation", Cause: inspectErr}
 		}
@@ -557,17 +576,29 @@ func (l *Lifecycle) Remove(ctx context.Context, selector string) (MutationResult
 			return MutationResult{}, err
 		}
 		recordSnapshot(record, current)
-		record.Checkpoint = "remove_pending"
+		if record.StagingPath == "" {
+			record.StagingPath = filepath.Join(l.root, ".schooner-stage-"+record.ID, filepath.Base(target))
+		}
+		if err = l.prepareStage(record); err != nil {
+			return MutationResult{}, err
+		}
+		if _, statErr := os.Lstat(filepath.Dir(record.StagingPath)); errors.Is(statErr, os.ErrNotExist) {
+			if err = l.createOwnedStage(record); err != nil {
+				return MutationResult{}, err
+			}
+		} else if statErr != nil {
+			return MutationResult{}, &Error{Code: CodeOutcomeUnknown, Message: "removal quarantine could not be inspected", Cause: statErr}
+		} else if err = verifyOwnedStage(record); err != nil {
+			return MutationResult{}, err
+		}
+		record.Checkpoint = "quarantine_pending"
 		if err = l.save(record); err != nil {
 			return MutationResult{}, err
 		}
-		if _, err = l.runGit(ctx, "-C", current.Worktree.Path, "worktree", "remove", "--", current.Worktree.Path); err != nil {
-			return MutationResult{}, err
+		if err = movePathNoReplace(l.root, target, record.StagingPath); err != nil {
+			return MutationResult{}, &Error{Code: CodeOutcomeUnknown, Message: "Worktree could not be quarantined safely before removal", Cause: err}
 		}
-		if _, inspectErr = Inspect(ctx, l.root, target); ErrorCode(inspectErr) != CodeNotFound {
-			return MutationResult{}, &Error{Code: CodeOutcomeUnknown, Message: "Worktree removal could not be verified", Cause: inspectErr}
-		}
-		return l.reconcileRemoved(ctx, target, record, recovered)
+		return l.removeQuarantined(ctx, target, record, recovered)
 	})
 }
 
@@ -876,6 +907,32 @@ func worktreeMatchesRecord(inspected Inspection, record *operationRecord, target
 		inspected.Worktree.Detached == record.Detached
 }
 
+func movePathNoReplace(root, source, target string) error {
+	destinationParent, err := openDestinationParent(root, filepath.Dir(target))
+	if err != nil {
+		return err
+	}
+	sourceParent, moveErr := openExistingDirectory(root, filepath.Dir(source))
+	if moveErr == nil {
+		moveErr = renameNoReplaceAt(sourceParent, filepath.Base(source), destinationParent, filepath.Base(target))
+	}
+	if moveErr == nil {
+		moveErr = sourceParent.Sync()
+	}
+	if moveErr == nil {
+		moveErr = destinationParent.Sync()
+	}
+	if sourceParent != nil {
+		if closeErr := sourceParent.Close(); moveErr == nil {
+			moveErr = closeErr
+		}
+	}
+	if closeErr := destinationParent.Close(); moveErr == nil {
+		moveErr = closeErr
+	}
+	return moveErr
+}
+
 func (l *Lifecycle) validateDiscoverableTarget(ctx context.Context, target string, replacingStage bool) error {
 	relative, err := filepath.Rel(l.root, target)
 	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
@@ -995,7 +1052,7 @@ func (l *Lifecycle) findRemoveRecovery(target string) (operationRecord, bool, er
 		if loadErr != nil {
 			return operationRecord{}, false, loadErr
 		}
-		if !present || record.Kind != "worktree_remove" || record.TargetPath != target || record.Checkpoint != "complete" && record.Checkpoint != "remove_pending" {
+		if !present || record.Kind != "worktree_remove" || record.TargetPath != target || record.Checkpoint != "complete" && record.Checkpoint != "remove_pending" && record.Checkpoint != "quarantine_pending" && record.Checkpoint != "requested" {
 			continue
 		}
 		if !found || record.UpdatedAt.After(latest.UpdatedAt) {
@@ -1014,6 +1071,72 @@ func catalogDiscoveryTruncated(catalog Catalog) bool {
 	return false
 }
 
+func (l *Lifecycle) reconcileRemovalState(ctx context.Context, target string, record *operationRecord, recovered bool) (MutationResult, error) {
+	if record.StagingPath != "" {
+		if _, err := os.Lstat(record.StagingPath); err == nil {
+			return l.removeQuarantined(ctx, target, record, recovered)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return MutationResult{}, &Error{Code: CodeOutcomeUnknown, Message: "removal quarantine could not be inspected", Cause: err}
+		}
+	}
+	return l.reconcileRemoved(ctx, target, record, recovered)
+}
+
+func (l *Lifecycle) removeQuarantined(ctx context.Context, target string, record *operationRecord, recovered bool) (MutationResult, error) {
+	if err := verifyOwnedStage(record); err != nil {
+		return MutationResult{}, err
+	}
+	if _, err := l.runGit(ctx, "--git-dir", record.CommonDirectory, "worktree", "repair", record.StagingPath); err != nil {
+		return MutationResult{}, &Error{Code: CodeOutcomeUnknown, Message: "quarantined Worktree registration could not be repaired", Cause: err}
+	}
+	quarantined, err := Inspect(ctx, l.root, record.StagingPath)
+	if err != nil {
+		return MutationResult{}, &Error{Code: CodeOutcomeUnknown, Message: "quarantined Worktree could not be inspected", Cause: err}
+	}
+	matches, err := worktreeIdentityMatchesRecord(quarantined, record, record.StagingPath)
+	if err != nil {
+		return MutationResult{}, &Error{Code: CodeOutcomeUnknown, Message: "quarantined Worktree identity could not be verified", Cause: err}
+	}
+	if !matches {
+		return MutationResult{}, &Error{Code: CodeConflict, Message: "quarantined Worktree no longer matches the requested removal"}
+	}
+	if dirty(quarantined.Worktree.Status) {
+		if restoreErr := l.restoreQuarantined(ctx, target, record); restoreErr != nil {
+			return MutationResult{}, restoreErr
+		}
+		return MutationResult{}, &Error{Code: CodeConflict, Message: "Worktree changed while it was being quarantined for removal"}
+	}
+	record.Checkpoint = "remove_pending"
+	if err = l.saveAfterEffect(record); err != nil {
+		return MutationResult{}, err
+	}
+	if _, err = l.runGit(ctx, "--git-dir", record.CommonDirectory, "worktree", "remove", "--", record.StagingPath); err != nil {
+		if _, statErr := os.Lstat(record.StagingPath); statErr == nil {
+			if restoreErr := l.restoreQuarantined(ctx, target, record); restoreErr != nil {
+				return MutationResult{}, restoreErr
+			}
+		}
+		return MutationResult{}, err
+	}
+	if _, inspectErr := Inspect(ctx, l.root, record.StagingPath); ErrorCode(inspectErr) != CodeNotFound {
+		return MutationResult{}, &Error{Code: CodeOutcomeUnknown, Message: "quarantined Worktree removal could not be verified", Cause: inspectErr}
+	}
+	if err = removeOwnedStage(record); err != nil {
+		return MutationResult{}, err
+	}
+	return l.reconcileRemoved(ctx, target, record, recovered)
+}
+
+func (l *Lifecycle) restoreQuarantined(ctx context.Context, target string, record *operationRecord) error {
+	if err := movePathNoReplace(l.root, record.StagingPath, target); err != nil {
+		return &Error{Code: CodeOutcomeUnknown, Message: "quarantined Worktree could not be restored", Cause: err}
+	}
+	if _, err := l.runGit(ctx, "--git-dir", record.CommonDirectory, "worktree", "repair", target); err != nil {
+		return &Error{Code: CodeOutcomeUnknown, Message: "restored Worktree registration could not be repaired", Cause: err}
+	}
+	return removeOwnedStage(record)
+}
+
 func (l *Lifecycle) reconcileRemoved(ctx context.Context, target string, record *operationRecord, recovered bool) (MutationResult, error) {
 	if record.CommonDirectory == "" {
 		return MutationResult{}, &Error{Code: CodeOutcomeUnknown, Message: "Worktree removal checkpoint has no repository relationship"}
@@ -1024,6 +1147,15 @@ func (l *Lifecycle) reconcileRemoved(ctx context.Context, target string, record 
 	}
 	if registered {
 		return MutationResult{}, &Error{Code: CodeOutcomeUnknown, Message: "Worktree path is absent but remains registered with Git; prune or repair it before retrying"}
+	}
+	if record.StagingPath != "" {
+		registered, err = l.registeredWorktree(ctx, record.CommonDirectory, record.StagingPath)
+		if err != nil {
+			return MutationResult{}, &Error{Code: CodeOutcomeUnknown, Message: "Worktree quarantine could not be reconciled against Git registration", Cause: err}
+		}
+		if registered {
+			return MutationResult{}, &Error{Code: CodeOutcomeUnknown, Message: "Worktree quarantine remains registered with Git; retry removal"}
+		}
 	}
 	record.Checkpoint = "complete"
 	if err = l.saveAfterEffect(record); err != nil {
