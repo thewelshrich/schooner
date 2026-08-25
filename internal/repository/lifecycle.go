@@ -1190,6 +1190,9 @@ func (l *Lifecycle) removeQuarantined(ctx context.Context, target string, record
 		return MutationResult{}, &Error{Code: CodeOutcomeUnknown, Message: "quarantined Worktree identity could not be verified", Cause: err}
 	}
 	if !matches {
+		if restoreErr := l.restoreQuarantined(ctx, target, record); restoreErr != nil {
+			return MutationResult{}, restoreErr
+		}
 		return MutationResult{}, &Error{Code: CodeConflict, Message: "quarantined Worktree no longer matches the requested removal"}
 	}
 	if dirty(quarantined.Worktree.Status) {

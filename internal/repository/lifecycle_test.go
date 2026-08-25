@@ -1218,6 +1218,44 @@ func TestLifecycleRemovalQuarantinesAndPreservesConcurrentIgnoredFile(t *testing
 	}
 }
 
+func TestLifecycleRemovalRestoresConcurrentIdentityChange(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "root")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	lifecycle, err := NewLifecycle(root, filepath.Join(t.TempDir(), "state"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cloned, err := lifecycle.Clone(t.Context(), CloneRequest{Source: createLifecycleSource(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runLifecycleGit(t, cloned.Path, "branch", "identity-original")
+	runLifecycleGit(t, cloned.Path, "branch", "identity-changed")
+	linked, err := lifecycle.Add(t.Context(), AddRequest{RepositoryPath: cloned.Path, Path: "identity-race", Branch: "identity-original"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed := false
+	lifecycle.commands = lifecycleRunnerFunc(func(ctx context.Context, name string, args ...string) (process.Result, error) {
+		result, runErr := (osMutationRunner{}).Run(ctx, name, args...)
+		stage := args[len(args)-1]
+		if runErr == nil && slices.Contains(args, "repair") && strings.Contains(stage, ".schooner-stage-") && !changed {
+			changed = true
+			runLifecycleGit(t, stage, "checkout", "identity-changed")
+		}
+		return result, runErr
+	})
+	if _, err = lifecycle.Remove(t.Context(), linked.Path); ErrorCode(err) != CodeConflict {
+		t.Fatalf("concurrent identity-change removal error = %v", err)
+	}
+	inspection, inspectErr := Inspect(t.Context(), lifecycle.root, linked.Path)
+	if inspectErr != nil || inspection.Worktree.Branch != "identity-changed" {
+		t.Fatalf("restored changed Worktree = %+v, %v", inspection.Worktree, inspectErr)
+	}
+}
+
 func TestLifecycleClassifiesCheckpointFailureAfterGitEffect(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "root")
 	state := filepath.Join(t.TempDir(), "state")
