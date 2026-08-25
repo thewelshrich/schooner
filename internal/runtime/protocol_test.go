@@ -94,6 +94,27 @@ func TestConfigureAndWorktreeRequestsAreStrict(t *testing.T) {
 	}
 }
 
+func TestGitLifecycleRequestsAreStrict(t *testing.T) {
+	if err := ValidateCloneRequest(NewCloneRequest("git@example.com:owner/repo.git", "main", testIdentity)); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateCloneRequest(NewCloneRequest("", "", testIdentity)); ErrorCode(err) != CodeInvalidInput {
+		t.Fatalf("empty clone source error = %v", err)
+	}
+	if err := ValidateWorktreeMutationRequest(NewWorktreeMutationRequest("owner/repo", "owner/feature", "feature", testIdentity), "add"); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateWorktreeMutationRequest(NewWorktreeMutationRequest("", "owner/feature", "", testIdentity), "remove"); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateWorktreeMutationRequest(NewWorktreeMutationRequest("", "", "", testIdentity), "prune"); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateWorktreeMutationRequest(NewWorktreeMutationRequest("unexpected", "", "", testIdentity), "prune"); ErrorCode(err) != CodeInvalidInput {
+		t.Fatalf("invalid prune error = %v", err)
+	}
+}
+
 func TestDecodeOperationErrorPreservesTypedNotFound(t *testing.T) {
 	document := NewOperationError(testIdentity, CodeNotFound, `worktree "missing" was not found`)
 	var encoded bytes.Buffer
@@ -118,5 +139,18 @@ func TestDecodeOperationErrorPreservesInvalidInput(t *testing.T) {
 	decoded, present, err := DecodeOperationError(encoded, testIdentity)
 	if err != nil || !present || decoded.Error.Code != CodeInvalidInput {
 		t.Fatalf("decoded = %+v, present = %t, err = %v", decoded, present, err)
+	}
+}
+
+func TestDecodeOperationErrorPreservesLifecycleCodes(t *testing.T) {
+	for _, code := range []Code{CodeConflict, CodeAuthentication, CodePermissionDenied, CodeOperationInProgress, CodeOutcomeUnknown} {
+		encoded, err := json.Marshal(NewOperationError(testIdentity, code, "safe failure"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		decoded, present, err := DecodeOperationError(encoded, testIdentity)
+		if err != nil || !present || decoded.Error.Code != code {
+			t.Fatalf("code %s decoded=%+v present=%t err=%v", code, decoded, present, err)
+		}
 	}
 }

@@ -15,7 +15,17 @@ List or inspect live Git Worktrees on a selected Box:
 
 ```bash
 schooner worktree list --box work-api
-schooner worktree inspect owner/repository --box work-api
+schooner worktree inspect repository --box work-api
+```
+
+Create and safely remove ordinary Git Worktrees using the Box user's existing
+Git and SSH credentials:
+
+```bash
+schooner clone git@github.com:owner/repository.git --box work-api
+schooner worktree add repository repository-feature --branch feature --box work-api
+schooner worktree remove repository-feature --box work-api
+schooner worktree prune --box work-api
 ```
 
 The same commands run directly after SSH without a second SSH hop. Git and the
@@ -154,13 +164,17 @@ workstation runtime and directly on the Ubuntu Box:
 
 ```bash
 # Workstation
+schooner clone git@github.com:owner/repository.git --box work-api
+schooner worktree add repository repository-feature --branch feature --box work-api
 schooner worktree list --box work-api
-schooner worktree inspect owner/repository --box work-api
+schooner worktree inspect repository --box work-api
 
 # Directly on the Box
 ssh work-api
 ~/.local/bin/schooner worktree list
-~/.local/bin/schooner worktree inspect owner/repository
+~/.local/bin/schooner worktree inspect repository
+~/.local/bin/schooner worktree remove repository-feature
+~/.local/bin/schooner worktree prune
 ```
 
 The two paths must report the same canonical Repository relationship and

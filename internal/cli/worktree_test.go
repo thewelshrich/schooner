@@ -68,6 +68,21 @@ func TestWorktreeInspectionJSONCarriesWarnings(t *testing.T) {
 	}
 }
 
+func TestLifecycleJSONOutputUsesDedicatedVersionedDocument(t *testing.T) {
+	worktree := repository.Worktree{Path: "/root/repo", RelativePath: "repo", GitDirectory: "/root/repo/.git", Kind: repository.Primary, Branch: "main"}
+	inspection := repository.Inspection{WorktreeRoot: "/root", Repository: repository.Repository{CommonDirectory: "/root/repo/.git", Primary: &worktree, Linked: []repository.Worktree{}}, Worktree: worktree}
+	var output bytes.Buffer
+	if err := writeLifecycleResult(&output, "json", repository.MutationResult{Action: "clone", Recovered: true, WorktreeRoot: "/root", Path: worktree.Path, Inspection: &inspection}); err != nil {
+		t.Fatal(err)
+	}
+	result := output.String()
+	for _, expected := range []string{`"schema_version":"1"`, `"action":"clone"`, `"recovered":true`, `"repository":`, `"worktree":`} {
+		if !strings.Contains(result, expected) {
+			t.Fatalf("output %s does not contain %s", result, expected)
+		}
+	}
+}
+
 func TestValidateRemoteWorktreeRootRejectsDrift(t *testing.T) {
 	record := box.Record{Name: "work", WorktreeRoot: "/home/alice/schooner"}
 	if err := validateRemoteWorktreeRoot(record, record.WorktreeRoot); err != nil {

@@ -26,6 +26,10 @@ const (
 	CapabilityConfigureV1       = "host.configure.v1"
 	CapabilityWorktreeListV1    = "worktree.list.v1"
 	CapabilityWorktreeInspectV1 = "worktree.inspect.v1"
+	CapabilityRepositoryCloneV1 = "repository.clone.v1"
+	CapabilityWorktreeAddV1     = "worktree.add.v1"
+	CapabilityWorktreeRemoveV1  = "worktree.remove.v1"
+	CapabilityWorktreePruneV1   = "worktree.prune.v1"
 )
 
 var (
@@ -43,6 +47,11 @@ const (
 	CodeCapabilityUnavailable Code = "capability_unavailable"
 	CodeNotFound              Code = "not_found"
 	CodeInvalidInput          Code = "invalid_input"
+	CodeConflict              Code = "conflict"
+	CodeAuthentication        Code = "authentication_required"
+	CodePermissionDenied      Code = "permission_denied"
+	CodeOperationInProgress   Code = "operation_in_progress"
+	CodeOutcomeUnknown        Code = "outcome_unknown"
 )
 
 type Error struct {
@@ -103,6 +112,23 @@ type WorktreeRequest struct {
 	Selector        string `json:"selector,omitempty"`
 }
 
+type CloneRequest struct {
+	SchemaVersion   string `json:"schema_version"`
+	ProtocolVersion string `json:"protocol_version"`
+	BoxIdentity     string `json:"box_identity"`
+	Source          string `json:"source"`
+	Branch          string `json:"branch,omitempty"`
+}
+
+type WorktreeMutationRequest struct {
+	SchemaVersion   string `json:"schema_version"`
+	ProtocolVersion string `json:"protocol_version"`
+	BoxIdentity     string `json:"box_identity"`
+	RepositoryPath  string `json:"repository_path,omitempty"`
+	Path            string `json:"path,omitempty"`
+	Branch          string `json:"branch,omitempty"`
+}
+
 type ConfigureResult struct {
 	SchemaVersion   string `json:"schema_version"`
 	ProtocolVersion string `json:"protocol_version"`
@@ -122,6 +148,13 @@ type WorktreeInspection struct {
 	ProtocolVersion string `json:"protocol_version"`
 	BoxIdentity     string `json:"box_identity"`
 	repository.Inspection
+}
+
+type LifecycleResult struct {
+	SchemaVersion   string `json:"schema_version"`
+	ProtocolVersion string `json:"protocol_version"`
+	BoxIdentity     string `json:"box_identity"`
+	repository.MutationResult
 }
 
 type OperationErrorDetail struct {
@@ -166,7 +199,7 @@ type DoctorReport struct {
 }
 
 func Capabilities() []string {
-	result := []string{CapabilityConfigureV1, CapabilityDoctorV1, CapabilityHelloV1, CapabilityInspectV2, CapabilityWorktreeInspectV1, CapabilityWorktreeListV1}
+	result := []string{CapabilityConfigureV1, CapabilityDoctorV1, CapabilityHelloV1, CapabilityInspectV2, CapabilityRepositoryCloneV1, CapabilityWorktreeAddV1, CapabilityWorktreeInspectV1, CapabilityWorktreeListV1, CapabilityWorktreePruneV1, CapabilityWorktreeRemoveV1}
 	slices.Sort(result)
 	return result
 }
@@ -181,6 +214,14 @@ func NewConfigureRequest(worktreeRoot, boxIdentity string) ConfigureRequest {
 
 func NewWorktreeRequest(selector, boxIdentity string) WorktreeRequest {
 	return WorktreeRequest{SchemaVersion: SchemaVersion, ProtocolVersion: ProtocolVersion, BoxIdentity: boxIdentity, Selector: selector}
+}
+
+func NewCloneRequest(source, branch, boxIdentity string) CloneRequest {
+	return CloneRequest{SchemaVersion: SchemaVersion, ProtocolVersion: ProtocolVersion, BoxIdentity: boxIdentity, Source: source, Branch: branch}
+}
+
+func NewWorktreeMutationRequest(repositoryPath, pathValue, branch, boxIdentity string) WorktreeMutationRequest {
+	return WorktreeMutationRequest{SchemaVersion: SchemaVersion, ProtocolVersion: ProtocolVersion, BoxIdentity: boxIdentity, RepositoryPath: repositoryPath, Path: pathValue, Branch: branch}
 }
 
 func NewOperationError(boxIdentity string, code Code, message string) OperationError {
@@ -207,10 +248,54 @@ func DecodeOperationError(data []byte, expectedIdentity string) (OperationError,
 	if result.BoxIdentity != expectedIdentity || !identityPattern.MatchString(result.BoxIdentity) {
 		return OperationError{}, true, &Error{Code: CodeInvalidIdentity, Message: "host operation error Box identity is invalid"}
 	}
-	if (result.Error.Code != CodeNotFound && result.Error.Code != CodeInvalidInput) || result.Error.Message == "" || strings.ContainsAny(result.Error.Message, "\x00\r\n") {
+	if !slices.Contains([]Code{CodeNotFound, CodeInvalidInput, CodeConflict, CodeAuthentication, CodePermissionDenied, CodeOperationInProgress, CodeOutcomeUnknown}, result.Error.Code) || result.Error.Message == "" || strings.ContainsAny(result.Error.Message, "\x00\r\n") {
 		return OperationError{}, true, &Error{Code: CodeInvalidMessage, Message: "host operation error is invalid"}
 	}
 	return result, true, nil
+}
+
+func ValidateCloneRequest(request CloneRequest) error {
+	if request.SchemaVersion != SchemaVersion || request.ProtocolVersion != ProtocolVersion {
+		return &Error{Code: CodeUnsupportedProtocol, Message: "clone request is incompatible"}
+	}
+	if !identityPattern.MatchString(request.BoxIdentity) {
+		return &Error{Code: CodeInvalidIdentity, Message: "clone request Box identity is invalid"}
+	}
+	if request.Source == "" || len(request.Source) > 4096 || hasControl(request.Source) || len(request.Branch) > 1024 || hasControl(request.Branch) {
+		return &Error{Code: CodeInvalidInput, Message: "clone request is invalid"}
+	}
+	return nil
+}
+
+func ValidateWorktreeMutationRequest(request WorktreeMutationRequest, operation string) error {
+	if request.SchemaVersion != SchemaVersion || request.ProtocolVersion != ProtocolVersion {
+		return &Error{Code: CodeUnsupportedProtocol, Message: "Worktree mutation request is incompatible"}
+	}
+	if !identityPattern.MatchString(request.BoxIdentity) {
+		return &Error{Code: CodeInvalidIdentity, Message: "Worktree mutation request Box identity is invalid"}
+	}
+	for _, value := range []string{request.RepositoryPath, request.Path, request.Branch} {
+		if len(value) > 4096 || hasControl(value) {
+			return &Error{Code: CodeInvalidInput, Message: "Worktree mutation request is invalid"}
+		}
+	}
+	switch operation {
+	case "add":
+		if request.RepositoryPath == "" || request.Path == "" {
+			return &Error{Code: CodeInvalidInput, Message: "Worktree add requires repository and destination paths"}
+		}
+	case "remove":
+		if request.RepositoryPath != "" || request.Path == "" || request.Branch != "" {
+			return &Error{Code: CodeInvalidInput, Message: "Worktree remove request is invalid"}
+		}
+	case "prune":
+		if request.RepositoryPath != "" || request.Path != "" || request.Branch != "" {
+			return &Error{Code: CodeInvalidInput, Message: "Worktree prune request is invalid"}
+		}
+	default:
+		return &Error{Code: CodeInvalidInput, Message: "Worktree mutation operation is invalid"}
+	}
+	return nil
 }
 
 func ValidateConfigureRequest(request ConfigureRequest) error {

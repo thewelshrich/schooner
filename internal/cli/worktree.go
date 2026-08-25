@@ -22,6 +22,7 @@ import (
 
 func newWorktreeCommand(streams Streams, global *globalOptions) *cobra.Command {
 	var explicitBox string
+	var addBranch string
 	command := &cobra.Command{
 		Use:   "worktree",
 		Short: "Discover and inspect live Git worktrees",
@@ -51,6 +52,58 @@ func newWorktreeCommand(streams Streams, global *globalOptions) *cobra.Command {
 			},
 		},
 	)
+	add := &cobra.Command{
+		Use: "add <repository-path> <path>", Short: "Add an ordinary linked Git Worktree", Args: cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			result, err := runWorktreeMutation(cmd.Context(), streams, global, explicitBox, "add", args, addBranch)
+			if err != nil {
+				return executionError{cause: err}
+			}
+			return writeLifecycleResult(cmd.OutOrStdout(), global.output, result)
+		},
+	}
+	add.Flags().StringVar(&addBranch, "branch", "", "existing branch or ref to check out")
+	command.AddCommand(add)
+	command.AddCommand(
+		&cobra.Command{
+			Use: "remove <path>", Short: "Remove one clean linked Git Worktree", Args: cobra.ExactArgs(1),
+			RunE: func(cmd *cobra.Command, args []string) error {
+				result, err := runWorktreeMutation(cmd.Context(), streams, global, explicitBox, "remove", args, "")
+				if err != nil {
+					return executionError{cause: err}
+				}
+				return writeLifecycleResult(cmd.OutOrStdout(), global.output, result)
+			},
+		},
+		&cobra.Command{
+			Use: "prune", Short: "Prune stale Git Worktree registrations", Args: cobra.NoArgs,
+			RunE: func(cmd *cobra.Command, _ []string) error {
+				result, err := runWorktreeMutation(cmd.Context(), streams, global, explicitBox, "prune", nil, "")
+				if err != nil {
+					return executionError{cause: err}
+				}
+				return writeLifecycleResult(cmd.OutOrStdout(), global.output, result)
+			},
+		},
+	)
+	return command
+}
+
+func newCloneCommand(streams Streams, global *globalOptions) *cobra.Command {
+	var explicitBox string
+	var branch string
+	command := &cobra.Command{
+		Use: "clone <repository>", Short: "Clone a normal primary Git Worktree", Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			result, err := runClone(cmd.Context(), streams, global, explicitBox, args[0], branch)
+			if err != nil {
+				return executionError{cause: err}
+			}
+			return writeLifecycleResult(cmd.OutOrStdout(), global.output, result)
+		},
+	}
+	command.Flags().StringVar(&explicitBox, "box", "", "box name (always uses OpenSSH)")
+	command.Flags().StringVar(&branch, "branch", "", "branch or tag to check out")
 	return command
 }
 
@@ -182,6 +235,82 @@ func runWorktreeInspect(ctx context.Context, streams Streams, global *globalOpti
 	return inspection, nil
 }
 
+func runClone(ctx context.Context, streams Streams, global *globalOptions, explicit, source, branch string) (repository.MutationResult, error) {
+	target, err := resolveWorktreeTarget(ctx, streams, global, explicit)
+	if err != nil {
+		return repository.MutationResult{}, err
+	}
+	if target.close != nil {
+		defer target.close()
+	}
+	var result repository.MutationResult
+	if target.direct != nil {
+		response, callErr := target.direct.CloneRepository(ctx, hostruntime.NewCloneRequest(source, branch, target.identity))
+		result, err = response.MutationResult, callErr
+	} else {
+		connection := worktreeConnection(target.record, streams, global)
+		result, err = target.remote.ssh.CloneRepository(ctx, connection, box.HostRuntime{Path: target.record.RuntimePath}, target.record.RemoteIdentity, source, branch)
+	}
+	if err != nil {
+		return repository.MutationResult{}, publicRepositoryError(err)
+	}
+	if err = validateLifecycleRoot(target, result.WorktreeRoot); err != nil {
+		return repository.MutationResult{}, err
+	}
+	return result, nil
+}
+
+func runWorktreeMutation(ctx context.Context, streams Streams, global *globalOptions, explicit, operation string, args []string, branch string) (repository.MutationResult, error) {
+	target, err := resolveWorktreeTarget(ctx, streams, global, explicit)
+	if err != nil {
+		return repository.MutationResult{}, err
+	}
+	if target.close != nil {
+		defer target.close()
+	}
+	var result repository.MutationResult
+	if target.direct != nil {
+		var response hostruntime.LifecycleResult
+		switch operation {
+		case "add":
+			response, err = target.direct.AddWorktree(ctx, hostruntime.NewWorktreeMutationRequest(args[0], args[1], branch, target.identity))
+		case "remove":
+			response, err = target.direct.RemoveWorktree(ctx, hostruntime.NewWorktreeMutationRequest("", args[0], "", target.identity))
+		case "prune":
+			response, err = target.direct.PruneWorktrees(ctx, hostruntime.NewWorktreeMutationRequest("", "", "", target.identity))
+		}
+		result = response.MutationResult
+	} else {
+		connection := worktreeConnection(target.record, streams, global)
+		switch operation {
+		case "add":
+			result, err = target.remote.ssh.AddWorktree(ctx, connection, box.HostRuntime{Path: target.record.RuntimePath}, target.record.RemoteIdentity, args[0], args[1], branch)
+		case "remove":
+			result, err = target.remote.ssh.RemoveWorktree(ctx, connection, box.HostRuntime{Path: target.record.RuntimePath}, target.record.RemoteIdentity, args[0])
+		case "prune":
+			result, err = target.remote.ssh.PruneWorktrees(ctx, connection, box.HostRuntime{Path: target.record.RuntimePath}, target.record.RemoteIdentity)
+		}
+	}
+	if err != nil {
+		return repository.MutationResult{}, publicRepositoryError(err)
+	}
+	if err = validateLifecycleRoot(target, result.WorktreeRoot); err != nil {
+		return repository.MutationResult{}, err
+	}
+	return result, nil
+}
+
+func worktreeConnection(record box.Record, streams Streams, global *globalOptions) box.Connection {
+	return box.Connection{Destination: record.SSHDestination, IdentityFile: record.IdentityFile, BatchMode: !interactionAllowed(streams, global)}
+}
+
+func validateLifecycleRoot(target worktreeTarget, actual string) error {
+	if target.direct != nil {
+		return validateDirectWorktreeRoot(target, actual)
+	}
+	return validateRemoteWorktreeRoot(target.record, actual)
+}
+
 func publicRepositoryError(err error) error {
 	if repository.ErrorCode(err) == repository.CodeNotFound {
 		return box.NewError("not_found", err.Error(), err)
@@ -191,6 +320,10 @@ func publicRepositoryError(err error) error {
 	}
 	if hostruntime.ErrorCode(err) == hostruntime.CodeInvalidInput {
 		return box.NewError("invalid_input", err.Error(), err)
+	}
+	switch repository.ErrorCode(err) {
+	case repository.CodeConflict, repository.CodeAuthentication, repository.CodePermissionDenied, repository.CodeOperationInProgress, repository.CodeOutcomeUnknown:
+		return box.NewError(string(repository.ErrorCode(err)), err.Error(), err)
 	}
 	return err
 }
@@ -317,6 +450,42 @@ func writeWorktreeInspection(writer io.Writer, output string, inspection reposit
 		if _, err := fmt.Fprintf(writer, "Warning: %s: %s\n", humanSafe(warning.Path), humanSafe(warning.Message)); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func writeLifecycleResult(writer io.Writer, output string, result repository.MutationResult) error {
+	if output == "json" {
+		document := struct {
+			SchemaVersion       string              `json:"schema_version"`
+			Action              string              `json:"action"`
+			Recovered           bool                `json:"recovered"`
+			Repository          *repositoryDocument `json:"repository,omitempty"`
+			Worktree            *worktreeDocument   `json:"worktree,omitempty"`
+			Path                string              `json:"path,omitempty"`
+			RepositoriesChecked int                 `json:"repositories_checked,omitempty"`
+		}{SchemaVersion: "1", Action: result.Action, Recovered: result.Recovered, Path: result.Path, RepositoriesChecked: result.RepositoriesChecked}
+		if result.Inspection != nil {
+			repositoryValue := documentRepository(result.Inspection.Repository)
+			worktreeValue := documentWorktree(result.Inspection.Worktree)
+			document.Repository, document.Worktree = &repositoryValue, &worktreeValue
+		}
+		return json.NewEncoder(writer).Encode(document)
+	}
+	if output != "human" {
+		return fmt.Errorf("unsupported output format %q", output)
+	}
+	switch result.Action {
+	case "clone":
+		_, _ = fmt.Fprintf(writer, "Cloned %s\n", humanSafe(result.Path))
+	case "worktree_add":
+		_, _ = fmt.Fprintf(writer, "Added Worktree %s\n", humanSafe(result.Path))
+	case "worktree_remove":
+		_, _ = fmt.Fprintf(writer, "Removed Worktree %s\n", humanSafe(result.Path))
+	case "worktree_prune":
+		_, _ = fmt.Fprintf(writer, "Pruned Worktree registrations for %d repositories\n", result.RepositoriesChecked)
+	default:
+		return fmt.Errorf("unsupported lifecycle action %q", result.Action)
 	}
 	return nil
 }

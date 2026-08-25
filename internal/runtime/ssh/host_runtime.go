@@ -275,6 +275,61 @@ func (r *Runtime) InspectWorktree(ctx context.Context, connection box.Connection
 	return result.Inspection, nil
 }
 
+func (r *Runtime) CloneRepository(ctx context.Context, connection box.Connection, installed box.HostRuntime, expectedIdentity, source, branch string) (repository.MutationResult, error) {
+	var result hostruntime.LifecycleResult
+	request := hostruntime.NewCloneRequest(source, branch, expectedIdentity)
+	if err := r.invokeHostJSON(ctx, connection, installed, expectedIdentity, hostruntime.CapabilityRepositoryCloneV1, "host repository clone", request, &result); err != nil {
+		return repository.MutationResult{}, err
+	}
+	if err := validateLifecycleResult(result, expectedIdentity, "clone"); err != nil {
+		return repository.MutationResult{}, err
+	}
+	return result.MutationResult, nil
+}
+
+func (r *Runtime) AddWorktree(ctx context.Context, connection box.Connection, installed box.HostRuntime, expectedIdentity, repositoryPath, pathValue, branch string) (repository.MutationResult, error) {
+	var result hostruntime.LifecycleResult
+	request := hostruntime.NewWorktreeMutationRequest(repositoryPath, pathValue, branch, expectedIdentity)
+	if err := r.invokeHostJSON(ctx, connection, installed, expectedIdentity, hostruntime.CapabilityWorktreeAddV1, "host worktree add", request, &result); err != nil {
+		return repository.MutationResult{}, err
+	}
+	if err := validateLifecycleResult(result, expectedIdentity, "worktree_add"); err != nil {
+		return repository.MutationResult{}, err
+	}
+	return result.MutationResult, nil
+}
+
+func (r *Runtime) RemoveWorktree(ctx context.Context, connection box.Connection, installed box.HostRuntime, expectedIdentity, pathValue string) (repository.MutationResult, error) {
+	var result hostruntime.LifecycleResult
+	request := hostruntime.NewWorktreeMutationRequest("", pathValue, "", expectedIdentity)
+	if err := r.invokeHostJSON(ctx, connection, installed, expectedIdentity, hostruntime.CapabilityWorktreeRemoveV1, "host worktree remove", request, &result); err != nil {
+		return repository.MutationResult{}, err
+	}
+	if err := validateLifecycleResult(result, expectedIdentity, "worktree_remove"); err != nil {
+		return repository.MutationResult{}, err
+	}
+	return result.MutationResult, nil
+}
+
+func (r *Runtime) PruneWorktrees(ctx context.Context, connection box.Connection, installed box.HostRuntime, expectedIdentity string) (repository.MutationResult, error) {
+	var result hostruntime.LifecycleResult
+	request := hostruntime.NewWorktreeMutationRequest("", "", "", expectedIdentity)
+	if err := r.invokeHostJSON(ctx, connection, installed, expectedIdentity, hostruntime.CapabilityWorktreePruneV1, "host worktree prune", request, &result); err != nil {
+		return repository.MutationResult{}, err
+	}
+	if err := validateLifecycleResult(result, expectedIdentity, "worktree_prune"); err != nil {
+		return repository.MutationResult{}, err
+	}
+	return result.MutationResult, nil
+}
+
+func validateLifecycleResult(result hostruntime.LifecycleResult, expectedIdentity, action string) error {
+	if result.SchemaVersion != hostruntime.SchemaVersion || result.ProtocolVersion != hostruntime.ProtocolVersion || result.BoxIdentity != expectedIdentity || result.Action != action {
+		return box.NewError("host_runtime_incompatible", "Git lifecycle operation returned an incompatible result", nil)
+	}
+	return nil
+}
+
 func (r *Runtime) invokeHostJSON(ctx context.Context, connection box.Connection, installed box.HostRuntime, expectedIdentity, capability, operation string, request, target any) error {
 	if err := validateRuntimePath(installed.Path); err != nil {
 		return err

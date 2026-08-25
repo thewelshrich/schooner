@@ -63,6 +63,18 @@ func TestBoxHelpListsSelectionAndMaintenanceCommands(t *testing.T) {
 	}
 }
 
+func TestWorktreeHelpListsDiscoveryAndLifecycleCommands(t *testing.T) {
+	code, stdout, stderr := run(t.Context(), []string{"worktree", "--help"}, testBuild(), nil)
+	if code != 0 || stderr != "" {
+		t.Fatalf("code=%d stderr=%q", code, stderr)
+	}
+	for _, command := range []string{"list", "inspect", "add", "remove", "prune"} {
+		if !strings.Contains(stdout, command) {
+			t.Fatalf("worktree help missing %q: %s", command, stdout)
+		}
+	}
+}
+
 func TestWorktreeListRunsDirectlyOnIdentifiedBox(t *testing.T) {
 	home := t.TempDir()
 	root := filepath.Join(home, "worktrees")
@@ -120,6 +132,99 @@ func TestWorktreeListRunsDirectlyOnIdentifiedBox(t *testing.T) {
 	code, _, stderr = run(t.Context(), []string{"worktree", "list", "--no-input"}, testBuild(), nil)
 	if code != 1 || !strings.Contains(stderr, "worktree root differs from host configuration") {
 		t.Fatalf("drift code=%d stderr=%q", code, stderr)
+	}
+}
+
+func TestGitLifecycleCommandsRunDirectlyOnIdentifiedBox(t *testing.T) {
+	home := t.TempDir()
+	root := filepath.Join(home, "worktrees")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	identityPath := filepath.Join(home, ".local", "state", "schooner", "identity")
+	if err := os.MkdirAll(filepath.Dir(identityPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(identityPath, []byte("11111111-1111-4111-8111-111111111111\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_STATE_HOME", filepath.Join(home, "state"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
+	t.Setenv("SCHOONER_CONFIG", "")
+	configPath, err := config.Path()
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonicalRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root = canonicalRoot
+	if err = config.Write(configPath, config.Host{WorktreeRoot: root}); err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(home, "source.git")
+	seed := filepath.Join(home, "seed")
+	runGitTestCommand(t, home, "init", "--bare", source)
+	runGitTestCommand(t, home, "clone", source, seed)
+	runGitTestCommand(t, seed, "config", "user.name", "Schooner Test")
+	runGitTestCommand(t, seed, "config", "user.email", "test@example.com")
+	if err = os.WriteFile(filepath.Join(seed, "README.md"), []byte("test\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGitTestCommand(t, seed, "add", "README.md")
+	runGitTestCommand(t, seed, "commit", "-m", "initial")
+	runGitTestCommand(t, seed, "branch", "-M", "main")
+	runGitTestCommand(t, seed, "push", "origin", "main")
+	runGitTestCommand(t, source, "symbolic-ref", "HEAD", "refs/heads/main")
+	bin := filepath.Join(home, "bin")
+	if err = os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tmuxMetadata := filepath.Join(home, "tmux-metadata")
+	tmuxScript := "#!/bin/sh\nif [ -f " + fmt.Sprintf("%q", tmuxMetadata) + " ]; then cat " + fmt.Sprintf("%q", tmuxMetadata) + "; exit 0; fi\nprintf '%s\\n' 'no server running' >&2\nexit 1\n"
+	if err = os.WriteFile(filepath.Join(bin, "tmux"), []byte(tmuxScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	code, stdout, stderr := run(t.Context(), []string{"clone", source, "--output", "json", "--no-input"}, testBuild(), nil)
+	if code != 0 || stderr != "" || !strings.Contains(stdout, `"action":"clone"`) || !strings.Contains(stdout, `"relative_path":"source"`) {
+		t.Fatalf("clone code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	cloned := filepath.Join(root, "source")
+	runGitTestCommand(t, cloned, "branch", "feature")
+	code, stdout, stderr = run(t.Context(), []string{"worktree", "add", "source", "feature", "--branch", "feature", "--output", "json", "--no-input"}, testBuild(), nil)
+	if code != 0 || stderr != "" || !strings.Contains(stdout, `"action":"worktree_add"`) || !strings.Contains(stdout, `"relative_path":"feature"`) {
+		t.Fatalf("add code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	featurePath := filepath.Join(root, "feature")
+	if err = os.WriteFile(tmuxMetadata, []byte("1\tsession-1\t"+featurePath+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, _, stderr = run(t.Context(), []string{"worktree", "remove", "feature", "--output", "json", "--no-input"}, testBuild(), nil)
+	if code != 1 || !strings.Contains(stderr, `"code":"conflict"`) {
+		t.Fatalf("protected remove code=%d stderr=%q", code, stderr)
+	}
+	if err = os.Remove(tmuxMetadata); err != nil {
+		t.Fatal(err)
+	}
+	code, stdout, stderr = run(t.Context(), []string{"worktree", "remove", "feature", "--output", "json", "--no-input"}, testBuild(), nil)
+	if code != 0 || stderr != "" || !strings.Contains(stdout, `"action":"worktree_remove"`) {
+		t.Fatalf("remove code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	code, stdout, stderr = run(t.Context(), []string{"worktree", "prune", "--output", "json", "--no-input"}, testBuild(), nil)
+	if code != 0 || stderr != "" || !strings.Contains(stdout, `"action":"worktree_prune"`) || !strings.Contains(stdout, `"repositories_checked":1`) {
+		t.Fatalf("prune code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+}
+
+func runGitTestCommand(t *testing.T, directory string, arguments ...string) {
+	t.Helper()
+	command := exec.Command("git", append([]string{"-C", directory}, arguments...)...)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", arguments, err, output)
 	}
 }
 
