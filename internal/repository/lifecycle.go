@@ -321,7 +321,6 @@ func (l *Lifecycle) Add(ctx context.Context, request AddRequest) (MutationResult
 		}
 		if existing, inspectErr := Inspect(ctx, l.root, target); inspectErr == nil {
 			if (record.Checkpoint == "complete" || record.Checkpoint == "move_pending") && worktreeMatchesRecord(existing, record, target, commonDirectory) {
-				_, _ = l.runGit(ctx, "--git-dir", commonDirectory, "worktree", "unlock", existing.Worktree.Path)
 				recordSnapshot(record, existing)
 				record.Checkpoint = "complete"
 				if err = l.saveAfterEffect(record); err != nil {
@@ -361,8 +360,14 @@ func (l *Lifecycle) Add(ctx context.Context, request AddRequest) (MutationResult
 			if err = l.validateDiscoverableTarget(ctx, target, false); err != nil {
 				return MutationResult{}, err
 			}
-			_, _ = l.runGit(ctx, "--git-dir", commonDirectory, "worktree", "remove", "--", record.StagingPath)
-			_, _ = l.runGit(ctx, "--git-dir", commonDirectory, "worktree", "prune")
+			_, removeErr := l.runGit(ctx, "--git-dir", commonDirectory, "worktree", "remove", "--", record.StagingPath)
+			registered, registrationErr := l.registeredWorktree(ctx, commonDirectory, record.StagingPath)
+			if registrationErr != nil {
+				return MutationResult{}, &Error{Code: CodeOutcomeUnknown, Message: "operation-owned staging registration could not be reconciled", Cause: registrationErr}
+			}
+			if registered {
+				return MutationResult{}, &Error{Code: CodeOutcomeUnknown, Message: "operation-owned staging Worktree remains registered", Cause: removeErr}
+			}
 			if err = removeOwnedStage(record); err != nil {
 				return MutationResult{}, err
 			}
@@ -418,9 +423,23 @@ func (l *Lifecycle) Add(ctx context.Context, request AddRequest) (MutationResult
 		if parentErr != nil {
 			return MutationResult{}, &Error{Code: CodeConflict, Message: "Worktree destination ancestors changed during final validation", Cause: parentErr}
 		}
+		if err = l.validateDiscoverableTarget(ctx, target, true); err != nil {
+			_ = parent.Close()
+			return MutationResult{}, err
+		}
 		sourceParent, sourceErr := openExistingDirectory(l.root, filepath.Dir(record.StagingPath))
 		if sourceErr == nil {
 			sourceErr = renameNoReplaceAt(sourceParent, filepath.Base(record.StagingPath), parent, filepath.Base(target))
+		}
+		if sourceErr == nil {
+			if syncErr := sourceParent.Sync(); syncErr != nil {
+				sourceErr = syncErr
+			}
+		}
+		if sourceErr == nil {
+			if syncErr := parent.Sync(); syncErr != nil {
+				sourceErr = syncErr
+			}
 		}
 		if sourceParent != nil {
 			if closeErr := sourceParent.Close(); sourceErr == nil {
@@ -486,6 +505,7 @@ func (l *Lifecycle) Remove(ctx context.Context, selector string) (MutationResult
 	if err = ensureWorktreeIncarnation(&seed, initial); err != nil {
 		return MutationResult{}, err
 	}
+	recordSnapshot(&seed, initial)
 	intent := fingerprint("worktree_remove", target, initial.Repository.CommonDirectory, seed.IncarnationSHA256)
 	return l.withOperationLocked(ctx, "worktree_remove", target, intent, func(record *operationRecord, recovered bool) (MutationResult, error) {
 		current, inspectErr := Inspect(ctx, l.root, target)
@@ -525,6 +545,13 @@ func (l *Lifecycle) Remove(ctx context.Context, selector string) (MutationResult
 		current, inspectErr = Inspect(ctx, l.root, target)
 		if inspectErr != nil || dirty(current.Worktree.Status) {
 			return MutationResult{}, &Error{Code: CodeConflict, Message: "Worktree changed during removal validation", Cause: inspectErr}
+		}
+		matchesInitial, matchInitialErr := worktreeIdentityMatchesRecord(current, &seed, target)
+		if matchInitialErr != nil {
+			return MutationResult{}, &Error{Code: CodeOutcomeUnknown, Message: "initial Worktree identity could not be rechecked", Cause: matchInitialErr}
+		}
+		if !matchesInitial {
+			return MutationResult{}, &Error{Code: CodeConflict, Message: "Worktree was replaced during removal validation"}
 		}
 		if err = ensureWorktreeIncarnation(record, current); err != nil {
 			return MutationResult{}, err
@@ -878,6 +905,18 @@ func (l *Lifecycle) validateDiscoverableTarget(ctx context.Context, target strin
 		if err = validateDiscoveryCapacity(metrics, missingDirectories+2); err != nil {
 			return err
 		}
+	} else {
+		missingAncestors := 0
+		for ancestor := filepath.Dir(target); ancestor != l.root; ancestor = filepath.Dir(ancestor) {
+			if _, statErr := os.Lstat(ancestor); errors.Is(statErr, os.ErrNotExist) {
+				missingAncestors++
+			} else {
+				break
+			}
+		}
+		if err = validatePromotionCapacity(metrics, missingAncestors); err != nil {
+			return err
+		}
 	}
 	for ancestor := filepath.Dir(target); ancestor != l.root; ancestor = filepath.Dir(ancestor) {
 		if _, statErr := os.Lstat(ancestor); errors.Is(statErr, os.ErrNotExist) {
@@ -897,6 +936,13 @@ func (l *Lifecycle) validateDiscoverableTarget(ctx context.Context, target strin
 func validateDiscoveryCapacity(metrics discoveryMetrics, additionalDirectories int) error {
 	if metrics.Truncated || metrics.Inspected+1 > maxCandidates || metrics.Visited+additionalDirectories > maxVisited {
 		return &Error{Code: CodeConflict, Message: "Worktree destination would exceed discovery bounds"}
+	}
+	return nil
+}
+
+func validatePromotionCapacity(metrics discoveryMetrics, missingAncestors int) error {
+	if metrics.Truncated || metrics.Visited+missingAncestors > maxVisited {
+		return &Error{Code: CodeConflict, Message: "Worktree destination ancestors would exceed discovery bounds"}
 	}
 	return nil
 }

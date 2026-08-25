@@ -23,8 +23,14 @@ type lifecycleWorktreeUse struct {
 
 type lifecycleRunnerFunc func(context.Context, string, ...string) (process.Result, error)
 
+type lifecycleWorktreeUseFunc func(context.Context, string) ([]string, error)
+
 func (f lifecycleRunnerFunc) Run(ctx context.Context, name string, args ...string) (process.Result, error) {
 	return f(ctx, name, args...)
+}
+
+func (f lifecycleWorktreeUseFunc) ManagedSessions(ctx context.Context, path string) ([]string, error) {
+	return f(ctx, path)
 }
 
 func (f *lifecycleWorktreeUse) ManagedSessions(context.Context, string) ([]string, error) {
@@ -441,6 +447,9 @@ func TestValidateDiscoveryCapacityRejectsCandidateAndVisitExhaustion(t *testing.
 	if err := validateDiscoveryCapacity(discoveryMetrics{Visited: maxVisited - 1}, 2); ErrorCode(err) != CodeConflict {
 		t.Fatalf("staging reservation error = %v", err)
 	}
+	if err := validatePromotionCapacity(discoveryMetrics{Visited: maxVisited - 1}, 2); ErrorCode(err) != CodeConflict {
+		t.Fatalf("final-promotion capacity error = %v", err)
+	}
 }
 
 func TestLifecycleCloneRejectsExhaustedDiscoveryCapacity(t *testing.T) {
@@ -559,6 +568,101 @@ func TestLifecycleCanRemoveReplacementWorktree(t *testing.T) {
 	}
 	if _, inspectErr := Inspect(t.Context(), root, replacement.Path); ErrorCode(inspectErr) != CodeNotFound {
 		t.Fatalf("replacement Worktree remains after intentional removal: %v", inspectErr)
+	}
+}
+
+func TestLifecycleRemovalRejectsReplacementDuringSessionCheck(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "root")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var primary, linked string
+	replaced := false
+	usage := lifecycleWorktreeUseFunc(func(context.Context, string) ([]string, error) {
+		if !replaced {
+			replaced = true
+			runLifecycleGit(t, primary, "worktree", "remove", "--", linked)
+			runLifecycleGit(t, primary, "worktree", "add", linked, "replace-race")
+		}
+		return nil, nil
+	})
+	lifecycle, err := NewLifecycle(root, filepath.Join(t.TempDir(), "state"), usage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cloned, err := lifecycle.Clone(t.Context(), CloneRequest{Source: createLifecycleSource(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	primary = cloned.Path
+	runLifecycleGit(t, primary, "branch", "replace-race")
+	added, err := lifecycle.Add(t.Context(), AddRequest{RepositoryPath: primary, Path: "replace-race", Branch: "replace-race"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	linked = added.Path
+	if _, err = lifecycle.Remove(t.Context(), linked); ErrorCode(err) != CodeConflict {
+		t.Fatalf("replacement race removal error = %v", err)
+	}
+	if _, err = Inspect(t.Context(), root, linked); err != nil {
+		t.Fatalf("replacement Worktree was removed: %v", err)
+	}
+}
+
+func TestCompletedAddRetryPreservesUserWorktreeLock(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "root")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	lifecycle, err := NewLifecycle(root, filepath.Join(t.TempDir(), "state"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cloned, err := lifecycle.Clone(t.Context(), CloneRequest{Source: createLifecycleSource(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runLifecycleGit(t, cloned.Path, "branch", "locked")
+	added, err := lifecycle.Add(t.Context(), AddRequest{RepositoryPath: cloned.Path, Path: "locked", Branch: "locked"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runLifecycleGit(t, cloned.Path, "worktree", "lock", "--reason", "user-lock", added.Path)
+	if _, err = lifecycle.Add(t.Context(), AddRequest{RepositoryPath: cloned.Path, Path: "locked", Branch: "locked"}); err != nil {
+		t.Fatal(err)
+	}
+	output := lifecycleGitOutput(t, cloned.Path, "worktree", "list", "--porcelain")
+	if !strings.Contains(output, "locked user-lock") {
+		t.Fatalf("completed retry removed user lock: %s", output)
+	}
+}
+
+func TestFreshAddDoesNotPruneUnrelatedRegistration(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "root")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	lifecycle, err := NewLifecycle(root, filepath.Join(t.TempDir(), "state"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cloned, err := lifecycle.Clone(t.Context(), CloneRequest{Source: createLifecycleSource(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runLifecycleGit(t, cloned.Path, "branch", "stale-unrelated")
+	stale := filepath.Join(root, "stale-unrelated")
+	runLifecycleGit(t, cloned.Path, "worktree", "add", stale, "stale-unrelated")
+	if err = os.RemoveAll(stale); err != nil {
+		t.Fatal(err)
+	}
+	runLifecycleGit(t, cloned.Path, "config", "gc.worktreePruneExpire", "now")
+	runLifecycleGit(t, cloned.Path, "branch", "fresh")
+	if _, err = lifecycle.Add(t.Context(), AddRequest{RepositoryPath: cloned.Path, Path: "fresh", Branch: "fresh"}); err != nil {
+		t.Fatal(err)
+	}
+	if output := lifecycleGitOutput(t, cloned.Path, "worktree", "list", "--porcelain"); !strings.Contains(output, stale) {
+		t.Fatalf("fresh add pruned unrelated registration: %s", output)
 	}
 }
 

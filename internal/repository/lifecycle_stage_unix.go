@@ -58,6 +58,10 @@ func openDirectory(root, parent string, create bool) (*os.File, error) {
 				_ = unix.Close(current)
 				return nil, mkdirErr
 			}
+			if syncErr := unix.Fsync(current); syncErr != nil {
+				_ = unix.Close(current)
+				return nil, syncErr
+			}
 			next, openErr = unix.Openat(current, component, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 		}
 		_ = unix.Close(current)
