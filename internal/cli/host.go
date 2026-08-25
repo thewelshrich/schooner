@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -197,8 +198,9 @@ func encodeLifecycleError(writer io.Writer, identity string, err error) error {
 	case repository.CodeNotFound, repository.CodeInvalidInput, repository.CodeConflict, repository.CodeAuthentication, repository.CodePermissionDenied, repository.CodeOperationInProgress, repository.CodeOutcomeUnknown:
 		return encodeHostResult(writer, hostruntime.NewOperationError(identity, hostruntime.Code(code), err.Error()))
 	default:
-		if hostruntime.ErrorCode(err) == hostruntime.CodeInvalidInput {
-			return encodeHostResult(writer, hostruntime.NewOperationError(identity, hostruntime.CodeInvalidInput, err.Error()))
+		hostCode := hostruntime.ErrorCode(err)
+		if slices.Contains([]hostruntime.Code{hostruntime.CodeInvalidInput, hostruntime.CodeConflict, hostruntime.CodeAuthentication, hostruntime.CodePermissionDenied, hostruntime.CodeOperationInProgress, hostruntime.CodeOutcomeUnknown}, hostCode) {
+			return encodeHostResult(writer, hostruntime.NewOperationError(identity, hostCode, err.Error()))
 		}
 		return executionError{cause: err}
 	}

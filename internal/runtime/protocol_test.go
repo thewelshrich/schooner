@@ -95,22 +95,25 @@ func TestConfigureAndWorktreeRequestsAreStrict(t *testing.T) {
 }
 
 func TestGitLifecycleRequestsAreStrict(t *testing.T) {
-	if err := ValidateCloneRequest(NewCloneRequest("git@example.com:owner/repo.git", "main", testIdentity)); err != nil {
+	if err := ValidateCloneRequest(NewCloneRequest("git@example.com:owner/repo.git", "main", "/worktrees", testIdentity)); err != nil {
 		t.Fatal(err)
 	}
-	if err := ValidateCloneRequest(NewCloneRequest("", "", testIdentity)); ErrorCode(err) != CodeInvalidInput {
+	if err := ValidateCloneRequest(NewCloneRequest("", "", "/worktrees", testIdentity)); ErrorCode(err) != CodeInvalidInput {
 		t.Fatalf("empty clone source error = %v", err)
 	}
-	if err := ValidateWorktreeMutationRequest(NewWorktreeMutationRequest("owner/repo", "owner/feature", "feature", testIdentity), "add"); err != nil {
+	if err := ValidateCloneRequest(NewCloneRequest("source", "", "", testIdentity)); ErrorCode(err) != CodeInvalidInput {
+		t.Fatalf("missing clone root error = %v", err)
+	}
+	if err := ValidateWorktreeMutationRequest(NewWorktreeMutationRequest("owner/repo", "owner/feature", "feature", "/worktrees", testIdentity), "add"); err != nil {
 		t.Fatal(err)
 	}
-	if err := ValidateWorktreeMutationRequest(NewWorktreeMutationRequest("", "owner/feature", "", testIdentity), "remove"); err != nil {
+	if err := ValidateWorktreeMutationRequest(NewWorktreeMutationRequest("", "owner/feature", "", "/worktrees", testIdentity), "remove"); err != nil {
 		t.Fatal(err)
 	}
-	if err := ValidateWorktreeMutationRequest(NewWorktreeMutationRequest("", "", "", testIdentity), "prune"); err != nil {
+	if err := ValidateWorktreeMutationRequest(NewWorktreeMutationRequest("", "", "", "/worktrees", testIdentity), "prune"); err != nil {
 		t.Fatal(err)
 	}
-	if err := ValidateWorktreeMutationRequest(NewWorktreeMutationRequest("unexpected", "", "", testIdentity), "prune"); ErrorCode(err) != CodeInvalidInput {
+	if err := ValidateWorktreeMutationRequest(NewWorktreeMutationRequest("unexpected", "", "", "/worktrees", testIdentity), "prune"); ErrorCode(err) != CodeInvalidInput {
 		t.Fatalf("invalid prune error = %v", err)
 	}
 }

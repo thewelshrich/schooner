@@ -247,7 +247,7 @@ func (r *Runtime) CloneRepository(ctx context.Context, request hostruntime.Clone
 	if err := hostruntime.ValidateCloneRequest(request); err != nil {
 		return hostruntime.LifecycleResult{}, err
 	}
-	lifecycle, identity, err := r.lifecycle(request.BoxIdentity, request.NonInteractive)
+	lifecycle, identity, err := r.lifecycle(request.BoxIdentity, request.WorktreeRoot, request.NonInteractive)
 	if err != nil {
 		return hostruntime.LifecycleResult{}, err
 	}
@@ -262,7 +262,7 @@ func (r *Runtime) AddWorktree(ctx context.Context, request hostruntime.WorktreeM
 	if err := hostruntime.ValidateWorktreeMutationRequest(request, "add"); err != nil {
 		return hostruntime.LifecycleResult{}, err
 	}
-	lifecycle, identity, err := r.lifecycle(request.BoxIdentity, request.NonInteractive)
+	lifecycle, identity, err := r.lifecycle(request.BoxIdentity, request.WorktreeRoot, request.NonInteractive)
 	if err != nil {
 		return hostruntime.LifecycleResult{}, err
 	}
@@ -277,7 +277,7 @@ func (r *Runtime) RemoveWorktree(ctx context.Context, request hostruntime.Worktr
 	if err := hostruntime.ValidateWorktreeMutationRequest(request, "remove"); err != nil {
 		return hostruntime.LifecycleResult{}, err
 	}
-	lifecycle, identity, err := r.lifecycle(request.BoxIdentity, request.NonInteractive)
+	lifecycle, identity, err := r.lifecycle(request.BoxIdentity, request.WorktreeRoot, request.NonInteractive)
 	if err != nil {
 		return hostruntime.LifecycleResult{}, err
 	}
@@ -292,7 +292,7 @@ func (r *Runtime) PruneWorktrees(ctx context.Context, request hostruntime.Worktr
 	if err := hostruntime.ValidateWorktreeMutationRequest(request, "prune"); err != nil {
 		return hostruntime.LifecycleResult{}, err
 	}
-	lifecycle, identity, err := r.lifecycle(request.BoxIdentity, request.NonInteractive)
+	lifecycle, identity, err := r.lifecycle(request.BoxIdentity, request.WorktreeRoot, request.NonInteractive)
 	if err != nil {
 		return hostruntime.LifecycleResult{}, err
 	}
@@ -303,7 +303,7 @@ func (r *Runtime) PruneWorktrees(ctx context.Context, request hostruntime.Worktr
 	return hostruntime.LifecycleResult{SchemaVersion: hostruntime.SchemaVersion, ProtocolVersion: hostruntime.ProtocolVersion, BoxIdentity: identity, MutationResult: result}, nil
 }
 
-func (r *Runtime) lifecycle(expectedIdentity string, nonInteractive bool) (*repository.Lifecycle, string, error) {
+func (r *Runtime) lifecycle(expectedIdentity, expectedWorktreeRoot string, nonInteractive bool) (*repository.Lifecycle, string, error) {
 	identity, err := r.operationIdentity(expectedIdentity)
 	if err != nil {
 		return nil, "", err
@@ -311,6 +311,9 @@ func (r *Runtime) lifecycle(expectedIdentity string, nonInteractive bool) (*repo
 	configured, err := config.ReadDefault()
 	if err != nil {
 		return nil, "", err
+	}
+	if configured.WorktreeRoot != expectedWorktreeRoot {
+		return nil, "", &hostruntime.Error{Code: hostruntime.CodeConflict, Message: "configured Worktree Root does not match the lifecycle request"}
 	}
 	home, err := r.home()
 	if err != nil {

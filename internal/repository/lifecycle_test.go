@@ -1057,6 +1057,29 @@ func TestCatalogDiscoveryTruncationBlocksPrune(t *testing.T) {
 	}
 }
 
+func TestValidateCatalogCapacityReservesCreationEntry(t *testing.T) {
+	catalog := Catalog{WorktreeRoot: "/root", Repositories: []Repository{}, Warnings: []Warning{{Message: strings.Repeat("x", maxCatalogBytes-maxOriginBytes)}}}
+	if err := validateCatalogCapacity(catalog, "/root/new-worktree"); ErrorCode(err) != CodeConflict {
+		t.Fatalf("near-limit catalog capacity error = %v", err)
+	}
+	if err := validateCatalogCapacity(Catalog{WorktreeRoot: "/root", Repositories: []Repository{}, Warnings: []Warning{}}, "/root/new-worktree"); err != nil {
+		t.Fatalf("ordinary catalog capacity error = %v", err)
+	}
+}
+
+func TestCloneSnapshotRejectsPromotedChanges(t *testing.T) {
+	target := "/root/repo"
+	record := operationRecord{Branch: "main", HEAD: "abc", Origin: "https://example.com/repo.git"}
+	inspection := Inspection{Repository: Repository{CommonDirectory: target + "/.git", Origin: record.Origin}, Worktree: Worktree{Kind: Primary, Path: target, GitDirectory: target + "/.git", Branch: record.Branch, HEAD: record.HEAD}}
+	if !cloneMatchesRecord(inspection, &record, target) {
+		t.Fatal("matching promoted clone snapshot was rejected")
+	}
+	inspection.Worktree.HEAD = "changed"
+	if cloneMatchesRecord(inspection, &record, target) {
+		t.Fatal("changed promoted clone snapshot was accepted")
+	}
+}
+
 func TestLifecycleUsesRootOwnedStagingForNestedTargets(t *testing.T) {
 	root := t.TempDir()
 	external := t.TempDir()

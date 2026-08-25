@@ -274,7 +274,9 @@ func (l *Lifecycle) Clone(ctx context.Context, request CloneRequest) (MutationRe
 		if err != nil {
 			return MutationResult{}, &Error{Code: CodeOutcomeUnknown, Message: "cloned Worktree could not be verified", Cause: err}
 		}
-		recordSnapshot(record, inspected)
+		if !cloneMatchesRecord(inspected, record, target) {
+			return MutationResult{}, &Error{Code: CodeOutcomeUnknown, Message: "promoted clone changed after its saved snapshot was verified"}
+		}
 		record.Checkpoint = "complete"
 		if err = l.saveAfterEffect(record); err != nil {
 			return MutationResult{}, err
@@ -804,6 +806,9 @@ func (l *Lifecycle) createOwnedStage(record *operationRecord) error {
 		_ = os.Remove(parent)
 		return &Error{Code: CodeOutcomeUnknown, Message: "operation staging ownership could not be recorded", Cause: err}
 	}
+	if err = syncDirectory(parent); err != nil {
+		return &Error{Code: CodeOutcomeUnknown, Message: "operation staging ownership directory could not be synced", Cause: err}
+	}
 	return nil
 }
 
@@ -1000,6 +1005,16 @@ func (l *Lifecycle) validateDiscoverableTarget(ctx context.Context, target strin
 	if len(strings.Split(filepath.ToSlash(relative), "/")) > maxDepth {
 		return &Error{Code: CodeInvalidInput, Message: fmt.Sprintf("Worktree destination exceeds the discovery depth limit of %d", maxDepth)}
 	}
+	catalog, err := Discover(ctx, l.root)
+	if err != nil {
+		return err
+	}
+	if catalogDiscoveryTruncated(catalog) {
+		return &Error{Code: CodeConflict, Message: "Worktree destination cannot be added while catalog discovery is truncated"}
+	}
+	if err = validateCatalogCapacity(catalog, target); err != nil {
+		return err
+	}
 	_, _, metrics, err := walkCandidatesMeasured(ctx, l.root, maxVisited, commandRunner{})
 	if err != nil {
 		return err
@@ -1045,6 +1060,18 @@ func (l *Lifecycle) validateDiscoverableTarget(ctx context.Context, target strin
 		} else if inspectErr != nil && ErrorCode(inspectErr) != CodeNotFound {
 			return inspectErr
 		}
+	}
+	return nil
+}
+
+func validateCatalogCapacity(catalog Catalog, target string) error {
+	encodedCatalog, err := json.Marshal(catalog)
+	if err != nil {
+		return &Error{Code: CodeOutcomeUnknown, Message: "Worktree catalog capacity could not be verified", Cause: err}
+	}
+	entryBudget := maxOriginBytes + 4*len(target) + 4096
+	if len(encodedCatalog)+entryBudget > maxCatalogBytes {
+		return &Error{Code: CodeConflict, Message: "Worktree destination would exceed the catalog output limit"}
 	}
 	return nil
 }

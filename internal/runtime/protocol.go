@@ -116,6 +116,7 @@ type CloneRequest struct {
 	SchemaVersion   string `json:"schema_version"`
 	ProtocolVersion string `json:"protocol_version"`
 	BoxIdentity     string `json:"box_identity"`
+	WorktreeRoot    string `json:"worktree_root"`
 	Source          string `json:"source"`
 	Branch          string `json:"branch,omitempty"`
 	NonInteractive  bool   `json:"-"`
@@ -125,6 +126,7 @@ type WorktreeMutationRequest struct {
 	SchemaVersion   string `json:"schema_version"`
 	ProtocolVersion string `json:"protocol_version"`
 	BoxIdentity     string `json:"box_identity"`
+	WorktreeRoot    string `json:"worktree_root"`
 	RepositoryPath  string `json:"repository_path,omitempty"`
 	Path            string `json:"path,omitempty"`
 	Branch          string `json:"branch,omitempty"`
@@ -218,12 +220,12 @@ func NewWorktreeRequest(selector, boxIdentity string) WorktreeRequest {
 	return WorktreeRequest{SchemaVersion: SchemaVersion, ProtocolVersion: ProtocolVersion, BoxIdentity: boxIdentity, Selector: selector}
 }
 
-func NewCloneRequest(source, branch, boxIdentity string) CloneRequest {
-	return CloneRequest{SchemaVersion: SchemaVersion, ProtocolVersion: ProtocolVersion, BoxIdentity: boxIdentity, Source: source, Branch: branch}
+func NewCloneRequest(source, branch, worktreeRoot, boxIdentity string) CloneRequest {
+	return CloneRequest{SchemaVersion: SchemaVersion, ProtocolVersion: ProtocolVersion, BoxIdentity: boxIdentity, WorktreeRoot: worktreeRoot, Source: source, Branch: branch}
 }
 
-func NewWorktreeMutationRequest(repositoryPath, pathValue, branch, boxIdentity string) WorktreeMutationRequest {
-	return WorktreeMutationRequest{SchemaVersion: SchemaVersion, ProtocolVersion: ProtocolVersion, BoxIdentity: boxIdentity, RepositoryPath: repositoryPath, Path: pathValue, Branch: branch}
+func NewWorktreeMutationRequest(repositoryPath, pathValue, branch, worktreeRoot, boxIdentity string) WorktreeMutationRequest {
+	return WorktreeMutationRequest{SchemaVersion: SchemaVersion, ProtocolVersion: ProtocolVersion, BoxIdentity: boxIdentity, WorktreeRoot: worktreeRoot, RepositoryPath: repositoryPath, Path: pathValue, Branch: branch}
 }
 
 func NewOperationError(boxIdentity string, code Code, message string) OperationError {
@@ -263,7 +265,7 @@ func ValidateCloneRequest(request CloneRequest) error {
 	if !identityPattern.MatchString(request.BoxIdentity) {
 		return &Error{Code: CodeInvalidIdentity, Message: "clone request Box identity is invalid"}
 	}
-	if request.Source == "" || len(request.Source) > 4096 || hasControl(request.Source) || len(request.Branch) > 1024 || hasControl(request.Branch) {
+	if !validPath(request.WorktreeRoot) || request.Source == "" || len(request.Source) > 4096 || hasControl(request.Source) || len(request.Branch) > 1024 || hasControl(request.Branch) {
 		return &Error{Code: CodeInvalidInput, Message: "clone request is invalid"}
 	}
 	return nil
@@ -275,6 +277,9 @@ func ValidateWorktreeMutationRequest(request WorktreeMutationRequest, operation 
 	}
 	if !identityPattern.MatchString(request.BoxIdentity) {
 		return &Error{Code: CodeInvalidIdentity, Message: "Worktree mutation request Box identity is invalid"}
+	}
+	if !validPath(request.WorktreeRoot) {
+		return &Error{Code: CodeInvalidInput, Message: "Worktree mutation request root is invalid"}
 	}
 	for _, value := range []string{request.RepositoryPath, request.Path, request.Branch} {
 		if len(value) > 4096 || hasControl(value) {

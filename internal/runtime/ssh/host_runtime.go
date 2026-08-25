@@ -275,9 +275,9 @@ func (r *Runtime) InspectWorktree(ctx context.Context, connection box.Connection
 	return result.Inspection, nil
 }
 
-func (r *Runtime) CloneRepository(ctx context.Context, connection box.Connection, installed box.HostRuntime, expectedIdentity, source, branch string) (repository.MutationResult, error) {
+func (r *Runtime) CloneRepository(ctx context.Context, connection box.Connection, installed box.HostRuntime, expectedIdentity, worktreeRoot, source, branch string) (repository.MutationResult, error) {
 	var result hostruntime.LifecycleResult
-	request := hostruntime.NewCloneRequest(source, branch, expectedIdentity)
+	request := hostruntime.NewCloneRequest(source, branch, worktreeRoot, expectedIdentity)
 	if err := r.invokeHostJSON(ctx, connection, installed, expectedIdentity, hostruntime.CapabilityRepositoryCloneV1, "host repository clone", request, &result); err != nil {
 		return repository.MutationResult{}, err
 	}
@@ -287,9 +287,9 @@ func (r *Runtime) CloneRepository(ctx context.Context, connection box.Connection
 	return result.MutationResult, nil
 }
 
-func (r *Runtime) AddWorktree(ctx context.Context, connection box.Connection, installed box.HostRuntime, expectedIdentity, repositoryPath, pathValue, branch string) (repository.MutationResult, error) {
+func (r *Runtime) AddWorktree(ctx context.Context, connection box.Connection, installed box.HostRuntime, expectedIdentity, worktreeRoot, repositoryPath, pathValue, branch string) (repository.MutationResult, error) {
 	var result hostruntime.LifecycleResult
-	request := hostruntime.NewWorktreeMutationRequest(repositoryPath, pathValue, branch, expectedIdentity)
+	request := hostruntime.NewWorktreeMutationRequest(repositoryPath, pathValue, branch, worktreeRoot, expectedIdentity)
 	if err := r.invokeHostJSON(ctx, connection, installed, expectedIdentity, hostruntime.CapabilityWorktreeAddV1, "host worktree add", request, &result); err != nil {
 		return repository.MutationResult{}, err
 	}
@@ -299,9 +299,9 @@ func (r *Runtime) AddWorktree(ctx context.Context, connection box.Connection, in
 	return result.MutationResult, nil
 }
 
-func (r *Runtime) RemoveWorktree(ctx context.Context, connection box.Connection, installed box.HostRuntime, expectedIdentity, pathValue string) (repository.MutationResult, error) {
+func (r *Runtime) RemoveWorktree(ctx context.Context, connection box.Connection, installed box.HostRuntime, expectedIdentity, worktreeRoot, pathValue string) (repository.MutationResult, error) {
 	var result hostruntime.LifecycleResult
-	request := hostruntime.NewWorktreeMutationRequest("", pathValue, "", expectedIdentity)
+	request := hostruntime.NewWorktreeMutationRequest("", pathValue, "", worktreeRoot, expectedIdentity)
 	if err := r.invokeHostJSON(ctx, connection, installed, expectedIdentity, hostruntime.CapabilityWorktreeRemoveV1, "host worktree remove", request, &result); err != nil {
 		return repository.MutationResult{}, err
 	}
@@ -311,9 +311,9 @@ func (r *Runtime) RemoveWorktree(ctx context.Context, connection box.Connection,
 	return result.MutationResult, nil
 }
 
-func (r *Runtime) PruneWorktrees(ctx context.Context, connection box.Connection, installed box.HostRuntime, expectedIdentity string) (repository.MutationResult, error) {
+func (r *Runtime) PruneWorktrees(ctx context.Context, connection box.Connection, installed box.HostRuntime, expectedIdentity, worktreeRoot string) (repository.MutationResult, error) {
 	var result hostruntime.LifecycleResult
-	request := hostruntime.NewWorktreeMutationRequest("", "", "", expectedIdentity)
+	request := hostruntime.NewWorktreeMutationRequest("", "", "", worktreeRoot, expectedIdentity)
 	if err := r.invokeHostJSON(ctx, connection, installed, expectedIdentity, hostruntime.CapabilityWorktreePruneV1, "host worktree prune", request, &result); err != nil {
 		return repository.MutationResult{}, err
 	}

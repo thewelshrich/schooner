@@ -245,13 +245,13 @@ func runClone(ctx context.Context, streams Streams, global *globalOptions, expli
 	}
 	var result repository.MutationResult
 	if target.direct != nil {
-		request := hostruntime.NewCloneRequest(source, branch, target.identity)
+		request := hostruntime.NewCloneRequest(source, branch, target.configured.WorktreeRoot, target.identity)
 		request.NonInteractive = !interactionAllowed(streams, global)
 		response, callErr := target.direct.CloneRepository(ctx, request)
 		result, err = response.MutationResult, callErr
 	} else {
 		connection := worktreeConnection(target.record, streams, global)
-		result, err = target.remote.ssh.CloneRepository(ctx, connection, box.HostRuntime{Path: target.record.RuntimePath}, target.record.RemoteIdentity, source, branch)
+		result, err = target.remote.ssh.CloneRepository(ctx, connection, box.HostRuntime{Path: target.record.RuntimePath}, target.record.RemoteIdentity, target.record.WorktreeRoot, source, branch)
 	}
 	if err != nil {
 		return repository.MutationResult{}, publicRepositoryError(err)
@@ -276,15 +276,15 @@ func runWorktreeMutation(ctx context.Context, streams Streams, global *globalOpt
 		nonInteractive := !interactionAllowed(streams, global)
 		switch operation {
 		case "add":
-			request := hostruntime.NewWorktreeMutationRequest(args[0], args[1], branch, target.identity)
+			request := hostruntime.NewWorktreeMutationRequest(args[0], args[1], branch, target.configured.WorktreeRoot, target.identity)
 			request.NonInteractive = nonInteractive
 			response, err = target.direct.AddWorktree(ctx, request)
 		case "remove":
-			request := hostruntime.NewWorktreeMutationRequest("", args[0], "", target.identity)
+			request := hostruntime.NewWorktreeMutationRequest("", args[0], "", target.configured.WorktreeRoot, target.identity)
 			request.NonInteractive = nonInteractive
 			response, err = target.direct.RemoveWorktree(ctx, request)
 		case "prune":
-			request := hostruntime.NewWorktreeMutationRequest("", "", "", target.identity)
+			request := hostruntime.NewWorktreeMutationRequest("", "", "", target.configured.WorktreeRoot, target.identity)
 			request.NonInteractive = nonInteractive
 			response, err = target.direct.PruneWorktrees(ctx, request)
 		}
@@ -293,11 +293,11 @@ func runWorktreeMutation(ctx context.Context, streams Streams, global *globalOpt
 		connection := worktreeConnection(target.record, streams, global)
 		switch operation {
 		case "add":
-			result, err = target.remote.ssh.AddWorktree(ctx, connection, box.HostRuntime{Path: target.record.RuntimePath}, target.record.RemoteIdentity, args[0], args[1], branch)
+			result, err = target.remote.ssh.AddWorktree(ctx, connection, box.HostRuntime{Path: target.record.RuntimePath}, target.record.RemoteIdentity, target.record.WorktreeRoot, args[0], args[1], branch)
 		case "remove":
-			result, err = target.remote.ssh.RemoveWorktree(ctx, connection, box.HostRuntime{Path: target.record.RuntimePath}, target.record.RemoteIdentity, args[0])
+			result, err = target.remote.ssh.RemoveWorktree(ctx, connection, box.HostRuntime{Path: target.record.RuntimePath}, target.record.RemoteIdentity, target.record.WorktreeRoot, args[0])
 		case "prune":
-			result, err = target.remote.ssh.PruneWorktrees(ctx, connection, box.HostRuntime{Path: target.record.RuntimePath}, target.record.RemoteIdentity)
+			result, err = target.remote.ssh.PruneWorktrees(ctx, connection, box.HostRuntime{Path: target.record.RuntimePath}, target.record.RemoteIdentity, target.record.WorktreeRoot)
 		}
 	}
 	if err != nil {

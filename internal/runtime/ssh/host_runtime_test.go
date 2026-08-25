@@ -28,11 +28,11 @@ func TestCloneRepositoryUsesTypedHostLifecycleOperation(t *testing.T) {
 		t.Fatal(err)
 	}
 	runtime := NewHost(testSSHExecutable(t), nil, "v1.2.3", nil)
-	got, err := runtime.CloneRepository(t.Context(), box.Connection{Destination: "trusted-host"}, box.HostRuntime{Path: target}, hostTestIdentity, "git@example.com:owner/repo.git", "main")
+	got, err := runtime.CloneRepository(t.Context(), box.Connection{Destination: "trusted-host"}, box.HostRuntime{Path: target}, hostTestIdentity, "/worktrees", "git@example.com:owner/repo.git", "main")
 	if err != nil || got.Action != "clone" || got.Path != "/home/alice/schooner/repo" || got.Inspection == nil {
 		t.Fatalf("clone = %+v, %v", got, err)
 	}
-	if _, err = runtime.CloneRepository(t.Context(), box.Connection{Destination: "trusted-host", BatchMode: true}, box.HostRuntime{Path: target}, hostTestIdentity, "git@example.com:owner/repo.git", "main"); err != nil {
+	if _, err = runtime.CloneRepository(t.Context(), box.Connection{Destination: "trusted-host", BatchMode: true}, box.HostRuntime{Path: target}, hostTestIdentity, "/worktrees", "git@example.com:owner/repo.git", "main"); err != nil {
 		t.Fatalf("noninteractive clone = %v", err)
 	}
 }
