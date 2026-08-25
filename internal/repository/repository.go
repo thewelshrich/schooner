@@ -162,26 +162,15 @@ func inspect(ctx context.Context, root, selector string, commands runner) (Inspe
 	if err != nil {
 		return Inspection{}, err
 	}
-	var repository Repository
-	for _, candidate := range catalog.Repositories {
-		if candidate.CommonDirectory == item.repository {
-			repository = candidate
-			break
-		}
-	}
-	if repository.CommonDirectory == "" {
-		repository = Repository{CommonDirectory: item.repository, Origin: item.origin, Linked: []Worktree{}}
-		if item.worktree.Kind == Primary {
-			copy := item.worktree
-			repository.Primary = &copy
-		} else {
-			repository.Linked = append(repository.Linked, item.worktree)
-		}
-	}
+	repository := repositoryRelationship(catalog, item)
 	latest, err := inspectCandidate(ctx, canonicalRoot, target, commands)
 	if err != nil {
 		return Inspection{}, fmt.Errorf("revalidate worktree %q: %w", selector, err)
 	}
+	if latest.repository != item.repository {
+		repository = repositoryRelationship(catalog, latest)
+	}
+	repository.Origin = latest.origin
 	selectedPresent := false
 	if repository.Primary != nil && repository.Primary.Path == latest.worktree.Path {
 		copy := latest.worktree
@@ -206,6 +195,22 @@ func inspect(ctx context.Context, root, selector string, commands runner) (Inspe
 	return Inspection{WorktreeRoot: canonicalRoot, Repository: repository, Worktree: latest.worktree}, nil
 }
 
+func repositoryRelationship(catalog Catalog, item observation) Repository {
+	for _, candidate := range catalog.Repositories {
+		if candidate.CommonDirectory == item.repository {
+			return candidate
+		}
+	}
+	repository := Repository{CommonDirectory: item.repository, Origin: item.origin, Linked: []Worktree{}}
+	if item.worktree.Kind == Primary {
+		copy := item.worktree
+		repository.Primary = &copy
+	} else {
+		repository.Linked = append(repository.Linked, item.worktree)
+	}
+	return repository
+}
+
 func walkCandidates(ctx context.Context, root string) ([]string, []Warning, error) {
 	return walkCandidatesBounded(ctx, root, maxVisited)
 }
@@ -216,6 +221,7 @@ func walkCandidatesBounded(ctx context.Context, root string, visitLimit int) ([]
 	errCandidateLimit := errors.New("candidate limit reached")
 	errVisitLimit := errors.New("filesystem entry limit reached")
 	visited := 0
+	depthLimited := false
 	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -250,6 +256,10 @@ func walkCandidatesBounded(ctx context.Context, root string, visitLimit int) ([]
 			depth = strings.Count(relative, string(filepath.Separator)) + 1
 		}
 		if depth > maxDepth {
+			if !depthLimited {
+				appendRequiredWarning(&warnings, root, fmt.Sprintf("discovery depth limit of %d reached", maxDepth))
+				depthLimited = true
+			}
 			return filepath.SkipDir
 		}
 		gitPath := filepath.Join(path, ".git")
@@ -542,6 +552,11 @@ func sanitizeOrigin(raw string) string {
 	}
 	if index := strings.IndexAny(raw, "?#"); index >= 0 {
 		raw = raw[:index]
+	}
+	if colon := strings.IndexByte(raw, ':'); colon > 0 && !strings.ContainsRune(raw[:colon], '/') {
+		if at := strings.LastIndexByte(raw[:colon], '@'); at >= 0 {
+			raw = raw[at+1:]
+		}
 	}
 	return strings.TrimSuffix(raw, ".git")
 }

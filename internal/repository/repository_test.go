@@ -220,6 +220,22 @@ func TestWalkCandidatesBoundsVisitedEntries(t *testing.T) {
 	}
 }
 
+func TestDiscoverReportsDepthTruncation(t *testing.T) {
+	root := t.TempDir()
+	deep := root
+	for depth := 0; depth <= maxDepth; depth++ {
+		deep = filepath.Join(deep, fmtInt(depth))
+	}
+	mustGit(t, "init", deep)
+	catalog, err := Discover(t.Context(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(catalog.Repositories) != 0 || len(catalog.Warnings) != 1 || !strings.Contains(catalog.Warnings[0].Message, "depth limit") {
+		t.Fatalf("catalog = %+v", catalog)
+	}
+}
+
 func TestRequiredWarningReplacesLastBoundedWarning(t *testing.T) {
 	warnings := make([]Warning, maxWarnings)
 	for index := range warnings {
@@ -234,6 +250,18 @@ func TestRequiredWarningReplacesLastBoundedWarning(t *testing.T) {
 func TestSanitizeOriginRemovesUserInfoFromEveryURI(t *testing.T) {
 	if got := sanitizeOrigin("ssh://alice:secret@example.com/owner/repo.git?token=x#fragment"); got != "ssh://example.com/owner/repo" {
 		t.Fatalf("origin = %q", got)
+	}
+	if got := sanitizeOrigin("alice@example.com:owner/repo.git?token=x#fragment"); got != "example.com:owner/repo" {
+		t.Fatalf("SCP origin = %q", got)
+	}
+}
+
+func TestRepositoryRelationshipFallsBackToRevalidatedIdentity(t *testing.T) {
+	catalog := Catalog{Repositories: []Repository{{CommonDirectory: "/old/common", Primary: &Worktree{Path: "/root/repo", GitDirectory: "/old/git", Kind: Primary}}}}
+	latest := observation{repository: "/new/common", origin: "ssh://example.com/new/repo", worktree: Worktree{Path: "/root/repo", GitDirectory: "/new/git", Kind: Primary}}
+	relationship := repositoryRelationship(catalog, latest)
+	if relationship.CommonDirectory != latest.repository || relationship.Primary == nil || relationship.Primary.GitDirectory != latest.worktree.GitDirectory {
+		t.Fatalf("relationship = %+v", relationship)
 	}
 }
 
