@@ -70,7 +70,7 @@ func TestWriteListResultMixedInventory(t *testing.T) {
 	var out bytes.Buffer
 	observed := time.Date(2026, 8, 24, 15, 2, 0, 0, time.UTC)
 	entries := []box.ListEntry{
-		{Box: box.Record{Name: "api", Acquisition: "adopted", SSHDestination: "api"}, Reachable: true, HasObservation: true, LastObservedAt: observed},
+		{Box: box.Record{Name: "api", Acquisition: "adopted", SSHDestination: "api", Default: true}, Reachable: true, HasObservation: true, LastObservedAt: observed},
 		{Box: box.Record{Name: "cloud", Acquisition: "provisioned", SSHDestination: "root@203.0.113.8", Provider: "digitalocean", ProviderRegion: "fra1"}, Reachable: true, HasObservation: true, LastObservedAt: observed},
 	}
 	if err := writeListResult(&out, "human", entries, uitheme.New(uitheme.Auto, false)); err != nil {
@@ -78,7 +78,7 @@ func TestWriteListResultMixedInventory(t *testing.T) {
 	}
 	got := out.String()
 	for _, want := range []string{
-		"NAME", "PROVIDER", "REGION", "REACHABLE", "LAST OBSERVED", "SSH",
+		"NAME", "DEFAULT", "PROVIDER", "REGION", "REACHABLE", "LAST OBSERVED", "SSH",
 		"api", "SSH",
 		"cloud", "DigitalOcean", "fra1",
 		"yes", "2026-08-24T15:02:00Z",
@@ -92,7 +92,7 @@ func TestWriteListResultMixedInventory(t *testing.T) {
 	if err := writeListResult(&out, "json", entries, nil); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), `"acquisition":"adopted"`) || !strings.Contains(out.String(), `"region":"fra1"`) || !strings.Contains(out.String(), `"reachable":true`) {
+	if !strings.Contains(out.String(), `"acquisition":"adopted"`) || !strings.Contains(out.String(), `"region":"fra1"`) || !strings.Contains(out.String(), `"reachable":true`) || !strings.Contains(out.String(), `"default":true`) {
 		t.Fatalf("json = %s", out.String())
 	}
 }

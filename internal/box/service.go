@@ -89,68 +89,20 @@ func (s *Service) Add(ctx context.Context, req AddRequest) (AddResult, error) {
 		return AddResult{}, err
 	}
 
-	runtimePath, err := hostprotocol.InstallPath(capabilities.Home)
+	prepared, err := s.prepareHost(ctx, hostPreparationRequest{
+		Connection:      conn,
+		Identity:        identity,
+		WorkspaceRoot:   req.WorkspaceRoot,
+		Capabilities:    capabilities,
+		Mode:            HostRepair,
+		Prerequisites:   true,
+		Progress:        req.Progress,
+		IdentityChanged: "remote box identity changed during setup",
+	})
 	if err != nil {
-		return AddResult{}, NewError("unsupported", err.Error(), err)
-	}
-	var installedRuntime HostRuntime
-	if err = s.runStep(ctx, req.Progress, StepRuntime, "Install or verify the Schooner host runtime", func() error {
-		var runtimeErr error
-		installedRuntime, runtimeErr = s.runtime.EnsureHost(ctx, conn, HostInstallRequest{
-			Path:             runtimePath,
-			OS:               "linux",
-			Architecture:     capabilities.Architecture,
-			ExpectedIdentity: identity,
-		})
-		return runtimeErr
-	}); err != nil {
 		return AddResult{}, err
 	}
-
-	missing := missingTools(capabilities)
-	if err := s.runStep(ctx, req.Progress, StepPrerequisites, "Install or verify Git and tmux", func() error {
-		if len(missing) == 0 {
-			return nil
-		}
-		if !capabilities.PasswordlessSudo {
-			return &Error{Code: "permission_denied", Message: "Git or tmux is missing and passwordless sudo is unavailable; install the missing packages or enable sudo -n, then retry"}
-		}
-		return s.runtime.InstallTools(ctx, conn, missing)
-	}); err != nil {
-		return AddResult{}, err
-	}
-
-	var workspaceRoot string
-	if err := s.runStep(ctx, req.Progress, StepWorkspaceRoot, "Prepare workspace root", func() error {
-		var err error
-		workspaceRoot, err = s.runtime.EnsureWorkspaceRoot(ctx, conn, req.WorkspaceRoot)
-		return err
-	}); err != nil {
-		return AddResult{}, err
-	}
-
-	if err := s.runStep(ctx, req.Progress, StepVerify, "Verify box readiness", func() error {
-		var err error
-		capabilities, err = s.runtime.InspectHost(ctx, conn, installedRuntime, workspaceRoot, identity)
-		if err != nil {
-			return err
-		}
-		if err = certify(capabilities); err != nil {
-			return err
-		}
-		if capabilities.RemoteIdentity != identity {
-			return &Error{Code: "conflict", Message: "remote box identity changed during setup"}
-		}
-		if !capabilities.Git.Available || !capabilities.Tmux.Available {
-			return &Error{Code: "unsupported", Message: "Git and tmux are required but were not available after setup"}
-		}
-		if !capabilities.WorkspaceRootExists {
-			return &Error{Code: "unsupported", Message: "workspace root was not available after setup"}
-		}
-		return nil
-	}); err != nil {
-		return AddResult{}, err
-	}
+	capabilities = prepared.Capabilities
 
 	now := s.now().UTC()
 	recordID, err := s.newID()
@@ -161,13 +113,13 @@ func (s *Service) Add(ctx context.Context, req AddRequest) (AddResult, error) {
 	if acquisition == "" {
 		acquisition = "adopted"
 	}
-	record := Record{ID: recordID, Name: req.Name, Acquisition: acquisition, SSHDestination: req.SSHDestination, IdentityFile: req.IdentityFile, RemoteIdentity: identity, RuntimePath: runtimePath, WorkspaceRoot: workspaceRoot, Provider: req.Provider, ProviderResourceID: req.ProviderResourceID, ProviderCorrelationID: req.ProviderCorrelationID, CredentialProfile: req.CredentialProfile, ProviderRegion: req.ProviderRegion, CreatedAt: now, UpdatedAt: now}
+	record := Record{ID: recordID, Name: req.Name, Acquisition: acquisition, SSHDestination: req.SSHDestination, IdentityFile: req.IdentityFile, RemoteIdentity: identity, RuntimePath: prepared.RuntimePath, WorkspaceRoot: prepared.WorkspaceRoot, Provider: req.Provider, ProviderResourceID: req.ProviderResourceID, ProviderCorrelationID: req.ProviderCorrelationID, CredentialProfile: req.CredentialProfile, ProviderRegion: req.ProviderRegion, CreatedAt: now, UpdatedAt: now}
 	observation := Observation{BoxID: record.ID, ObservedAt: now, Capabilities: capabilities}
 	if err := s.runStep(ctx, req.Progress, StepSave, "Save local inventory", func() error { return s.store.CompleteAdd(ctx, op, record, observation) }); err != nil {
 		return AddResult{}, err
 	}
 	verified := []string{"git", "schooner", "tmux"}
-	return AddResult{Box: record, Capabilities: capabilities, Installed: missing, Verified: verified}, nil
+	return AddResult{Box: record, Capabilities: capabilities, Installed: prepared.Installed, Verified: verified}, nil
 }
 
 func (s *Service) Status(ctx context.Context, req StatusRequest) (StatusResult, error) {
@@ -181,48 +133,18 @@ func (s *Service) Status(ctx context.Context, req StatusRequest) (StatusResult, 
 	conn := Connection{Destination: record.SSHDestination, IdentityFile: record.IdentityFile, BatchMode: req.BatchMode}
 	var capabilities Capabilities
 	err = s.runStep(ctx, req.Progress, StepConnect, "Check live box status", func() error {
-		var inspectErr error
 		if record.RuntimePath == "" {
-			inspectErr = NewError("host_runtime_missing", "the box does not have a recorded host runtime path", nil)
-		} else {
-			capabilities, inspectErr = s.runtime.InspectHost(ctx, conn, HostRuntime{Path: record.RuntimePath}, record.WorkspaceRoot, record.RemoteIdentity)
+			return NewError("host_runtime_missing", fmt.Sprintf("the box does not have a recorded host runtime; run \"schooner box setup %s\"", record.Name), nil)
 		}
-		if !runtimeRepairable(inspectErr) {
-			return inspectErr
+		var inspectErr error
+		capabilities, inspectErr = s.runtime.InspectHost(ctx, conn, HostRuntime{Path: record.RuntimePath}, record.WorkspaceRoot, record.RemoteIdentity)
+		if ErrorCode(inspectErr) == "host_runtime_missing" {
+			return NewError("host_runtime_missing", fmt.Sprintf("the host runtime is missing; run \"schooner box setup %s\"", record.Name), inspectErr)
 		}
-
-		probe, repairErr := s.runtime.Inspect(ctx, conn, record.WorkspaceRoot)
-		if repairErr != nil {
-			return repairErr
+		if ErrorCode(inspectErr) == "host_runtime_incompatible" {
+			return NewError("host_runtime_incompatible", fmt.Sprintf("the host runtime is incompatible; run \"schooner box update %s\"", record.Name), inspectErr)
 		}
-		if repairErr = certify(probe); repairErr != nil {
-			return repairErr
-		}
-		if probe.RemoteIdentity != record.RemoteIdentity {
-			return &Error{Code: "conflict", Message: "the connected machine does not match the recorded box identity"}
-		}
-		runtimePath := record.RuntimePath
-		if runtimePath == "" || ErrorCode(inspectErr) == "host_runtime_missing" {
-			runtimePath, repairErr = hostprotocol.InstallPath(probe.Home)
-			if repairErr != nil {
-				return NewError("unsupported", repairErr.Error(), repairErr)
-			}
-		}
-		installed, repairErr := s.runtime.EnsureHost(ctx, conn, HostInstallRequest{Path: runtimePath, OS: "linux", Architecture: probe.Architecture, ExpectedIdentity: record.RemoteIdentity})
-		if repairErr != nil {
-			return repairErr
-		}
-		capabilities, repairErr = s.runtime.InspectHost(ctx, conn, installed, record.WorkspaceRoot, record.RemoteIdentity)
-		if repairErr != nil {
-			return repairErr
-		}
-		if record.RuntimePath != runtimePath {
-			if repairErr = s.store.UpdateRuntimePath(ctx, record.ID, runtimePath); repairErr != nil {
-				return repairErr
-			}
-			record.RuntimePath = runtimePath
-		}
-		return nil
+		return inspectErr
 	})
 	if err != nil {
 		if last, lastErr := s.store.LastObservation(ctx, record.ID); lastErr == nil {
@@ -256,6 +178,192 @@ func (s *Service) Status(ctx context.Context, req StatusRequest) (StatusResult, 
 		return StatusResult{}, err
 	}
 	return StatusResult{Box: record, Observation: observation}, nil
+}
+
+func (s *Service) Setup(ctx context.Context, req SetupRequest) (SetupResult, error) {
+	result, err := s.maintain(ctx, maintenanceRequest{Name: req.Name, BatchMode: req.BatchMode, Progress: req.Progress, Mode: HostRepair, Prerequisites: true})
+	if err != nil {
+		return SetupResult{}, err
+	}
+	return SetupResult{Box: result.Box, Capabilities: result.Capabilities, Host: result.Host, Installed: result.Installed}, nil
+}
+
+func (s *Service) Update(ctx context.Context, req UpdateRequest) (UpdateResult, error) {
+	result, err := s.maintain(ctx, maintenanceRequest{Name: req.Name, BatchMode: req.BatchMode, Progress: req.Progress, Mode: HostUpdate})
+	if err != nil {
+		return UpdateResult{}, err
+	}
+	return UpdateResult{Box: result.Box, Capabilities: result.Capabilities, Host: result.Host}, nil
+}
+
+type maintenanceRequest struct {
+	Name          string
+	BatchMode     bool
+	Progress      Progress
+	Mode          HostInstallMode
+	Prerequisites bool
+}
+
+type maintenanceResult struct {
+	Box          Record
+	Capabilities Capabilities
+	Host         HostInstallResult
+	Installed    []string
+}
+
+func (s *Service) maintain(ctx context.Context, req maintenanceRequest) (maintenanceResult, error) {
+	if err := ValidateName(req.Name); err != nil {
+		return maintenanceResult{}, invalid(err)
+	}
+	record, err := s.store.FindByName(ctx, req.Name)
+	if err != nil {
+		return maintenanceResult{}, err
+	}
+	connection := Connection{Destination: record.SSHDestination, IdentityFile: record.IdentityFile, BatchMode: req.BatchMode}
+	if err = s.runStep(ctx, req.Progress, StepResolve, "Resolve SSH destination", func() error { return s.runtime.Resolve(ctx, connection) }); err != nil {
+		return maintenanceResult{}, err
+	}
+	var capabilities Capabilities
+	if err = s.runStep(ctx, req.Progress, StepInspect, "Inspect and verify the recorded box", func() error {
+		var inspectErr error
+		capabilities, inspectErr = s.runtime.Inspect(ctx, connection, record.WorkspaceRoot)
+		if inspectErr != nil {
+			return inspectErr
+		}
+		if inspectErr = certify(capabilities); inspectErr != nil {
+			return inspectErr
+		}
+		if capabilities.RemoteIdentity == "" || capabilities.RemoteIdentity != record.RemoteIdentity {
+			return &Error{Code: "conflict", Message: "the connected machine does not match the recorded box identity"}
+		}
+		return nil
+	}); err != nil {
+		return maintenanceResult{}, err
+	}
+	prepared, err := s.prepareHost(ctx, hostPreparationRequest{
+		Connection:      connection,
+		Identity:        record.RemoteIdentity,
+		WorkspaceRoot:   record.WorkspaceRoot,
+		Capabilities:    capabilities,
+		Mode:            req.Mode,
+		Prerequisites:   req.Prerequisites,
+		Progress:        req.Progress,
+		IdentityChanged: "the connected machine does not match the recorded box identity",
+	})
+	if err != nil {
+		return maintenanceResult{}, err
+	}
+	if record.RuntimePath != prepared.RuntimePath {
+		if err = s.store.UpdateRuntimePath(ctx, record.ID, prepared.RuntimePath); err != nil {
+			return maintenanceResult{}, err
+		}
+		record.RuntimePath = prepared.RuntimePath
+	}
+	observation := Observation{BoxID: record.ID, ObservedAt: s.now().UTC(), Capabilities: prepared.Capabilities}
+	if err = s.store.SaveObservation(ctx, observation); err != nil {
+		return maintenanceResult{}, err
+	}
+	return maintenanceResult{Box: record, Capabilities: prepared.Capabilities, Host: prepared.Host, Installed: prepared.Installed}, nil
+}
+
+type hostPreparationRequest struct {
+	Connection      Connection
+	Identity        string
+	WorkspaceRoot   string
+	Capabilities    Capabilities
+	Mode            HostInstallMode
+	Prerequisites   bool
+	Progress        Progress
+	IdentityChanged string
+}
+
+type hostPreparationResult struct {
+	RuntimePath   string
+	WorkspaceRoot string
+	Capabilities  Capabilities
+	Host          HostInstallResult
+	Installed     []string
+}
+
+// prepareHost owns the mutating host-convergence sequence shared by initial
+// adoption and explicit maintenance. Callers must inspect and authenticate the
+// remote identity before entering this method.
+func (s *Service) prepareHost(ctx context.Context, req hostPreparationRequest) (hostPreparationResult, error) {
+	runtimePath, err := hostprotocol.InstallPath(req.Capabilities.Home)
+	if err != nil {
+		return hostPreparationResult{}, NewError("unsupported", err.Error(), err)
+	}
+
+	var host HostInstallResult
+	if err = s.runStep(ctx, req.Progress, StepRuntime, "Install or verify the Schooner host runtime", func() error {
+		var hostErr error
+		host, hostErr = s.runtime.EnsureHost(ctx, req.Connection, HostInstallRequest{
+			Path:             runtimePath,
+			OS:               "linux",
+			Architecture:     req.Capabilities.Architecture,
+			ExpectedIdentity: req.Identity,
+			Mode:             req.Mode,
+		})
+		return hostErr
+	}); err != nil {
+		return hostPreparationResult{}, err
+	}
+
+	installed := []string(nil)
+	workspaceRoot := req.WorkspaceRoot
+	if req.Prerequisites {
+		installed = missingTools(req.Capabilities)
+		if err = s.runStep(ctx, req.Progress, StepPrerequisites, "Install or verify Git and tmux", func() error {
+			if len(installed) == 0 {
+				return nil
+			}
+			if !req.Capabilities.PasswordlessSudo {
+				return &Error{Code: "permission_denied", Message: "Git or tmux is missing and passwordless sudo is unavailable; install the missing packages or enable sudo -n, then retry"}
+			}
+			return s.runtime.InstallTools(ctx, req.Connection, installed)
+		}); err != nil {
+			return hostPreparationResult{}, err
+		}
+		if err = s.runStep(ctx, req.Progress, StepWorkspaceRoot, "Prepare workspace root", func() error {
+			var rootErr error
+			workspaceRoot, rootErr = s.runtime.EnsureWorkspaceRoot(ctx, req.Connection, req.WorkspaceRoot)
+			return rootErr
+		}); err != nil {
+			return hostPreparationResult{}, err
+		}
+	}
+
+	capabilities := req.Capabilities
+	if err = s.runStep(ctx, req.Progress, StepVerify, "Verify the Schooner host runtime", func() error {
+		var verifyErr error
+		capabilities, verifyErr = s.runtime.InspectHost(ctx, req.Connection, host.Runtime, workspaceRoot, req.Identity)
+		if verifyErr != nil {
+			return verifyErr
+		}
+		if verifyErr = certify(capabilities); verifyErr != nil {
+			return verifyErr
+		}
+		if capabilities.RemoteIdentity != req.Identity {
+			return &Error{Code: "conflict", Message: req.IdentityChanged}
+		}
+		if req.Prerequisites && (!capabilities.Git.Available || !capabilities.Tmux.Available) {
+			return &Error{Code: "unsupported", Message: "Git and tmux are required but were not available after setup"}
+		}
+		if req.Prerequisites && !capabilities.WorkspaceRootExists {
+			return &Error{Code: "unsupported", Message: "workspace root was not available after setup"}
+		}
+		return nil
+	}); err != nil {
+		return hostPreparationResult{}, err
+	}
+
+	return hostPreparationResult{
+		RuntimePath:   runtimePath,
+		WorkspaceRoot: workspaceRoot,
+		Capabilities:  capabilities,
+		Host:          host,
+		Installed:     installed,
+	}, nil
 }
 
 // PrepareSSH loads the authoritative local connection inputs for an
@@ -356,14 +464,6 @@ func missingTools(c Capabilities) []string {
 	}
 	sort.Strings(result)
 	return result
-}
-
-func runtimeRepairable(err error) bool {
-	if err == nil {
-		return false
-	}
-	code := ErrorCode(err)
-	return code == "host_runtime_missing" || code == "host_runtime_incompatible"
 }
 
 func invalid(err error) error { return &Error{Code: "invalid_input", Message: err.Error(), Cause: err} }

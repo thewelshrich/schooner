@@ -60,8 +60,45 @@ func TestStoreLifecycleAndMigrationHistory(t *testing.T) {
 	}
 	defer store.Close()
 	var count int
-	if err = store.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil || count != 5 {
+	if err = store.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil || count != 6 {
 		t.Fatalf("migration count = %d, err = %v", count, err)
+	}
+}
+
+func TestDefaultBoxSwitchingAndRemoval(t *testing.T) {
+	store, err := Open(t.Context(), filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	saveStoreBox(t, store, box.Record{ID: "box-alpha", Name: "alpha", Acquisition: "adopted", SSHDestination: "alpha", RemoteIdentity: "remote-alpha", WorkspaceRoot: "/home/alice/schooner"})
+	saveStoreBox(t, store, box.Record{ID: "box-beta", Name: "beta", Acquisition: "adopted", SSHDestination: "beta", RemoteIdentity: "remote-beta", WorkspaceRoot: "/home/alice/schooner"})
+
+	selected, err := store.SetDefault(t.Context(), "alpha")
+	if err != nil || !selected.Default {
+		t.Fatalf("selected=%+v err=%v", selected, err)
+	}
+	if _, err = store.SetDefault(t.Context(), "missing"); !box.IsNotFound(err) {
+		t.Fatalf("missing error=%v", err)
+	}
+	alpha, err := store.FindByID(t.Context(), "box-alpha")
+	if err != nil || !alpha.Default {
+		t.Fatalf("alpha=%+v err=%v", alpha, err)
+	}
+	if _, err = store.SetDefault(t.Context(), "beta"); err != nil {
+		t.Fatal(err)
+	}
+	alpha, _ = store.FindByName(t.Context(), "alpha")
+	beta, _ := store.FindByName(t.Context(), "beta")
+	if alpha.Default || !beta.Default {
+		t.Fatalf("alpha=%+v beta=%+v", alpha, beta)
+	}
+	if _, err = store.Remove(t.Context(), "beta"); err != nil {
+		t.Fatal(err)
+	}
+	alpha, _ = store.FindByName(t.Context(), "alpha")
+	if alpha.Default {
+		t.Fatalf("default was promoted after removal: %+v", alpha)
 	}
 }
 
@@ -191,6 +228,20 @@ func TestProviderMigrationPreservesVersionOneAdoptedBox(t *testing.T) {
 		t.Fatalf("observation=%+v err=%v", observation, err)
 	}
 	if _, err = os.Stat(path + ".pre-v2-backup"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func saveStoreBox(t *testing.T, store *Store, record box.Record) {
+	t.Helper()
+	now := time.Date(2026, 8, 25, 12, 0, 0, 0, time.UTC)
+	record.CreatedAt, record.UpdatedAt = now, now
+	op := box.AddOperation{Name: record.Name, SSHDestination: record.SSHDestination, WorkspaceRoot: record.WorkspaceRoot, UpdatedAt: now}
+	if err := store.BeginAdd(t.Context(), op); err != nil {
+		t.Fatal(err)
+	}
+	observation := box.Observation{BoxID: record.ID, ObservedAt: now, Capabilities: box.Capabilities{OSID: "ubuntu", OSVersion: "24.04", Architecture: "amd64"}}
+	if err := store.CompleteAdd(t.Context(), op, record, observation); err != nil {
 		t.Fatal(err)
 	}
 }

@@ -145,6 +145,7 @@ func openBoxService(ctx context.Context, streams Streams, build BuildInfo) (*box
 
 type application struct {
 	boxes       *box.Service
+	boxResolver *box.Resolver
 	credentials *credentials.Manager
 	acquisition *acquisition.Service
 	ssh         *sshRuntime.Runtime
@@ -172,7 +173,7 @@ func openApplication(ctx context.Context, streams Streams, build BuildInfo) (*ap
 	cloud := digitalOcean.New()
 	credentialManager := credentials.New(store, credentials.KeyringStore{}, cloud)
 	acquisitionService := acquisition.New(boxes, store, credentialManager, cloud, sshIdentitySource{stateDirectory: filepath.Dir(path)}, runtime)
-	return &application{boxes: boxes, credentials: credentialManager, acquisition: acquisitionService, ssh: runtime}, func() { _ = store.Close() }, nil
+	return &application{boxes: boxes, boxResolver: box.NewResolver(store), credentials: credentialManager, acquisition: acquisitionService, ssh: runtime}, func() { _ = store.Close() }, nil
 }
 
 type executionError struct{ cause error }

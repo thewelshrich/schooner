@@ -103,9 +103,11 @@ and dependency rules.
 ## Remote application and OpenSSH transport
 
 Schooner installs the same application on each supported Box for the configured
-SSH user. Installation is versioned and recoverable. Before an operation, the
-local application verifies that a compatible remote application is available
-and installs or updates it when necessary.
+SSH user. Installation is versioned and recoverable. Box acquisition and
+explicit setup repair the installation; explicit update targets the invoking
+CLI's verified version. Observational commands such as `box status` report a
+missing or incompatible runtime with maintenance guidance and do not mutate the
+Box.
 
 Bootstrap is the only shell-based part of the remote-application path. It
 creates a unique staging file in `~/.local/bin`, streams the already verified
@@ -121,10 +123,11 @@ recorded path. Once present, product inspection uses fixed, hidden typed
 operations rather than shell scripts.
 
 The handshake negotiates a protocol version and sorted capabilities separately
-from the Schooner release version. Compatible older or newer executables may be
-reused. An incompatible older executable can be replaced, while a newer one is
-never silently downgraded; unidentifiable version skew fails with recovery
-guidance.
+from the Schooner release version. Setup may reuse compatible older or newer
+executables. Update replaces a compatible older executable, reuses an equal
+version, and retains a compatible newer executable. An incompatible newer
+runtime is never silently downgraded; unidentifiable version skew fails with
+recovery guidance.
 
 The artifact module resolves a version and supported remote platform to one
 verified executable. GitHub Releases is the canonical published source. A
@@ -240,6 +243,12 @@ Input precedence is explicit:
 flags > documented environment variables > TOML > defaults
 ```
 
+Box resolution is a shared domain policy rather than command-specific logic:
+an explicit Box wins over the current Local Link, configured default, sole
+configured Box, and interactive selection, in that order. Ambiguity is an error
+when interaction is unavailable. Destructive Box commands require their own
+explicit or interactive target and do not consume the configured default.
+
 Interactive prompts occur only when interaction is allowed and relevant
 streams are terminals. Non-interactive, JSON, remote-operation, and test paths
 never initialize Huh. Every prompt-backed action has a complete flag or input
@@ -267,6 +276,7 @@ Initial error categories include:
 invalid_input
 not_found
 conflict
+box_selection_ambiguous
 authentication_required
 permission_denied
 unsupported
@@ -287,8 +297,9 @@ output are redacted before entering error context or logs.
 
 ## Persistence and authority
 
-SQLite stores Box inventory, Credential Profile references, Local Links, Sync
-Points, cached observations, schema version, and operation recovery metadata.
+SQLite stores Box inventory and its single optional default, Credential Profile
+references, Local Links, Sync Points, cached observations, schema version, and
+operation recovery metadata.
 It does not become authority for live remote or provider state.
 
 The SQLite adapter uses WAL, a bounded busy timeout, short transactions, and

@@ -32,56 +32,110 @@ type ArtifactResolver interface {
 	Resolve(context.Context, string, artifact.Platform) (artifact.Result, error)
 }
 
-func (r *Runtime) EnsureHost(ctx context.Context, connection box.Connection, request box.HostInstallRequest) (box.HostRuntime, error) {
+func (r *Runtime) EnsureHost(ctx context.Context, connection box.Connection, request box.HostInstallRequest) (box.HostInstallResult, error) {
+	if request.Mode == "" {
+		request.Mode = box.HostRepair
+	}
 	if err := validateHostInstallRequest(request); err != nil {
-		return box.HostRuntime{}, err
+		return box.HostInstallResult{}, err
+	}
+	targetVersion := r.Version
+	if targetVersion == "" {
+		targetVersion = "dev"
 	}
 	var resolved *artifact.Result
 	for attempt := 0; attempt < 3; attempt++ {
 		installed, remoteVersion, err := r.assessHost(ctx, connection, request)
 		if err != nil {
-			return box.HostRuntime{}, err
+			return box.HostInstallResult{}, err
 		}
 		if installed != nil {
-			return *installed, nil
+			result, replace, decisionErr := compatibleHostDecision(targetVersion, request.Mode, *installed)
+			if decisionErr != nil {
+				return box.HostInstallResult{}, decisionErr
+			}
+			if !replace {
+				return result, nil
+			}
+			remoteVersion = installed.Version
+		} else if request.Mode == box.HostUpdate && remoteVersion == "" {
+			return box.HostInstallResult{}, box.NewError("host_runtime_missing", "the host runtime is missing; run box setup before updating", nil)
 		}
 		if err = replacementAllowed(r.Version, remoteVersion); err != nil {
-			return box.HostRuntime{}, err
+			return box.HostInstallResult{}, err
 		}
 
 		baseline, err := r.fingerprintAt(ctx, connection, request.Path)
 		if err != nil {
-			return box.HostRuntime{}, err
+			return box.HostInstallResult{}, err
 		}
 		// Reassess after taking the compare-and-swap baseline. Promotion also
 		// verifies this fingerprint while holding the remote install lock.
 		installed, remoteVersion, err = r.assessHost(ctx, connection, request)
 		if err != nil {
-			return box.HostRuntime{}, err
+			return box.HostInstallResult{}, err
 		}
 		if installed != nil {
-			return *installed, nil
+			result, replace, decisionErr := compatibleHostDecision(targetVersion, request.Mode, *installed)
+			if decisionErr != nil {
+				return box.HostInstallResult{}, decisionErr
+			}
+			if !replace {
+				return result, nil
+			}
+			remoteVersion = installed.Version
+		} else if request.Mode == box.HostUpdate && remoteVersion == "" {
+			return box.HostInstallResult{}, box.NewError("host_runtime_missing", "the host runtime is missing; run box setup before updating", nil)
 		}
 		if err = replacementAllowed(r.Version, remoteVersion); err != nil {
-			return box.HostRuntime{}, err
+			return box.HostInstallResult{}, err
 		}
 		if r.Artifacts == nil {
-			return box.HostRuntime{}, box.NewError("artifact_unavailable", "host runtime artifacts are not configured", nil)
+			return box.HostInstallResult{}, box.NewError("artifact_unavailable", "host runtime artifacts are not configured", nil)
 		}
 		if resolved == nil {
 			result, resolveErr := r.Artifacts.Resolve(ctx, r.Version, artifact.Platform{OS: request.OS, Arch: request.Architecture})
 			if resolveErr != nil {
-				return box.HostRuntime{}, artifactError(resolveErr)
+				return box.HostInstallResult{}, artifactError(resolveErr)
 			}
 			resolved = &result
 		}
-		result, installErr := r.installHost(ctx, connection, request, *resolved, baseline)
+		installedRuntime, installErr := r.installHost(ctx, connection, request, *resolved, baseline)
 		if errors.Is(installErr, errInstallTargetChanged) {
 			continue
 		}
-		return result, installErr
+		if installErr != nil {
+			return box.HostInstallResult{}, installErr
+		}
+		action := box.HostReplaced
+		if remoteVersion == "" {
+			action = box.HostInstalled
+		}
+		return box.HostInstallResult{Runtime: installedRuntime, PreviousVersion: remoteVersion, TargetVersion: targetVersion, Action: action}, nil
 	}
-	return box.HostRuntime{}, box.NewError("host_runtime_incompatible", "the host runtime changed repeatedly during installation; retry after the other installation completes", errInstallTargetChanged)
+	return box.HostInstallResult{}, box.NewError("host_runtime_incompatible", "the host runtime changed repeatedly during installation; retry after the other installation completes", errInstallTargetChanged)
+}
+
+func compatibleHostDecision(targetVersion string, mode box.HostInstallMode, installed box.HostRuntime) (box.HostInstallResult, bool, error) {
+	result := box.HostInstallResult{Runtime: installed, PreviousVersion: installed.Version, TargetVersion: targetVersion, Action: box.HostReused}
+	if mode == box.HostRepair {
+		return result, false, nil
+	}
+	if targetVersion == "dev" || installed.Version == "dev" {
+		if targetVersion == installed.Version {
+			return result, false, nil
+		}
+		return box.HostInstallResult{}, false, box.NewError("host_runtime_incompatible", fmt.Sprintf("host runtime version %q cannot be safely compared with local version %q", installed.Version, targetVersion), nil)
+	}
+	comparison, ok := semver.Compare(installed.Version, targetVersion)
+	if !ok {
+		return box.HostInstallResult{}, false, box.NewError("host_runtime_incompatible", fmt.Sprintf("host runtime version %q cannot be compared with local version %q", installed.Version, targetVersion), nil)
+	}
+	if comparison > 0 {
+		result.Action = box.HostNewerRetained
+		return result, false, nil
+	}
+	return result, comparison < 0, nil
 }
 
 func (r *Runtime) assessHost(ctx context.Context, connection box.Connection, request box.HostInstallRequest) (*box.HostRuntime, string, error) {
@@ -302,6 +356,9 @@ func (r *Runtime) fingerprintAt(ctx context.Context, connection box.Connection, 
 }
 
 func validateHostInstallRequest(request box.HostInstallRequest) error {
+	if request.Mode != box.HostRepair && request.Mode != box.HostUpdate {
+		return box.NewError("invalid_input", "host runtime maintenance mode is invalid", nil)
+	}
 	if request.OS != "linux" || (request.Architecture != "amd64" && request.Architecture != "arm64") {
 		return box.NewError("unsupported", fmt.Sprintf("host runtime artifacts do not support %s/%s", request.OS, request.Architecture), nil)
 	}
