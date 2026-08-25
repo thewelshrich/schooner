@@ -136,7 +136,14 @@ func runWorktreeList(ctx context.Context, streams Streams, global *globalOptions
 		return result.Catalog, err
 	}
 	connection := box.Connection{Destination: target.record.SSHDestination, IdentityFile: target.record.IdentityFile, BatchMode: !interactionAllowed(streams, global)}
-	return target.remote.ssh.ListWorktrees(ctx, connection, box.HostRuntime{Path: target.record.RuntimePath}, target.record.RemoteIdentity)
+	catalog, err := target.remote.ssh.ListWorktrees(ctx, connection, box.HostRuntime{Path: target.record.RuntimePath}, target.record.RemoteIdentity)
+	if err != nil {
+		return repository.Catalog{}, err
+	}
+	if err = validateRemoteWorktreeRoot(target.record, catalog.WorktreeRoot); err != nil {
+		return repository.Catalog{}, err
+	}
+	return catalog, nil
 }
 
 func runWorktreeInspect(ctx context.Context, streams Streams, global *globalOptions, explicit, selector string) (repository.Inspection, error) {
@@ -152,7 +159,21 @@ func runWorktreeInspect(ctx context.Context, streams Streams, global *globalOpti
 		return result.Inspection, err
 	}
 	connection := box.Connection{Destination: target.record.SSHDestination, IdentityFile: target.record.IdentityFile, BatchMode: !interactionAllowed(streams, global)}
-	return target.remote.ssh.InspectWorktree(ctx, connection, box.HostRuntime{Path: target.record.RuntimePath}, target.record.RemoteIdentity, selector)
+	inspection, err := target.remote.ssh.InspectWorktree(ctx, connection, box.HostRuntime{Path: target.record.RuntimePath}, target.record.RemoteIdentity, selector)
+	if err != nil {
+		return repository.Inspection{}, err
+	}
+	if err = validateRemoteWorktreeRoot(target.record, inspection.WorktreeRoot); err != nil {
+		return repository.Inspection{}, err
+	}
+	return inspection, nil
+}
+
+func validateRemoteWorktreeRoot(record box.Record, actual string) error {
+	if actual != record.WorktreeRoot {
+		return box.NewError("conflict", fmt.Sprintf("remote Box worktree root differs from local inventory; run \"schooner box setup %s\"", record.Name), nil)
+	}
+	return nil
 }
 
 type worktreeDocument struct {

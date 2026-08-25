@@ -148,7 +148,7 @@ func compatibleHostDecision(targetVersion string, mode box.HostInstallMode, inst
 func (r *Runtime) assessHost(ctx context.Context, connection box.Connection, request box.HostInstallRequest) (*box.HostRuntime, string, error) {
 	hello, attempt, decodeErr := r.helloAt(ctx, connection, request.Path)
 	if decodeErr == nil && attempt.ExitCode == 0 {
-		if err := validateInstalledHello(hello, request.ExpectedIdentity); err == nil {
+		if err := validateReusableHello(hello, request.ExpectedIdentity); err == nil {
 			if hello.OS != request.OS || hello.Architecture != request.Architecture {
 				return nil, "", box.NewError("unsupported", fmt.Sprintf("host runtime reported %s/%s instead of %s/%s", hello.OS, hello.Architecture, request.OS, request.Architecture), nil)
 			}
@@ -465,6 +465,10 @@ func validateRuntimePath(runtimePath string) error {
 
 func validateInstalledHello(hello hostruntime.Hello, expectedIdentity string) error {
 	return hostruntime.ValidateHello(hello, expectedIdentity, hostruntime.CapabilityHelloV1)
+}
+
+func validateReusableHello(hello hostruntime.Hello, expectedIdentity string) error {
+	return hostruntime.ValidateHello(hello, expectedIdentity, hostruntime.CapabilityHelloV1, hostruntime.CapabilityConfigureV1, hostruntime.CapabilityInspectV2)
 }
 
 func validateCandidateHello(hello hostruntime.Hello, request box.HostInstallRequest, result artifact.Result) error {

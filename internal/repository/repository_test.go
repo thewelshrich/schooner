@@ -220,6 +220,17 @@ func TestWalkCandidatesBoundsVisitedEntries(t *testing.T) {
 	}
 }
 
+func TestRequiredWarningReplacesLastBoundedWarning(t *testing.T) {
+	warnings := make([]Warning, maxWarnings)
+	for index := range warnings {
+		warnings[index] = Warning{Message: fmtInt(index)}
+	}
+	appendRequiredWarning(&warnings, "/root", "filesystem entry limit reached")
+	if len(warnings) != maxWarnings || warnings[len(warnings)-1].Message != "filesystem entry limit reached" {
+		t.Fatalf("warnings = %+v", warnings)
+	}
+}
+
 func TestSanitizeOriginRemovesUserInfoFromEveryURI(t *testing.T) {
 	if got := sanitizeOrigin("ssh://alice:secret@example.com/owner/repo.git?token=x#fragment"); got != "ssh://example.com/owner/repo" {
 		t.Fatalf("origin = %q", got)

@@ -221,7 +221,7 @@ func walkCandidatesBounded(ctx context.Context, root string, visitLimit int) ([]
 			return err
 		}
 		if visited == visitLimit {
-			appendWarning(&warnings, root, fmt.Sprintf("filesystem entry limit of %d reached", visitLimit))
+			appendRequiredWarning(&warnings, root, fmt.Sprintf("filesystem entry limit of %d reached", visitLimit))
 			return errVisitLimit
 		}
 		visited++
@@ -261,7 +261,7 @@ func walkCandidatesBounded(ctx context.Context, root string, visitLimit int) ([]
 			}
 			if info.IsDir() || info.Mode().IsRegular() {
 				if len(candidates) == maxCandidates {
-					appendWarning(&warnings, root, fmt.Sprintf("checkout candidate limit of %d reached", maxCandidates))
+					appendRequiredWarning(&warnings, root, fmt.Sprintf("checkout candidate limit of %d reached", maxCandidates))
 					return errCandidateLimit
 				}
 				candidates = append(candidates, path)
@@ -588,6 +588,15 @@ func appendWarning(warnings *[]Warning, path, message string) {
 		return
 	}
 	*warnings = append(*warnings, Warning{Path: path, Message: message})
+}
+
+func appendRequiredWarning(warnings *[]Warning, path, message string) {
+	warning := Warning{Path: path, Message: message}
+	if len(*warnings) < maxWarnings {
+		*warnings = append(*warnings, warning)
+		return
+	}
+	(*warnings)[len(*warnings)-1] = warning
 }
 
 func firstPath(repository Repository) string {

@@ -125,6 +125,27 @@ func TestEnsureHostRepairReplacesUnidentifiableRuntime(t *testing.T) {
 	}
 }
 
+func TestEnsureHostRepairReplacesLegacyRuntimeMissingSetupCapabilities(t *testing.T) {
+	testRemoteShell(t)
+	root := t.TempDir()
+	target := filepath.Join(root, "home", ".local", "bin", "schooner")
+	legacy := writeHostArtifactAt(t, target, "v1.2.3", "1", "amd64")
+	legacyContents := strings.Replace(legacy.contents, `"host.configure.v1",`, "", 1)
+	if err := os.WriteFile(target, []byte(legacyContents), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	want := writeHostArtifact(t, root, "v1.2.3", "1", "amd64")
+	resolver := &staticArtifactResolver{result: want}
+	runtime := NewHost(testSSHExecutable(t), nil, "v1.2.3", resolver)
+	runtime.randomSuffix = func() (string, error) { return "777777777777777777777777", nil }
+	request := box.HostInstallRequest{Path: target, OS: "linux", Architecture: "amd64", ExpectedIdentity: hostTestIdentity, Mode: box.HostRepair}
+
+	result, err := runtime.EnsureHost(t.Context(), box.Connection{Destination: "trusted-host"}, request)
+	if err != nil || result.Action != box.HostReplaced || resolver.calls != 1 {
+		t.Fatalf("result=%+v err=%v calls=%d", result, err, resolver.calls)
+	}
+}
+
 func TestEnsureHostUpdateReplacesDifferentBuildMetadata(t *testing.T) {
 	testRemoteShell(t)
 	root := t.TempDir()
