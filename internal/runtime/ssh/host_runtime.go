@@ -108,7 +108,7 @@ func (r *Runtime) EnsureHost(ctx context.Context, connection box.Connection, req
 			return box.HostInstallResult{}, installErr
 		}
 		action := box.HostReplaced
-		if remoteVersion == "" {
+		if baseline == "missing" {
 			action = box.HostInstalled
 		}
 		return box.HostInstallResult{Runtime: installedRuntime, PreviousVersion: remoteVersion, TargetVersion: targetVersion, Action: action}, nil
@@ -138,7 +138,10 @@ func compatibleHostDecision(targetVersion string, mode box.HostInstallMode, inst
 		result.Action = box.HostNewerRetained
 		return result, false, nil
 	}
-	return result, comparison < 0, nil
+	if comparison == 0 {
+		return result, installed.Version != targetVersion, nil
+	}
+	return result, true, nil
 }
 
 func (r *Runtime) assessHost(ctx context.Context, connection box.Connection, request box.HostInstallRequest) (*box.HostRuntime, string, error) {
@@ -178,6 +181,9 @@ func (r *Runtime) assessHost(ctx context.Context, connection box.Connection, req
 			return nil, "", err
 		}
 		if !found {
+			if request.Mode == box.HostRepair {
+				return nil, "", nil
+			}
 			return nil, "", box.NewError("host_runtime_incompatible", "the existing host runtime could not be identified; inspect or remove it before retrying", decodeErr)
 		}
 	}
