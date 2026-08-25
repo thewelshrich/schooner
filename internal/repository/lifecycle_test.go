@@ -356,6 +356,97 @@ func TestLifecycleAddRecoversDetachedTag(t *testing.T) {
 	}
 }
 
+func TestLifecycleAddRecoveryRejectsUnconfirmedStagedWorktree(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "root")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	source := createLifecycleSource(t)
+	lifecycle, err := NewLifecycle(root, filepath.Join(t.TempDir(), "state"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cloned, err := lifecycle.Clone(t.Context(), CloneRequest{Source: source})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runLifecycleGit(t, cloned.Path, "branch", "unconfirmed")
+	target := filepath.Join(lifecycle.root, "unconfirmed")
+	intent := fingerprint("worktree_add", target, cloned.Inspection.Repository.CommonDirectory, "unconfirmed")
+	record := operationRecord{
+		SchemaVersion:  operationSchemaVersion,
+		ID:             intent[:24],
+		Kind:           "worktree_add",
+		IntentSHA256:   intent,
+		TargetPath:     target,
+		StagingPath:    filepath.Join(lifecycle.root, ".schooner-stage-"+intent[:24], "unconfirmed"),
+		Checkpoint:     "add_pending",
+		OwnershipToken: strings.Repeat("d", 64),
+	}
+	if err = lifecycle.createOwnedStage(&record); err != nil {
+		t.Fatal(err)
+	}
+	runLifecycleGit(t, cloned.Path, "worktree", "add", "--lock", record.StagingPath, "unconfirmed")
+	if err = lifecycle.save(&record); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err = lifecycle.Add(t.Context(), AddRequest{RepositoryPath: cloned.Path, Path: "unconfirmed", Branch: "unconfirmed"}); ErrorCode(err) != CodeOutcomeUnknown {
+		t.Fatalf("unconfirmed staged add recovery error = %v", err)
+	}
+	if _, err = os.Stat(record.StagingPath); err != nil {
+		t.Fatalf("unconfirmed staged Worktree was changed: %v", err)
+	}
+}
+
+func TestLifecycleAddRejectsUndiscoverableDestinations(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "root")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	source := createLifecycleSource(t)
+	lifecycle, err := NewLifecycle(root, filepath.Join(t.TempDir(), "state"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cloned, err := lifecycle.Clone(t.Context(), CloneRequest{Source: source})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, path := range map[string]string{
+		"nested": filepath.Join("source", "nested"),
+		"deep":   filepath.Join("one", "two", "three", "four", "five", "six", "seven", "eight", "nine"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, addErr := lifecycle.Add(t.Context(), AddRequest{RepositoryPath: cloned.Path, Path: path}); ErrorCode(addErr) != CodeInvalidInput {
+				t.Fatalf("undiscoverable destination error = %v", addErr)
+			}
+		})
+	}
+}
+
+func TestLifecycleConflictScanIgnoresTemporaryCheckpointFiles(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "root")
+	state := filepath.Join(t.TempDir(), "state")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(state, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	lifecycle, err := NewLifecycle(root, state, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(filepath.Join(state, ".operation-partial.json"), []byte(`{"partial":`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	conflict, err := lifecycle.incompleteConflict(filepath.Join(lifecycle.root, "target"), fingerprint("intent"))
+	if err != nil || conflict {
+		t.Fatalf("temporary checkpoint conflict = %t, %v", conflict, err)
+	}
+}
+
 func TestLifecycleClassifiesBoundedGitFailures(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "root")
 	if err := os.MkdirAll(root, 0o755); err != nil {

@@ -276,6 +276,9 @@ func (l *Lifecycle) Add(ctx context.Context, request AddRequest) (MutationResult
 			}
 			return MutationResult{}, &Error{Code: CodeConflict, Message: fmt.Sprintf("Worktree destination %q already exists", target)}
 		}
+		if err = l.validateDiscoverableTarget(ctx, target); err != nil {
+			return MutationResult{}, err
+		}
 		if _, statErr := os.Lstat(target); statErr == nil || !errors.Is(statErr, os.ErrNotExist) {
 			return MutationResult{}, &Error{Code: CodeConflict, Message: fmt.Sprintf("Worktree destination %q already exists", target), Cause: statErr}
 		}
@@ -309,10 +312,17 @@ func (l *Lifecycle) Add(ctx context.Context, request AddRequest) (MutationResult
 			if _, err = l.runGit(ctx, args...); err != nil {
 				return MutationResult{}, err
 			}
+			record.Checkpoint = "add_finished"
+			if err = l.save(record); err != nil {
+				return MutationResult{}, err
+			}
 		}
 		staged, err := Inspect(ctx, l.root, record.StagingPath)
 		if err != nil || staged.Repository.CommonDirectory != repositoryInspection.Repository.CommonDirectory {
 			return MutationResult{}, &Error{Code: CodeOutcomeUnknown, Message: "staged linked Worktree could not be verified", Cause: err}
+		}
+		if record.Checkpoint == "add_pending" {
+			return MutationResult{}, &Error{Code: CodeOutcomeUnknown, Message: "staged linked Worktree exists but successful Git completion was not checkpointed"}
 		}
 		recordSnapshot(record, staged)
 		record.Checkpoint = "move_pending"
@@ -324,6 +334,9 @@ func (l *Lifecycle) Add(ctx context.Context, request AddRequest) (MutationResult
 		}
 		if err = os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 			return MutationResult{}, fmt.Errorf("create Worktree destination parent: %w", err)
+		}
+		if err = l.validateDiscoverableTarget(ctx, target); err != nil {
+			return MutationResult{}, err
 		}
 		if _, err = l.runGit(ctx, "-C", repositoryInspection.Worktree.Path, "worktree", "move", record.StagingPath, target); err != nil {
 			return MutationResult{}, err
@@ -638,6 +651,29 @@ func worktreeMatchesRecord(inspected Inspection, record *operationRecord, target
 		inspected.Worktree.Detached == record.Detached
 }
 
+func (l *Lifecycle) validateDiscoverableTarget(ctx context.Context, target string) error {
+	relative, err := filepath.Rel(l.root, target)
+	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return &Error{Code: CodeInvalidInput, Message: "Worktree destination is outside the discovery root", Cause: err}
+	}
+	if len(strings.Split(filepath.ToSlash(relative), "/")) > maxDepth {
+		return &Error{Code: CodeInvalidInput, Message: fmt.Sprintf("Worktree destination exceeds the discovery depth limit of %d", maxDepth)}
+	}
+	for ancestor := filepath.Dir(target); ancestor != l.root; ancestor = filepath.Dir(ancestor) {
+		if _, statErr := os.Lstat(ancestor); errors.Is(statErr, os.ErrNotExist) {
+			continue
+		} else if statErr != nil {
+			return statErr
+		}
+		if inspected, inspectErr := Inspect(ctx, l.root, ancestor); inspectErr == nil && within(inspected.Worktree.Path, target) {
+			return &Error{Code: CodeInvalidInput, Message: fmt.Sprintf("Worktree destination must not be nested inside Worktree %q", inspected.Worktree.RelativePath)}
+		} else if inspectErr != nil && ErrorCode(inspectErr) != CodeNotFound {
+			return inspectErr
+		}
+	}
+	return nil
+}
+
 func (l *Lifecycle) reconcileRemoved(ctx context.Context, target string, record *operationRecord, recovered bool) (MutationResult, error) {
 	if record.CommonDirectory == "" {
 		return MutationResult{}, &Error{Code: CodeOutcomeUnknown, Message: "Worktree removal checkpoint has no repository relationship"}
@@ -876,7 +912,7 @@ func (l *Lifecycle) incompleteConflict(target, intent string) (bool, error) {
 		return false, err
 	}
 	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") || entry.Name() == intent+".json" {
+		if entry.IsDir() || !isIntentRecordName(entry.Name()) || entry.Name() == intent+".json" {
 			continue
 		}
 		candidate := strings.TrimSuffix(entry.Name(), ".json")
@@ -889,4 +925,16 @@ func (l *Lifecycle) incompleteConflict(target, intent string) (bool, error) {
 		}
 	}
 	return false, nil
+}
+
+func isIntentRecordName(name string) bool {
+	if !strings.HasSuffix(name, ".json") {
+		return false
+	}
+	value := strings.TrimSuffix(name, ".json")
+	if len(value) != sha256.Size*2 {
+		return false
+	}
+	_, err := hex.DecodeString(value)
+	return err == nil
 }
