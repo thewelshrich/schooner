@@ -462,6 +462,36 @@ func TestLifecycleCloneRejectsExhaustedDiscoveryCapacity(t *testing.T) {
 	}
 }
 
+func TestLifecycleCloneRevalidatesCapacityBeforePromotion(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "root")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	lifecycle, err := NewLifecycle(root, filepath.Join(t.TempDir(), "state"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	populated := false
+	lifecycle.commands = lifecycleRunnerFunc(func(ctx context.Context, name string, args ...string) (process.Result, error) {
+		result, runErr := (osMutationRunner{}).Run(ctx, name, args...)
+		if runErr == nil && !populated && slices.Contains(args, "clone") {
+			populated = true
+			for index := 0; index < maxCandidates; index++ {
+				if mkdirErr := os.MkdirAll(filepath.Join(root, "capacity-"+fmtInt(index), ".git"), 0o755); mkdirErr != nil {
+					t.Fatal(mkdirErr)
+				}
+			}
+		}
+		return result, runErr
+	})
+	if _, err = lifecycle.Clone(t.Context(), CloneRequest{Source: createLifecycleSource(t)}); ErrorCode(err) != CodeConflict {
+		t.Fatalf("promotion capacity error = %v", err)
+	}
+	if _, err = os.Lstat(filepath.Join(root, "source")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("capacity-limited clone was promoted: %v", err)
+	}
+}
+
 func TestLifecycleAddRecoversWhenSourceWorktreeWasRemoved(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "root")
 	if err := os.MkdirAll(root, 0o755); err != nil {
@@ -520,16 +550,57 @@ func TestLifecycleRemoveDoesNotDeleteReplacementWorktree(t *testing.T) {
 	if _, err = lifecycle.Remove(t.Context(), original.Path); err != nil {
 		t.Fatal(err)
 	}
-	runLifecycleGit(t, cloned.Path, "branch", "replacement")
-	replacement, err := lifecycle.Add(t.Context(), AddRequest{RepositoryPath: cloned.Path, Path: "replace", Branch: "replacement"})
+	replacement, err := lifecycle.Add(t.Context(), AddRequest{RepositoryPath: cloned.Path, Path: "replace", Branch: "original"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err = lifecycle.Remove(t.Context(), original.Path); ErrorCode(err) != CodeConflict {
 		t.Fatalf("replacement removal error = %v", err)
 	}
-	if inspected, inspectErr := Inspect(t.Context(), root, replacement.Path); inspectErr != nil || inspected.Worktree.Branch != "replacement" {
+	if inspected, inspectErr := Inspect(t.Context(), root, replacement.Path); inspectErr != nil || inspected.Worktree.Branch != "original" {
 		t.Fatalf("replacement Worktree changed: %+v, %v", inspected, inspectErr)
+	}
+}
+
+func TestLifecycleUsesRootOwnedStagingForNestedTargets(t *testing.T) {
+	root := t.TempDir()
+	external := t.TempDir()
+	ancestor := filepath.Join(root, "parent")
+	if err := os.Symlink(external, ancestor); err != nil {
+		t.Fatal(err)
+	}
+	unsafeParent := filepath.Join(ancestor, ".schooner-stage-operation")
+	if err := mkdirOwnedStageParent(root, unsafeParent); err == nil {
+		t.Fatal("staging under a destination ancestor unexpectedly succeeded")
+	}
+	if _, err := os.Lstat(filepath.Join(external, ".schooner-stage-operation")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("staging escaped through a destination symlink: %v", err)
+	}
+}
+
+func TestUnlockStagedWorktreeRecoversWithoutLocalizedDiagnostics(t *testing.T) {
+	root := t.TempDir()
+	lifecycle, err := NewLifecycle(root, filepath.Join(t.TempDir(), "state"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(root, "stage")
+	lifecycle.commands = lifecycleRunnerFunc(func(_ context.Context, _ string, args ...string) (process.Result, error) {
+		if slices.Contains(args, "unlock") {
+			return process.Result{Stderr: []byte("lokalisierte Diagnose")}, errors.New("exit status 1")
+		}
+		return process.Result{Stdout: []byte("worktree " + target + "\x00\x00")}, nil
+	})
+	if err = lifecycle.unlockStagedWorktree(t.Context(), filepath.Join(root, ".git"), target); err != nil {
+		t.Fatalf("idempotent unlock recovery = %v", err)
+	}
+}
+
+func TestGitMutationsUseNonInteractiveSSH(t *testing.T) {
+	for _, expected := range []string{"GIT_SSH_COMMAND=ssh -o BatchMode=yes", "GIT_SSH_VARIANT=ssh"} {
+		if !slices.Contains(gitMutationEnvironment, expected) {
+			t.Fatalf("Git mutation environment does not contain %q: %v", expected, gitMutationEnvironment)
+		}
 	}
 }
 
@@ -684,7 +755,8 @@ func TestLifecycleLockHelper(t *testing.T) {
 }
 
 func TestLifecycleRejectsUnsafeCloneSourcesAndDestinations(t *testing.T) {
-	for _, source := range []string{"-upload-pack=evil", "https://token@example.com/repo.git", "https://user:secret@example.com/repo.git", "https://example.com/repo.git?token=secret", "ssh://user:secret@example.com/repo.git"} {
+	invalidUTF8 := string([]byte{'r', 'e', 'p', 'o', 0xff})
+	for _, source := range []string{"-upload-pack=evil", "https://token@example.com/repo.git", "https://user:secret@example.com/repo.git", "https://example.com/repo.git?token=secret", "ssh://user:secret@example.com/repo.git", invalidUTF8} {
 		if _, _, err := validateCloneSource(source); ErrorCode(err) != CodeInvalidInput {
 			t.Errorf("source %q error = %v", source, err)
 		}
@@ -704,6 +776,9 @@ func TestLifecycleRejectsUnsafeCloneSourcesAndDestinations(t *testing.T) {
 	}
 	if _, err = lifecycle.newPath("../escape"); ErrorCode(err) != CodeInvalidInput {
 		t.Fatalf("traversal error = %v", err)
+	}
+	if _, err = lifecycle.newPath(invalidUTF8); ErrorCode(err) != CodeInvalidInput {
+		t.Fatalf("invalid UTF-8 path error = %v", err)
 	}
 	outside := t.TempDir()
 	if err = os.Symlink(outside, filepath.Join(root, "link")); err != nil {

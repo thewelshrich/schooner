@@ -48,6 +48,8 @@ var gitRepositoryEnvironment = []string{
 	"GIT_PREFIX",
 	"GIT_REPLACE_REF_BASE",
 	"GIT_SHALLOW_FILE",
+	"GIT_SSH_COMMAND",
+	"GIT_SSH_VARIANT",
 	"GIT_WORK_TREE",
 }
 
@@ -501,6 +503,7 @@ type member struct {
 	primary  bool
 	bare     bool
 	prunable bool
+	locked   bool
 }
 
 func parseWorktreeList(data []byte) ([]member, error) {
@@ -537,6 +540,8 @@ func parseWorktreeList(data []byte) ([]member, error) {
 			current.bare = true
 		case "prunable":
 			current.prunable = true
+		case "locked":
+			current.locked = true
 		}
 	}
 	if current.path != "" || current.bare {

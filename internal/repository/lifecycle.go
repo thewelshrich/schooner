@@ -25,6 +25,7 @@ import (
 const operationSchemaVersion = 1
 
 const stageOwnershipFile = ".schooner-operation"
+const worktreeIncarnationFile = ".schooner-incarnation"
 
 const (
 	CodeConflict            Code = "conflict"
@@ -92,23 +93,24 @@ type MutationResult struct {
 }
 
 type operationRecord struct {
-	SchemaVersion    int       `json:"schema_version"`
-	ID               string    `json:"id"`
-	Kind             string    `json:"kind"`
-	IntentSHA256     string    `json:"intent_sha256"`
-	TargetPath       string    `json:"target_path"`
-	StagingPath      string    `json:"staging_path,omitempty"`
-	Checkpoint       string    `json:"checkpoint"`
-	CommonDirectory  string    `json:"common_directory,omitempty"`
-	Branch           string    `json:"branch,omitempty"`
-	HEAD             string    `json:"head,omitempty"`
-	Origin           string    `json:"origin,omitempty"`
-	Detached         bool      `json:"detached,omitempty"`
-	OwnershipToken   string    `json:"ownership_token,omitempty"`
-	RefSHA256        string    `json:"ref_sha256,omitempty"`
-	RepositorySHA256 string    `json:"repository_sha256,omitempty"`
-	GitDirectory     string    `json:"git_directory,omitempty"`
-	UpdatedAt        time.Time `json:"updated_at"`
+	SchemaVersion     int       `json:"schema_version"`
+	ID                string    `json:"id"`
+	Kind              string    `json:"kind"`
+	IntentSHA256      string    `json:"intent_sha256"`
+	TargetPath        string    `json:"target_path"`
+	StagingPath       string    `json:"staging_path,omitempty"`
+	Checkpoint        string    `json:"checkpoint"`
+	CommonDirectory   string    `json:"common_directory,omitempty"`
+	Branch            string    `json:"branch,omitempty"`
+	HEAD              string    `json:"head,omitempty"`
+	Origin            string    `json:"origin,omitempty"`
+	Detached          bool      `json:"detached,omitempty"`
+	OwnershipToken    string    `json:"ownership_token,omitempty"`
+	RefSHA256         string    `json:"ref_sha256,omitempty"`
+	RepositorySHA256  string    `json:"repository_sha256,omitempty"`
+	GitDirectory      string    `json:"git_directory,omitempty"`
+	IncarnationSHA256 string    `json:"incarnation_sha256,omitempty"`
+	UpdatedAt         time.Time `json:"updated_at"`
 }
 
 type mutationRunner interface {
@@ -117,9 +119,16 @@ type mutationRunner interface {
 
 type osMutationRunner struct{}
 
+var gitMutationEnvironment = []string{
+	"GIT_TERMINAL_PROMPT=0",
+	"GCM_INTERACTIVE=never",
+	"GIT_SSH_COMMAND=ssh -o BatchMode=yes",
+	"GIT_SSH_VARIANT=ssh",
+}
+
 func (osMutationRunner) Run(ctx context.Context, name string, args ...string) (process.Result, error) {
 	return process.RunCapturedWithoutEnvironment(ctx, maxOutputBytes, gitRepositoryEnvironment,
-		[]string{"GIT_TERMINAL_PROMPT=0", "GCM_INTERACTIVE=never"}, name, args...)
+		gitMutationEnvironment, name, args...)
 }
 
 func NewLifecycle(worktreeRoot, stateDirectory string, inUse WorktreeUse) (*Lifecycle, error) {
@@ -192,7 +201,7 @@ func (l *Lifecycle) Clone(ctx context.Context, request CloneRequest) (MutationRe
 			return MutationResult{}, &Error{Code: CodeConflict, Message: fmt.Sprintf("clone destination %q already exists", target), Cause: statErr}
 		}
 		if record.StagingPath == "" {
-			record.StagingPath = filepath.Join(filepath.Dir(target), ".schooner-stage-"+record.ID, filepath.Base(target))
+			record.StagingPath = filepath.Join(l.root, ".schooner-stage-"+record.ID, filepath.Base(target))
 		}
 		if err = l.prepareStage(record); err != nil {
 			return MutationResult{}, err
@@ -238,6 +247,9 @@ func (l *Lifecycle) Clone(ctx context.Context, request CloneRequest) (MutationRe
 		}
 		if _, err = os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
 			return MutationResult{}, &Error{Code: CodeConflict, Message: fmt.Sprintf("clone destination %q changed during the operation", target), Cause: err}
+		}
+		if err = l.validateDiscoverableTarget(ctx, target, true); err != nil {
+			return MutationResult{}, err
 		}
 		if err = renameNoReplace(record.StagingPath, target); err != nil {
 			return MutationResult{}, &Error{Code: CodeOutcomeUnknown, Message: "cloned Worktree could not be promoted safely", Cause: err}
@@ -315,7 +327,7 @@ func (l *Lifecycle) Add(ctx context.Context, request AddRequest) (MutationResult
 			return MutationResult{}, &Error{Code: CodeConflict, Message: fmt.Sprintf("Worktree destination %q already exists", target), Cause: statErr}
 		}
 		if record.StagingPath == "" {
-			record.StagingPath = filepath.Join(filepath.Dir(target), ".schooner-stage-"+record.ID, filepath.Base(target))
+			record.StagingPath = filepath.Join(l.root, ".schooner-stage-"+record.ID, filepath.Base(target))
 		}
 		if err = l.prepareStage(record); err != nil {
 			return MutationResult{}, err
@@ -364,8 +376,8 @@ func (l *Lifecycle) Add(ctx context.Context, request AddRequest) (MutationResult
 		if err = l.saveAfterEffect(record); err != nil {
 			return MutationResult{}, err
 		}
-		if unlockResult, unlockErr := l.runGit(ctx, "--git-dir", commonDirectory, "worktree", "unlock", record.StagingPath); unlockErr != nil && !strings.Contains(strings.ToLower(string(unlockResult.Stderr)), "not locked") {
-			return MutationResult{}, unlockErr
+		if err = l.unlockStagedWorktree(ctx, commonDirectory, record.StagingPath); err != nil {
+			return MutationResult{}, err
 		}
 		if err = os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 			return MutationResult{}, fmt.Errorf("create Worktree destination parent: %w", err)
@@ -437,8 +449,14 @@ func (l *Lifecycle) Remove(ctx context.Context, selector string) (MutationResult
 		if current.Worktree.Kind != Linked {
 			return MutationResult{}, &Error{Code: CodeConflict, Message: "primary Worktrees require a separate repository-removal workflow"}
 		}
-		if (record.Checkpoint == "remove_pending" || record.Checkpoint == "complete") && !worktreeIdentityMatchesRecord(current, record, target) {
-			return MutationResult{}, &Error{Code: CodeConflict, Message: "Worktree removal target has been replaced since the recorded operation"}
+		if record.Checkpoint == "remove_pending" || record.Checkpoint == "complete" {
+			matches, matchErr := worktreeIdentityMatchesRecord(current, record, target)
+			if matchErr != nil {
+				return MutationResult{}, &Error{Code: CodeOutcomeUnknown, Message: "Worktree removal identity could not be verified", Cause: matchErr}
+			}
+			if !matches {
+				return MutationResult{}, &Error{Code: CodeConflict, Message: "Worktree removal target has been replaced since the recorded operation"}
+			}
 		}
 		if dirty(current.Worktree.Status) {
 			return MutationResult{}, &Error{Code: CodeConflict, Message: fmt.Sprintf("Worktree %q contains local changes or ignored files", current.Worktree.RelativePath)}
@@ -455,6 +473,9 @@ func (l *Lifecycle) Remove(ctx context.Context, selector string) (MutationResult
 		current, inspectErr = Inspect(ctx, l.root, target)
 		if inspectErr != nil || dirty(current.Worktree.Status) {
 			return MutationResult{}, &Error{Code: CodeConflict, Message: "Worktree changed during removal validation", Cause: inspectErr}
+		}
+		if err = ensureWorktreeIncarnation(record, current); err != nil {
+			return MutationResult{}, err
 		}
 		recordSnapshot(record, current)
 		record.Checkpoint = "remove_pending"
@@ -582,13 +603,10 @@ func (l *Lifecycle) createOwnedStage(record *operationRecord) error {
 		return err
 	}
 	parent := filepath.Dir(record.StagingPath)
-	if err := os.MkdirAll(filepath.Dir(parent), 0o755); err != nil {
-		return fmt.Errorf("create Worktree destination parent: %w", err)
-	}
 	if checked, err := l.newPath(record.TargetPath); err != nil || checked != record.TargetPath {
 		return &Error{Code: CodeInvalidInput, Message: "Worktree destination changed during staging", Cause: err}
 	}
-	if err := os.Mkdir(parent, 0o700); err != nil {
+	if err := mkdirOwnedStageParent(l.root, parent); err != nil {
 		return &Error{Code: CodeOutcomeUnknown, Message: "operation staging directory already exists without established ownership", Cause: err}
 	}
 	marker := filepath.Join(parent, stageOwnershipFile)
@@ -671,14 +689,64 @@ func recordSnapshot(record *operationRecord, inspected Inspection) {
 	record.GitDirectory = inspected.Worktree.GitDirectory
 }
 
-func worktreeIdentityMatchesRecord(inspected Inspection, record *operationRecord, target string) bool {
+func worktreeIdentityMatchesRecord(inspected Inspection, record *operationRecord, target string) (bool, error) {
+	if record.IncarnationSHA256 == "" {
+		return false, nil
+	}
+	contents, err := readWorktreeIncarnation(inspected.Worktree.GitDirectory)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
 	return record.CommonDirectory != "" && record.GitDirectory != "" && record.HEAD != "" &&
 		inspected.Worktree.Path == target &&
 		inspected.Repository.CommonDirectory == record.CommonDirectory &&
 		inspected.Worktree.GitDirectory == record.GitDirectory &&
 		inspected.Worktree.Branch == record.Branch &&
 		inspected.Worktree.HEAD == record.HEAD &&
-		inspected.Worktree.Detached == record.Detached
+		inspected.Worktree.Detached == record.Detached &&
+		fingerprint(string(contents)) == record.IncarnationSHA256, nil
+}
+
+func ensureWorktreeIncarnation(record *operationRecord, inspected Inspection) error {
+	path := filepath.Join(inspected.Worktree.GitDirectory, worktreeIncarnationFile)
+	contents, err := readWorktreeIncarnation(inspected.Worktree.GitDirectory)
+	if errors.Is(err, os.ErrNotExist) {
+		file, createErr := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0o600)
+		if createErr != nil {
+			return &Error{Code: CodeOutcomeUnknown, Message: "Worktree incarnation marker could not be created", Cause: createErr}
+		}
+		contents = []byte(record.OwnershipToken + "\n")
+		_, writeErr := file.Write(contents)
+		if writeErr == nil {
+			writeErr = file.Sync()
+		}
+		if closeErr := file.Close(); writeErr == nil {
+			writeErr = closeErr
+		}
+		if writeErr != nil {
+			return &Error{Code: CodeOutcomeUnknown, Message: "Worktree incarnation marker could not be recorded", Cause: writeErr}
+		}
+	} else if err != nil {
+		return &Error{Code: CodeOutcomeUnknown, Message: "Worktree incarnation marker could not be read", Cause: err}
+	}
+	record.IncarnationSHA256 = fingerprint(string(contents))
+	return nil
+}
+
+func readWorktreeIncarnation(gitDirectory string) ([]byte, error) {
+	file, err := os.OpenFile(filepath.Join(gitDirectory, worktreeIncarnationFile), os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = file.Close() }()
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Size() > 256 {
+		return nil, &Error{Code: CodeOutcomeUnknown, Message: "Worktree incarnation marker is invalid", Cause: err}
+	}
+	return io.ReadAll(io.LimitReader(file, 257))
 }
 
 func cloneMatchesRecord(inspected Inspection, record *operationRecord, target string) bool {
@@ -727,7 +795,7 @@ func (l *Lifecycle) validateDiscoverableTarget(ctx context.Context, target strin
 		}
 		// The operation-owned staging layout adds one more directory than the
 		// final target layout while Git is populating it.
-		if err = validateDiscoveryCapacity(metrics, missingDirectories+1); err != nil {
+		if err = validateDiscoveryCapacity(metrics, missingDirectories+2); err != nil {
 			return err
 		}
 	}
@@ -821,8 +889,41 @@ func (l *Lifecycle) registeredWorktree(ctx context.Context, commonDirectory, tar
 	return false, nil
 }
 
+func (l *Lifecycle) worktreeLockState(ctx context.Context, commonDirectory, target string) (bool, bool, error) {
+	result, err := l.runGit(ctx, "--git-dir", commonDirectory, "worktree", "list", "--porcelain", "-z")
+	if err != nil {
+		return false, false, err
+	}
+	if result.Truncated {
+		return false, false, &Error{Code: CodeOutcomeUnknown, Message: "Git worktree lock output exceeded the verification limit"}
+	}
+	members, err := parseWorktreeList(result.Stdout)
+	if err != nil {
+		return false, false, err
+	}
+	for _, member := range members {
+		if !member.bare && member.path == target {
+			return true, member.locked, nil
+		}
+	}
+	return false, false, nil
+}
+
+func (l *Lifecycle) unlockStagedWorktree(ctx context.Context, commonDirectory, target string) error {
+	if _, err := l.runGit(ctx, "--git-dir", commonDirectory, "worktree", "unlock", target); err != nil {
+		registered, locked, stateErr := l.worktreeLockState(ctx, commonDirectory, target)
+		if stateErr != nil {
+			return &Error{Code: CodeOutcomeUnknown, Message: "staged Worktree lock state could not be reconciled", Cause: stateErr}
+		}
+		if !registered || locked {
+			return err
+		}
+	}
+	return nil
+}
+
 func (l *Lifecycle) newPath(value string) (string, error) {
-	if value == "" || hasControl(value) {
+	if value == "" || !utf8.ValidString(value) || hasControl(value) {
 		return "", &Error{Code: CodeInvalidInput, Message: "Worktree path is required"}
 	}
 	var target string
@@ -861,7 +962,7 @@ func (l *Lifecycle) newPath(value string) (string, error) {
 }
 
 func validateCloneSource(raw string) (string, string, error) {
-	if raw == "" || strings.TrimSpace(raw) != raw || strings.HasPrefix(raw, "-") || hasControl(raw) {
+	if raw == "" || !utf8.ValidString(raw) || strings.TrimSpace(raw) != raw || strings.HasPrefix(raw, "-") || hasControl(raw) {
 		return "", "", &Error{Code: CodeInvalidInput, Message: "Git repository source is invalid"}
 	}
 	nameSource := raw
