@@ -90,30 +90,35 @@ type InspectRequest struct {
 type ConfigureRequest struct {
 	SchemaVersion   string `json:"schema_version"`
 	ProtocolVersion string `json:"protocol_version"`
+	BoxIdentity     string `json:"box_identity"`
 	WorktreeRoot    string `json:"worktree_root"`
 }
 
 type WorktreeRequest struct {
 	SchemaVersion   string `json:"schema_version"`
 	ProtocolVersion string `json:"protocol_version"`
+	BoxIdentity     string `json:"box_identity"`
 	Selector        string `json:"selector,omitempty"`
 }
 
 type ConfigureResult struct {
 	SchemaVersion   string `json:"schema_version"`
 	ProtocolVersion string `json:"protocol_version"`
+	BoxIdentity     string `json:"box_identity"`
 	WorktreeRoot    string `json:"worktree_root"`
 }
 
 type WorktreeCatalog struct {
 	SchemaVersion   string `json:"schema_version"`
 	ProtocolVersion string `json:"protocol_version"`
+	BoxIdentity     string `json:"box_identity"`
 	repository.Catalog
 }
 
 type WorktreeInspection struct {
 	SchemaVersion   string `json:"schema_version"`
 	ProtocolVersion string `json:"protocol_version"`
+	BoxIdentity     string `json:"box_identity"`
 	repository.Inspection
 }
 
@@ -156,17 +161,20 @@ func NewInspectRequest(worktreeRoot string) InspectRequest {
 	return InspectRequest{SchemaVersion: SchemaVersion, ProtocolVersion: ProtocolVersion, WorktreeRoot: worktreeRoot}
 }
 
-func NewConfigureRequest(worktreeRoot string) ConfigureRequest {
-	return ConfigureRequest{SchemaVersion: SchemaVersion, ProtocolVersion: ProtocolVersion, WorktreeRoot: worktreeRoot}
+func NewConfigureRequest(worktreeRoot, boxIdentity string) ConfigureRequest {
+	return ConfigureRequest{SchemaVersion: SchemaVersion, ProtocolVersion: ProtocolVersion, BoxIdentity: boxIdentity, WorktreeRoot: worktreeRoot}
 }
 
-func NewWorktreeRequest(selector string) WorktreeRequest {
-	return WorktreeRequest{SchemaVersion: SchemaVersion, ProtocolVersion: ProtocolVersion, Selector: selector}
+func NewWorktreeRequest(selector, boxIdentity string) WorktreeRequest {
+	return WorktreeRequest{SchemaVersion: SchemaVersion, ProtocolVersion: ProtocolVersion, BoxIdentity: boxIdentity, Selector: selector}
 }
 
 func ValidateConfigureRequest(request ConfigureRequest) error {
 	if request.SchemaVersion != SchemaVersion || request.ProtocolVersion != ProtocolVersion {
 		return &Error{Code: CodeUnsupportedProtocol, Message: "host configuration request is incompatible"}
+	}
+	if !identityPattern.MatchString(request.BoxIdentity) {
+		return &Error{Code: CodeInvalidIdentity, Message: "host configuration Box identity is invalid"}
 	}
 	if !validPath(request.WorktreeRoot) {
 		return &Error{Code: CodeInvalidMessage, Message: "host configuration worktree root is invalid"}
@@ -177,6 +185,9 @@ func ValidateConfigureRequest(request ConfigureRequest) error {
 func ValidateWorktreeRequest(request WorktreeRequest, selectorRequired bool) error {
 	if request.SchemaVersion != SchemaVersion || request.ProtocolVersion != ProtocolVersion {
 		return &Error{Code: CodeUnsupportedProtocol, Message: "worktree request is incompatible"}
+	}
+	if !identityPattern.MatchString(request.BoxIdentity) {
+		return &Error{Code: CodeInvalidIdentity, Message: "worktree request Box identity is invalid"}
 	}
 	if len(request.Selector) > 4096 || hasControl(request.Selector) || (selectorRequired && request.Selector == "") || (!selectorRequired && request.Selector != "") {
 		return &Error{Code: CodeInvalidMessage, Message: "worktree request selector is invalid"}

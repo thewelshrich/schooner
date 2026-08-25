@@ -51,6 +51,12 @@ func TestRuntimeHelloInspectAndDoctor(t *testing.T) {
 	if err != nil || hello.BoxIdentity != identity || hello.OS != "linux" || hello.Architecture != "arm64" {
 		t.Fatalf("Hello() = %+v, %v", hello, err)
 	}
+	if got, identityErr := runtime.operationIdentity(identity); identityErr != nil || got != identity {
+		t.Fatalf("operationIdentity() = %q, %v", got, identityErr)
+	}
+	if _, identityErr := runtime.operationIdentity("22222222-2222-4222-8222-222222222222"); hostruntime.ErrorCode(identityErr) != hostruntime.CodeInvalidIdentity {
+		t.Fatalf("operation identity mismatch = %v", identityErr)
+	}
 	expectedWorktree, err := filepath.EvalSymlinks(worktree)
 	if err != nil {
 		t.Fatal(err)

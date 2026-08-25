@@ -144,6 +144,24 @@ func TestInspectAcceptsDotForWorktreeAtConfiguredRoot(t *testing.T) {
 	}
 }
 
+func TestInspectCarriesDiscoveryTruncationWarnings(t *testing.T) {
+	root := t.TempDir()
+	selected := filepath.Join(root, "selected")
+	mustGit(t, "init", selected)
+	deep := filepath.Join(root, "deep")
+	for depth := 0; depth < maxDepth; depth++ {
+		deep = filepath.Join(deep, fmtInt(depth))
+	}
+	mustGit(t, "init", deep)
+	inspection, err := Inspect(t.Context(), root, "selected")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inspection.Warnings) != 1 || !strings.Contains(inspection.Warnings[0].Message, "depth limit") {
+		t.Fatalf("warnings = %+v", inspection.Warnings)
+	}
+}
+
 func TestDiscoverHandlesDetachedAndUnbornHeads(t *testing.T) {
 	root := t.TempDir()
 	unborn := filepath.Join(root, "unborn")
@@ -254,6 +272,9 @@ func TestSanitizeOriginRemovesUserInfoFromEveryURI(t *testing.T) {
 	if got := sanitizeOrigin("alice@example.com:owner/repo.git?token=x#fragment"); got != "example.com:owner/repo" {
 		t.Fatalf("SCP origin = %q", got)
 	}
+	if got := sanitizeOrigin("ssh://example.com/" + strings.Repeat("é", maxOriginBytes)); got != "" {
+		t.Fatalf("oversized origin length = %d", len(got))
+	}
 }
 
 func TestRepositoryRelationshipFallsBackToRevalidatedIdentity(t *testing.T) {
@@ -285,14 +306,14 @@ func TestBoundCatalogFitsRemoteMessageBudget(t *testing.T) {
 }
 
 func TestBoundCatalogDropsOversizedWarningDetails(t *testing.T) {
-	catalog := Catalog{WorktreeRoot: "/root", Repositories: []Repository{}, Warnings: []Warning{{Path: "/root/repo", Message: strings.Repeat("x", maxCatalogBytes)}}}
+	catalog := Catalog{WorktreeRoot: "/root", Repositories: []Repository{{CommonDirectory: "/root/repo/.git", Primary: &Worktree{Path: "/root/repo", RelativePath: "repo", GitDirectory: "/root/repo/.git", Kind: Primary}}}, Warnings: []Warning{{Path: "/root/repo", Message: strings.Repeat("x", maxCatalogBytes)}}}
 	boundCatalog(&catalog)
 	encoded, err := json.Marshal(catalog)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(encoded) > maxCatalogBytes || len(catalog.Warnings) != 1 || !strings.Contains(catalog.Warnings[0].Message, "catalog output limit") {
-		t.Fatalf("encoded bytes = %d, warnings = %+v", len(encoded), catalog.Warnings)
+	if len(encoded) > maxCatalogBytes || len(catalog.Repositories) != 1 || catalog.Repositories[0].Primary == nil || len(catalog.Warnings) != 1 || !strings.Contains(catalog.Warnings[0].Message, "catalog output limit") {
+		t.Fatalf("encoded bytes = %d, repositories = %+v, warnings = %+v", len(encoded), catalog.Repositories, catalog.Warnings)
 	}
 }
 

@@ -60,6 +60,7 @@ type worktreeTarget struct {
 	record     box.Record
 	close      func()
 	configured config.Host
+	identity   string
 }
 
 func resolveWorktreeTarget(ctx context.Context, streams Streams, global *globalOptions, explicit string) (worktreeTarget, error) {
@@ -74,9 +75,9 @@ func resolveWorktreeTarget(ctx context.Context, streams Streams, global *globalO
 				if configured.WorktreeRoot != record.WorktreeRoot {
 					return worktreeTarget{}, box.NewError("conflict", fmt.Sprintf("direct Box worktree root differs from local inventory; run \"schooner box setup %s\" from a workstation", record.Name), nil)
 				}
-				return worktreeTarget{direct: local, record: record, configured: configured}, nil
+				return worktreeTarget{direct: local, record: record, configured: configured, identity: hello.BoxIdentity}, nil
 			}
-			return worktreeTarget{direct: local, configured: configured}, nil
+			return worktreeTarget{direct: local, configured: configured, identity: hello.BoxIdentity}, nil
 		}
 	}
 	services, closeServices, err := openApplication(ctx, streams, global.build)
@@ -132,7 +133,7 @@ func runWorktreeList(ctx context.Context, streams Streams, global *globalOptions
 		defer target.close()
 	}
 	if target.direct != nil {
-		result, err := target.direct.ListWorktrees(ctx, hostruntime.NewWorktreeRequest(""))
+		result, err := target.direct.ListWorktrees(ctx, hostruntime.NewWorktreeRequest("", target.identity))
 		return result.Catalog, err
 	}
 	connection := box.Connection{Destination: target.record.SSHDestination, IdentityFile: target.record.IdentityFile, BatchMode: !interactionAllowed(streams, global)}
@@ -155,7 +156,7 @@ func runWorktreeInspect(ctx context.Context, streams Streams, global *globalOpti
 		defer target.close()
 	}
 	if target.direct != nil {
-		result, err := target.direct.InspectWorktree(ctx, hostruntime.NewWorktreeRequest(selector))
+		result, err := target.direct.InspectWorktree(ctx, hostruntime.NewWorktreeRequest(selector, target.identity))
 		return result.Inspection, err
 	}
 	connection := box.Connection{Destination: target.record.SSHDestination, IdentityFile: target.record.IdentityFile, BatchMode: !interactionAllowed(streams, global)}
@@ -236,7 +237,7 @@ func writeWorktreeList(writer io.Writer, output string, catalog repository.Catal
 		if value.Detached {
 			branch = "(detached)"
 		}
-		if _, err := fmt.Fprintf(table, "%s\t%s\t%s\t%d\t%d\t%d\t%d\n", value.RelativePath, value.Kind, branch, value.Status.Staged, value.Status.Unstaged, value.Status.Untracked, value.Status.Conflicted); err != nil {
+		if _, err := fmt.Fprintf(table, "%s\t%s\t%s\t%d\t%d\t%d\t%d\n", humanSafe(value.RelativePath), humanSafe(string(value.Kind)), humanSafe(branch), value.Status.Staged, value.Status.Unstaged, value.Status.Untracked, value.Status.Conflicted); err != nil {
 			return err
 		}
 	}
@@ -259,11 +260,12 @@ func humanSafe(value string) string {
 func writeWorktreeInspection(writer io.Writer, output string, inspection repository.Inspection) error {
 	if output == "json" {
 		return json.NewEncoder(writer).Encode(struct {
-			SchemaVersion string             `json:"schema_version"`
-			WorktreeRoot  string             `json:"worktree_root"`
-			Repository    repositoryDocument `json:"repository"`
-			Worktree      worktreeDocument   `json:"worktree"`
-		}{"1", inspection.WorktreeRoot, documentRepository(inspection.Repository), documentWorktree(inspection.Worktree)})
+			SchemaVersion string               `json:"schema_version"`
+			WorktreeRoot  string               `json:"worktree_root"`
+			Repository    repositoryDocument   `json:"repository"`
+			Worktree      worktreeDocument     `json:"worktree"`
+			Warnings      []repository.Warning `json:"warnings"`
+		}{"1", inspection.WorktreeRoot, documentRepository(inspection.Repository), documentWorktree(inspection.Worktree), inspection.Warnings})
 	}
 	if output != "human" {
 		return fmt.Errorf("unsupported output format %q", output)
@@ -273,8 +275,15 @@ func writeWorktreeInspection(writer io.Writer, output string, inspection reposit
 	if value.Detached {
 		branch = "(detached)"
 	}
-	_, err := fmt.Fprintf(writer, "Path: %s\nRelative path: %s\nKind: %s\nRepository: %s\nOrigin: %s\nGit directory: %s\nBranch: %s\nHEAD: %s\nStatus: %d staged, %d unstaged, %d untracked, %d conflicted\n", value.Path, value.RelativePath, value.Kind, inspection.Repository.CommonDirectory, inspection.Repository.Origin, value.GitDirectory, branch, value.HEAD, value.Status.Staged, value.Status.Unstaged, value.Status.Untracked, value.Status.Conflicted)
-	return err
+	if _, err := fmt.Fprintf(writer, "Path: %s\nRelative path: %s\nKind: %s\nRepository: %s\nOrigin: %s\nGit directory: %s\nBranch: %s\nHEAD: %s\nStatus: %d staged, %d unstaged, %d untracked, %d conflicted\n", humanSafe(value.Path), humanSafe(value.RelativePath), humanSafe(string(value.Kind)), humanSafe(inspection.Repository.CommonDirectory), humanSafe(inspection.Repository.Origin), humanSafe(value.GitDirectory), humanSafe(branch), humanSafe(value.HEAD), value.Status.Staged, value.Status.Unstaged, value.Status.Untracked, value.Status.Conflicted); err != nil {
+		return err
+	}
+	for _, warning := range inspection.Warnings {
+		if _, err := fmt.Fprintf(writer, "Warning: %s: %s\n", humanSafe(warning.Path), humanSafe(warning.Message)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func flattenWorktrees(repositories []repository.Repository) []repository.Worktree {

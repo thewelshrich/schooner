@@ -242,12 +242,12 @@ func (r *Runtime) InspectHost(ctx context.Context, connection box.Connection, in
 }
 
 func (r *Runtime) ConfigureHost(ctx context.Context, connection box.Connection, installed box.HostRuntime, worktreeRoot, expectedIdentity string) error {
-	request := hostruntime.NewConfigureRequest(worktreeRoot)
+	request := hostruntime.NewConfigureRequest(worktreeRoot, expectedIdentity)
 	var result hostruntime.ConfigureResult
 	if err := r.invokeHostJSON(ctx, connection, installed, expectedIdentity, hostruntime.CapabilityConfigureV1, "host configure", request, &result); err != nil {
 		return err
 	}
-	if result.SchemaVersion != hostruntime.SchemaVersion || result.ProtocolVersion != hostruntime.ProtocolVersion || result.WorktreeRoot != worktreeRoot {
+	if result.SchemaVersion != hostruntime.SchemaVersion || result.ProtocolVersion != hostruntime.ProtocolVersion || result.BoxIdentity != expectedIdentity || result.WorktreeRoot != worktreeRoot {
 		return box.NewError("host_runtime_incompatible", "host configuration returned an invalid result", nil)
 	}
 	return nil
@@ -255,10 +255,10 @@ func (r *Runtime) ConfigureHost(ctx context.Context, connection box.Connection, 
 
 func (r *Runtime) ListWorktrees(ctx context.Context, connection box.Connection, installed box.HostRuntime, expectedIdentity string) (repository.Catalog, error) {
 	var result hostruntime.WorktreeCatalog
-	if err := r.invokeHostJSON(ctx, connection, installed, expectedIdentity, hostruntime.CapabilityWorktreeListV1, "host worktree list", hostruntime.NewWorktreeRequest(""), &result); err != nil {
+	if err := r.invokeHostJSON(ctx, connection, installed, expectedIdentity, hostruntime.CapabilityWorktreeListV1, "host worktree list", hostruntime.NewWorktreeRequest("", expectedIdentity), &result); err != nil {
 		return repository.Catalog{}, err
 	}
-	if result.SchemaVersion != hostruntime.SchemaVersion || result.ProtocolVersion != hostruntime.ProtocolVersion {
+	if result.SchemaVersion != hostruntime.SchemaVersion || result.ProtocolVersion != hostruntime.ProtocolVersion || result.BoxIdentity != expectedIdentity {
 		return repository.Catalog{}, box.NewError("host_runtime_incompatible", "worktree list returned an incompatible result", nil)
 	}
 	return result.Catalog, nil
@@ -266,10 +266,10 @@ func (r *Runtime) ListWorktrees(ctx context.Context, connection box.Connection, 
 
 func (r *Runtime) InspectWorktree(ctx context.Context, connection box.Connection, installed box.HostRuntime, expectedIdentity, selector string) (repository.Inspection, error) {
 	var result hostruntime.WorktreeInspection
-	if err := r.invokeHostJSON(ctx, connection, installed, expectedIdentity, hostruntime.CapabilityWorktreeInspectV1, "host worktree inspect", hostruntime.NewWorktreeRequest(selector), &result); err != nil {
+	if err := r.invokeHostJSON(ctx, connection, installed, expectedIdentity, hostruntime.CapabilityWorktreeInspectV1, "host worktree inspect", hostruntime.NewWorktreeRequest(selector, expectedIdentity), &result); err != nil {
 		return repository.Inspection{}, err
 	}
-	if result.SchemaVersion != hostruntime.SchemaVersion || result.ProtocolVersion != hostruntime.ProtocolVersion {
+	if result.SchemaVersion != hostruntime.SchemaVersion || result.ProtocolVersion != hostruntime.ProtocolVersion || result.BoxIdentity != expectedIdentity {
 		return repository.Inspection{}, box.NewError("host_runtime_incompatible", "worktree inspection returned an incompatible result", nil)
 	}
 	return result.Inspection, nil

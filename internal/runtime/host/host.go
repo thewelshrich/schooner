@@ -165,6 +165,10 @@ func (r *Runtime) Configure(request hostruntime.ConfigureRequest) (hostruntime.C
 	if err := hostruntime.ValidateConfigureRequest(request); err != nil {
 		return hostruntime.ConfigureResult{}, err
 	}
+	identity, err := r.operationIdentity(request.BoxIdentity)
+	if err != nil {
+		return hostruntime.ConfigureResult{}, err
+	}
 	path, err := config.Path()
 	if err != nil {
 		return hostruntime.ConfigureResult{}, err
@@ -172,11 +176,15 @@ func (r *Runtime) Configure(request hostruntime.ConfigureRequest) (hostruntime.C
 	if err = config.Write(path, config.Host{SchemaVersion: config.SchemaVersion, WorktreeRoot: request.WorktreeRoot}); err != nil {
 		return hostruntime.ConfigureResult{}, err
 	}
-	return hostruntime.ConfigureResult{SchemaVersion: hostruntime.SchemaVersion, ProtocolVersion: hostruntime.ProtocolVersion, WorktreeRoot: request.WorktreeRoot}, nil
+	return hostruntime.ConfigureResult{SchemaVersion: hostruntime.SchemaVersion, ProtocolVersion: hostruntime.ProtocolVersion, BoxIdentity: identity, WorktreeRoot: request.WorktreeRoot}, nil
 }
 
 func (r *Runtime) ListWorktrees(ctx context.Context, request hostruntime.WorktreeRequest) (hostruntime.WorktreeCatalog, error) {
 	if err := hostruntime.ValidateWorktreeRequest(request, false); err != nil {
+		return hostruntime.WorktreeCatalog{}, err
+	}
+	identity, err := r.operationIdentity(request.BoxIdentity)
+	if err != nil {
 		return hostruntime.WorktreeCatalog{}, err
 	}
 	configured, err := config.ReadDefault()
@@ -187,11 +195,15 @@ func (r *Runtime) ListWorktrees(ctx context.Context, request hostruntime.Worktre
 	if err != nil {
 		return hostruntime.WorktreeCatalog{}, err
 	}
-	return hostruntime.WorktreeCatalog{SchemaVersion: hostruntime.SchemaVersion, ProtocolVersion: hostruntime.ProtocolVersion, Catalog: catalog}, nil
+	return hostruntime.WorktreeCatalog{SchemaVersion: hostruntime.SchemaVersion, ProtocolVersion: hostruntime.ProtocolVersion, BoxIdentity: identity, Catalog: catalog}, nil
 }
 
 func (r *Runtime) InspectWorktree(ctx context.Context, request hostruntime.WorktreeRequest) (hostruntime.WorktreeInspection, error) {
 	if err := hostruntime.ValidateWorktreeRequest(request, true); err != nil {
+		return hostruntime.WorktreeInspection{}, err
+	}
+	identity, err := r.operationIdentity(request.BoxIdentity)
+	if err != nil {
 		return hostruntime.WorktreeInspection{}, err
 	}
 	configured, err := config.ReadDefault()
@@ -202,7 +214,22 @@ func (r *Runtime) InspectWorktree(ctx context.Context, request hostruntime.Workt
 	if err != nil {
 		return hostruntime.WorktreeInspection{}, err
 	}
-	return hostruntime.WorktreeInspection{SchemaVersion: hostruntime.SchemaVersion, ProtocolVersion: hostruntime.ProtocolVersion, Inspection: inspection}, nil
+	return hostruntime.WorktreeInspection{SchemaVersion: hostruntime.SchemaVersion, ProtocolVersion: hostruntime.ProtocolVersion, BoxIdentity: identity, Inspection: inspection}, nil
+}
+
+func (r *Runtime) operationIdentity(expected string) (string, error) {
+	home, err := r.home()
+	if err != nil {
+		return "", err
+	}
+	identity, err := r.identity(home)
+	if err != nil {
+		return "", err
+	}
+	if identity != expected {
+		return "", &hostruntime.Error{Code: hostruntime.CodeInvalidIdentity, Message: "connected machine does not match the requested Box identity"}
+	}
+	return identity, nil
 }
 
 func (r *Runtime) identity(home string) (string, error) {

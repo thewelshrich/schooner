@@ -23,6 +23,7 @@ const (
 	maxWarnings     = 100
 	maxOutputBytes  = 1 << 20
 	maxCatalogBytes = 3 << 18
+	maxOriginBytes  = 32 << 10
 )
 
 type WorktreeKind string
@@ -72,6 +73,7 @@ type Inspection struct {
 	WorktreeRoot string     `json:"worktree_root"`
 	Repository   Repository `json:"repository"`
 	Worktree     Worktree   `json:"worktree"`
+	Warnings     []Warning  `json:"warnings"`
 }
 
 func Discover(ctx context.Context, worktreeRoot string) (Catalog, error) {
@@ -192,7 +194,7 @@ func inspect(ctx context.Context, root, selector string, commands runner) (Inspe
 			sort.Slice(repository.Linked, func(i, j int) bool { return repository.Linked[i].RelativePath < repository.Linked[j].RelativePath })
 		}
 	}
-	return Inspection{WorktreeRoot: canonicalRoot, Repository: repository, Worktree: latest.worktree}, nil
+	return Inspection{WorktreeRoot: canonicalRoot, Repository: repository, Worktree: latest.worktree, Warnings: catalog.Warnings}, nil
 }
 
 func repositoryRelationship(catalog Catalog, item observation) Repository {
@@ -548,7 +550,7 @@ func sanitizeOrigin(raw string) string {
 		parsed.RawQuery = ""
 		parsed.Fragment = ""
 		parsed.Path = strings.TrimSuffix(parsed.Path, ".git")
-		return parsed.String()
+		return boundedOrigin(parsed.String())
 	}
 	if index := strings.IndexAny(raw, "?#"); index >= 0 {
 		raw = raw[:index]
@@ -558,7 +560,14 @@ func sanitizeOrigin(raw string) string {
 			raw = raw[at+1:]
 		}
 	}
-	return strings.TrimSuffix(raw, ".git")
+	return boundedOrigin(strings.TrimSuffix(raw, ".git"))
+}
+
+func boundedOrigin(origin string) string {
+	if len(origin) > maxOriginBytes {
+		return ""
+	}
+	return origin
 }
 
 func boundCatalog(catalog *Catalog) {
@@ -567,7 +576,11 @@ func boundCatalog(catalog *Catalog) {
 		return
 	}
 	limitWarning := Warning{Path: catalog.WorktreeRoot, Message: fmt.Sprintf("catalog output limit of %d bytes reached", maxCatalogBytes)}
-	appendCatalogWarning(catalog, limitWarning)
+	catalog.Warnings = []Warning{limitWarning}
+	encoded, err = json.Marshal(catalog)
+	if err == nil && len(encoded) <= maxCatalogBytes {
+		return
+	}
 	for len(catalog.Repositories) != 0 {
 		last := len(catalog.Repositories) - 1
 		repository := &catalog.Repositories[last]
@@ -587,15 +600,6 @@ func boundCatalog(catalog *Catalog) {
 			return
 		}
 	}
-	catalog.Warnings = []Warning{limitWarning}
-}
-
-func appendCatalogWarning(catalog *Catalog, warning Warning) {
-	if len(catalog.Warnings) < maxWarnings {
-		catalog.Warnings = append(catalog.Warnings, warning)
-		return
-	}
-	catalog.Warnings[len(catalog.Warnings)-1] = warning
 }
 
 func appendWarning(warnings *[]Warning, path, message string) {

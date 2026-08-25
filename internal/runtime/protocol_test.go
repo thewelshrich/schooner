@@ -68,24 +68,27 @@ func TestInspectRequestAndInstallPathRejectHostilePaths(t *testing.T) {
 }
 
 func TestConfigureAndWorktreeRequestsAreStrict(t *testing.T) {
-	if err := ValidateConfigureRequest(NewConfigureRequest("/home/alice/schooner")); err != nil {
+	if err := ValidateConfigureRequest(NewConfigureRequest("/home/alice/schooner", testIdentity)); err != nil {
 		t.Fatal(err)
 	}
+	if err := ValidateConfigureRequest(NewConfigureRequest("/home/alice/schooner", "wrong")); ErrorCode(err) != CodeInvalidIdentity {
+		t.Fatalf("configure identity error = %v", err)
+	}
 	for _, root := range []string{"~/schooner", "/home/alice/../alice/schooner", "/bad\nroot"} {
-		if err := ValidateConfigureRequest(NewConfigureRequest(root)); ErrorCode(err) != CodeInvalidMessage {
+		if err := ValidateConfigureRequest(NewConfigureRequest(root, testIdentity)); ErrorCode(err) != CodeInvalidMessage {
 			t.Fatalf("root %q error = %v", root, err)
 		}
 	}
-	if err := ValidateWorktreeRequest(NewWorktreeRequest(""), false); err != nil {
+	if err := ValidateWorktreeRequest(NewWorktreeRequest("", testIdentity), false); err != nil {
 		t.Fatal(err)
 	}
-	if err := ValidateWorktreeRequest(NewWorktreeRequest("owner/repo"), true); err != nil {
+	if err := ValidateWorktreeRequest(NewWorktreeRequest("owner/repo", testIdentity), true); err != nil {
 		t.Fatal(err)
 	}
-	if err := ValidateWorktreeRequest(NewWorktreeRequest(""), true); ErrorCode(err) != CodeInvalidMessage {
+	if err := ValidateWorktreeRequest(NewWorktreeRequest("", testIdentity), true); ErrorCode(err) != CodeInvalidMessage {
 		t.Fatalf("missing selector error = %v", err)
 	}
-	if err := ValidateWorktreeRequest(NewWorktreeRequest("unexpected"), false); ErrorCode(err) != CodeInvalidMessage {
+	if err := ValidateWorktreeRequest(NewWorktreeRequest("unexpected", testIdentity), false); ErrorCode(err) != CodeInvalidMessage {
 		t.Fatalf("list selector error = %v", err)
 	}
 }
