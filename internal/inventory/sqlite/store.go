@@ -179,7 +179,10 @@ func (s *Store) SetDefault(ctx context.Context, name string) (box.Record, error)
 	if err != nil {
 		return box.Record{}, err
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE boxes SET is_default = CASE WHEN name = ? THEN 1 ELSE 0 END`, name); err != nil {
+	if _, err = tx.ExecContext(ctx, `UPDATE boxes SET is_default = 0 WHERE is_default = 1`); err != nil {
+		return box.Record{}, fmt.Errorf("clear default box: %w", err)
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE boxes SET is_default = 1 WHERE name = ?`, name); err != nil {
 		return box.Record{}, fmt.Errorf("set default box: %w", err)
 	}
 	if err = tx.Commit(); err != nil {

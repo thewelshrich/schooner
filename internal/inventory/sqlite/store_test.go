@@ -93,6 +93,12 @@ func TestDefaultBoxSwitchingAndRemoval(t *testing.T) {
 	if alpha.Default || !beta.Default {
 		t.Fatalf("alpha=%+v beta=%+v", alpha, beta)
 	}
+	if _, err = store.SetDefault(t.Context(), "alpha"); err != nil {
+		t.Fatalf("switch default back to earlier row: %v", err)
+	}
+	if _, err = store.SetDefault(t.Context(), "beta"); err != nil {
+		t.Fatalf("restore beta default: %v", err)
+	}
 	if _, err = store.Remove(t.Context(), "beta"); err != nil {
 		t.Fatal(err)
 	}
