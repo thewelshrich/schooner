@@ -86,10 +86,10 @@ func TestConfigureAndWorktreeRequestsAreStrict(t *testing.T) {
 	if err := ValidateWorktreeRequest(NewWorktreeRequest("owner/repo", testIdentity), true); err != nil {
 		t.Fatal(err)
 	}
-	if err := ValidateWorktreeRequest(NewWorktreeRequest("", testIdentity), true); ErrorCode(err) != CodeInvalidMessage {
+	if err := ValidateWorktreeRequest(NewWorktreeRequest("", testIdentity), true); ErrorCode(err) != CodeInvalidInput {
 		t.Fatalf("missing selector error = %v", err)
 	}
-	if err := ValidateWorktreeRequest(NewWorktreeRequest("unexpected", testIdentity), false); ErrorCode(err) != CodeInvalidMessage {
+	if err := ValidateWorktreeRequest(NewWorktreeRequest("unexpected", testIdentity), false); ErrorCode(err) != CodeInvalidInput {
 		t.Fatalf("list selector error = %v", err)
 	}
 }

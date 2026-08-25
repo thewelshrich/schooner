@@ -114,6 +114,9 @@ func newHostCommand(streams Streams, options *globalOptions) *cobra.Command {
 					case repository.CodeInvalidInput:
 						return encodeHostResult(cmd.OutOrStdout(), hostruntime.NewOperationError(request.BoxIdentity, hostruntime.CodeInvalidInput, err.Error()))
 					}
+					if hostruntime.ErrorCode(err) == hostruntime.CodeInvalidInput {
+						return encodeHostResult(cmd.OutOrStdout(), hostruntime.NewOperationError(request.BoxIdentity, hostruntime.CodeInvalidInput, err.Error()))
+					}
 					return executionError{cause: err}
 				}
 				return encodeHostResult(cmd.OutOrStdout(), result)

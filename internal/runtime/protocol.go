@@ -234,7 +234,7 @@ func ValidateWorktreeRequest(request WorktreeRequest, selectorRequired bool) err
 		return &Error{Code: CodeInvalidIdentity, Message: "worktree request Box identity is invalid"}
 	}
 	if len(request.Selector) > 4096 || hasControl(request.Selector) || (selectorRequired && request.Selector == "") || (!selectorRequired && request.Selector != "") {
-		return &Error{Code: CodeInvalidMessage, Message: "worktree request selector is invalid"}
+		return &Error{Code: CodeInvalidInput, Message: "worktree request selector is invalid"}
 	}
 	return nil
 }

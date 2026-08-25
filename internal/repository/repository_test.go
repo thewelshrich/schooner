@@ -392,6 +392,9 @@ func TestSanitizeOriginRemovesUserInfoFromEveryURI(t *testing.T) {
 	if got := sanitizeOrigin("https://alice:secret@example.com/%zz.git"); got != "" {
 		t.Fatalf("unparsable URI origin = %q", got)
 	}
+	if got := sanitizeOrigin("hg::https://alice:secret@example.com/owner/repo.git"); got != "" {
+		t.Fatalf("remote-helper origin = %q", got)
+	}
 }
 
 func TestGitDisablesOptionalLocksAndFSMonitor(t *testing.T) {

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -279,7 +280,8 @@ func walkCandidatesBounded(ctx context.Context, root string, visitLimit int, com
 	visited := 0
 	inspected := 0
 	depthLimited := false
-	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+	var walk func(string, int) error
+	walk = func(path string, depth int) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -288,47 +290,22 @@ func walkCandidatesBounded(ctx context.Context, root string, visitLimit int, com
 			return errVisitLimit
 		}
 		visited++
-		if walkErr != nil {
-			appendWarning(&warnings, path, walkErr.Error())
-			if entry == nil || entry.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if entry.Type()&os.ModeSymlink != 0 {
-			if entry.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if !entry.IsDir() {
-			return nil
-		}
 		if !utf8.ValidString(path) {
 			appendWarning(&warnings, path, "directory path is not valid UTF-8")
-			return filepath.SkipDir
-		}
-		relative, relErr := filepath.Rel(root, path)
-		if relErr != nil {
-			return relErr
-		}
-		depth := 0
-		if relative != "." {
-			depth = strings.Count(relative, string(filepath.Separator)) + 1
+			return nil
 		}
 		if depth > maxDepth {
 			if !depthLimited {
 				appendRequiredWarning(&warnings, root, fmt.Sprintf("discovery depth limit of %d reached", maxDepth))
 				depthLimited = true
 			}
-			return filepath.SkipDir
+			return nil
 		}
 		gitPath := filepath.Join(path, ".git")
 		info, statErr := os.Lstat(gitPath)
 		if statErr == nil {
 			if info.Mode()&os.ModeSymlink != 0 {
 				appendWarning(&warnings, path, ".git symlink was ignored")
-				return nil
 			}
 			if info.IsDir() || info.Mode().IsRegular() {
 				if inspected == maxCandidates {
@@ -341,17 +318,47 @@ func walkCandidatesBounded(ctx context.Context, root string, visitLimit int, com
 						return ctx.Err()
 					}
 					appendWarning(&warnings, path, validationErr.Error())
+				} else {
+					candidates = append(candidates, path)
 					return nil
 				}
-				candidates = append(candidates, path)
-				return filepath.SkipDir
 			}
 		} else if !errors.Is(statErr, os.ErrNotExist) {
 			appendWarning(&warnings, path, statErr.Error())
+		}
+		directory, openErr := os.Open(path)
+		if openErr != nil {
+			appendWarning(&warnings, path, openErr.Error())
 			return nil
 		}
-		return nil
-	})
+		defer func() { _ = directory.Close() }()
+		for {
+			remaining := visitLimit - visited
+			if remaining == 0 {
+				appendRequiredWarning(&warnings, root, fmt.Sprintf("filesystem entry limit of %d reached", visitLimit))
+				return errVisitLimit
+			}
+			entries, readErr := directory.ReadDir(min(128, remaining))
+			for _, entry := range entries {
+				child := filepath.Join(path, entry.Name())
+				if entry.Type()&os.ModeSymlink != 0 || !entry.IsDir() {
+					visited++
+					continue
+				}
+				if err := walk(child, depth+1); err != nil {
+					return err
+				}
+			}
+			if errors.Is(readErr, io.EOF) {
+				return nil
+			}
+			if readErr != nil {
+				appendWarning(&warnings, path, readErr.Error())
+				return nil
+			}
+		}
+	}
+	err := walk(root, 0)
 	if errors.Is(err, errCandidateLimit) || errors.Is(err, errVisitLimit) {
 		err = nil
 	}
@@ -682,6 +689,9 @@ func sanitizeOrigin(raw string) string {
 	}
 	parsed, parseErr := url.Parse(raw)
 	if parseErr == nil && parsed.Scheme != "" {
+		if parsed.Opaque != "" {
+			return ""
+		}
 		parsed.User = nil
 		parsed.RawQuery = ""
 		parsed.Fragment = ""

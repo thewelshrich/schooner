@@ -8,6 +8,7 @@ import (
 	"github.com/thewelshrich/schooner/internal/box"
 	"github.com/thewelshrich/schooner/internal/config"
 	"github.com/thewelshrich/schooner/internal/repository"
+	hostruntime "github.com/thewelshrich/schooner/internal/runtime"
 )
 
 func TestWriteWorktreeListEscapesHostileWarnings(t *testing.T) {
@@ -99,6 +100,14 @@ func TestPublicRepositoryErrorMapsNotFound(t *testing.T) {
 
 func TestPublicRepositoryErrorMapsInvalidInput(t *testing.T) {
 	cause := &repository.Error{Code: repository.CodeInvalidInput, Message: "worktree selector must be canonical"}
+	err := publicRepositoryError(cause)
+	if box.ErrorCode(err) != "invalid_input" {
+		t.Fatalf("error = %v, code = %s", err, box.ErrorCode(err))
+	}
+}
+
+func TestPublicRepositoryErrorMapsProtocolInvalidInput(t *testing.T) {
+	cause := &hostruntime.Error{Code: hostruntime.CodeInvalidInput, Message: "worktree request selector is invalid"}
 	err := publicRepositoryError(cause)
 	if box.ErrorCode(err) != "invalid_input" {
 		t.Fatalf("error = %v, code = %s", err, box.ErrorCode(err))
