@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	goruntime "runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -92,6 +93,46 @@ func TestDiscoverStopsAtTopmostCheckoutAndIgnoresSymlinks(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(catalog.Repositories) != 1 || catalog.Repositories[0].Primary == nil || catalog.Repositories[0].Primary.RelativePath != "outer" {
+		t.Fatalf("catalog = %+v", catalog)
+	}
+}
+
+func TestDiscoverRejectsNonUTF8WorktreePaths(t *testing.T) {
+	if goruntime.GOOS != "linux" {
+		t.Skip("the local filesystem rejects non-UTF-8 path creation")
+	}
+	root := t.TempDir()
+	invalid := filepath.Join(root, string([]byte{'b', 'a', 'd', 0xff}))
+	mustGit(t, "init", invalid)
+	catalog, err := Discover(t.Context(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(catalog.Repositories) != 0 || len(catalog.Warnings) != 1 || !strings.Contains(catalog.Warnings[0].Message, "not valid UTF-8") || !strings.Contains(catalog.Warnings[0].Path, `\xff`) {
+		t.Fatalf("catalog = %+v", catalog)
+	}
+}
+
+func TestParseWorktreeListRejectsNonUTF8Paths(t *testing.T) {
+	data := append([]byte("worktree /root/bad"), 0xff, 0, 0)
+	if _, err := parseWorktreeList(data); err == nil {
+		t.Fatal("non-UTF-8 worktree membership succeeded")
+	}
+}
+
+func TestDiscoverIgnoresInheritedGitRepositorySelection(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "target")
+	mustGit(t, "init", target)
+	other := filepath.Join(t.TempDir(), "other")
+	mustGit(t, "init", other)
+	t.Setenv("GIT_DIR", filepath.Join(other, ".git"))
+	t.Setenv("GIT_WORK_TREE", other)
+	catalog, err := Discover(t.Context(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(catalog.Repositories) != 1 || catalog.Repositories[0].Primary == nil || catalog.Repositories[0].Primary.RelativePath != "target" {
 		t.Fatalf("catalog = %+v", catalog)
 	}
 }

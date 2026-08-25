@@ -134,7 +134,13 @@ func runWorktreeList(ctx context.Context, streams Streams, global *globalOptions
 	}
 	if target.direct != nil {
 		result, err := target.direct.ListWorktrees(ctx, hostruntime.NewWorktreeRequest("", target.identity))
-		return result.Catalog, err
+		if err != nil {
+			return repository.Catalog{}, err
+		}
+		if err = validateDirectWorktreeRoot(target, result.WorktreeRoot); err != nil {
+			return repository.Catalog{}, err
+		}
+		return result.Catalog, nil
 	}
 	connection := box.Connection{Destination: target.record.SSHDestination, IdentityFile: target.record.IdentityFile, BatchMode: !interactionAllowed(streams, global)}
 	catalog, err := target.remote.ssh.ListWorktrees(ctx, connection, box.HostRuntime{Path: target.record.RuntimePath}, target.record.RemoteIdentity)
@@ -157,7 +163,13 @@ func runWorktreeInspect(ctx context.Context, streams Streams, global *globalOpti
 	}
 	if target.direct != nil {
 		result, err := target.direct.InspectWorktree(ctx, hostruntime.NewWorktreeRequest(selector, target.identity))
-		return result.Inspection, err
+		if err != nil {
+			return repository.Inspection{}, err
+		}
+		if err = validateDirectWorktreeRoot(target, result.WorktreeRoot); err != nil {
+			return repository.Inspection{}, err
+		}
+		return result.Inspection, nil
 	}
 	connection := box.Connection{Destination: target.record.SSHDestination, IdentityFile: target.record.IdentityFile, BatchMode: !interactionAllowed(streams, global)}
 	inspection, err := target.remote.ssh.InspectWorktree(ctx, connection, box.HostRuntime{Path: target.record.RuntimePath}, target.record.RemoteIdentity, selector)
@@ -168,6 +180,16 @@ func runWorktreeInspect(ctx context.Context, streams Streams, global *globalOpti
 		return repository.Inspection{}, err
 	}
 	return inspection, nil
+}
+
+func validateDirectWorktreeRoot(target worktreeTarget, actual string) error {
+	if actual == target.configured.WorktreeRoot {
+		return nil
+	}
+	if target.record.Name != "" {
+		return box.NewError("conflict", fmt.Sprintf("direct Box worktree root differs from local inventory; run \"schooner box setup %s\" from a workstation", target.record.Name), nil)
+	}
+	return box.NewError("conflict", "direct Box worktree root differs from host configuration; run box setup from a workstation", nil)
 }
 
 func validateRemoteWorktreeRoot(record box.Record, actual string) error {

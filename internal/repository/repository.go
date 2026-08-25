@@ -11,7 +11,9 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/thewelshrich/schooner/internal/process"
 )
@@ -25,6 +27,26 @@ const (
 	maxCatalogBytes = 3 << 18
 	maxOriginBytes  = 32 << 10
 )
+
+var gitRepositoryEnvironment = []string{
+	"GIT_ALTERNATE_OBJECT_DIRECTORIES",
+	"GIT_COMMON_DIR",
+	"GIT_CONFIG",
+	"GIT_CONFIG_COUNT",
+	"GIT_CONFIG_PARAMETERS",
+	"GIT_DIR",
+	"GIT_GRAFT_FILE",
+	"GIT_IMPLICIT_WORK_TREE",
+	"GIT_INDEX_FILE",
+	"GIT_INTERNAL_SUPER_PREFIX",
+	"GIT_NAMESPACE",
+	"GIT_NO_REPLACE_OBJECTS",
+	"GIT_OBJECT_DIRECTORY",
+	"GIT_PREFIX",
+	"GIT_REPLACE_REF_BASE",
+	"GIT_SHALLOW_FILE",
+	"GIT_WORK_TREE",
+}
 
 type WorktreeKind string
 
@@ -91,7 +113,7 @@ type runner interface {
 type commandRunner struct{}
 
 func (commandRunner) Run(ctx context.Context, name string, arguments ...string) ([]byte, error) {
-	return process.Run(ctx, maxOutputBytes, name, arguments...)
+	return process.RunWithoutEnvironment(ctx, maxOutputBytes, gitRepositoryEnvironment, name, arguments...)
 }
 
 type observation struct {
@@ -248,6 +270,10 @@ func walkCandidatesBounded(ctx context.Context, root string, visitLimit int) ([]
 		}
 		if !entry.IsDir() {
 			return nil
+		}
+		if !utf8.ValidString(path) {
+			appendWarning(&warnings, path, "directory path is not valid UTF-8")
+			return filepath.SkipDir
 		}
 		relative, relErr := filepath.Rel(root, path)
 		if relErr != nil {
@@ -606,16 +632,24 @@ func appendWarning(warnings *[]Warning, path, message string) {
 	if len(*warnings) >= maxWarnings {
 		return
 	}
-	*warnings = append(*warnings, Warning{Path: path, Message: message})
+	*warnings = append(*warnings, Warning{Path: warningValue(path), Message: warningValue(message)})
 }
 
 func appendRequiredWarning(warnings *[]Warning, path, message string) {
-	warning := Warning{Path: path, Message: message}
+	warning := Warning{Path: warningValue(path), Message: warningValue(message)}
 	if len(*warnings) < maxWarnings {
 		*warnings = append(*warnings, warning)
 		return
 	}
 	(*warnings)[len(*warnings)-1] = warning
+}
+
+func warningValue(value string) string {
+	if utf8.ValidString(value) {
+		return value
+	}
+	quoted := strconv.QuoteToASCII(value)
+	return strings.TrimSuffix(strings.TrimPrefix(quoted, `"`), `"`)
 }
 
 func firstPath(repository Repository) string {
@@ -633,6 +667,9 @@ func exitCode(err error) int {
 }
 
 func hasControl(value string) bool {
+	if !utf8.ValidString(value) {
+		return true
+	}
 	for _, character := range value {
 		if character < 0x20 || character == 0x7f {
 			return true

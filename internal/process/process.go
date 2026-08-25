@@ -6,11 +6,36 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"strings"
 )
 
 func Run(ctx context.Context, maximum int, name string, arguments ...string) ([]byte, error) {
+	return run(ctx, maximum, nil, name, arguments...)
+}
+
+func RunWithoutEnvironment(ctx context.Context, maximum int, excluded []string, name string, arguments ...string) ([]byte, error) {
+	blocked := make(map[string]struct{}, len(excluded))
+	for _, key := range excluded {
+		blocked[key] = struct{}{}
+	}
+	environment := make([]string, 0, len(os.Environ()))
+	for _, entry := range os.Environ() {
+		key, _, found := strings.Cut(entry, "=")
+		if _, remove := blocked[key]; found && remove {
+			continue
+		}
+		environment = append(environment, entry)
+	}
+	return run(ctx, maximum, environment, name, arguments...)
+}
+
+func run(ctx context.Context, maximum int, environment []string, name string, arguments ...string) ([]byte, error) {
 	command := exec.CommandContext(ctx, name, arguments...)
+	if environment != nil {
+		command.Env = environment
+	}
 	output := &limitedBuffer{maximum: maximum}
 	command.Stdout = output
 	command.Stderr = io.Discard

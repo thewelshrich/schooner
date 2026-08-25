@@ -107,6 +107,20 @@ func TestWorktreeListRunsDirectlyOnIdentifiedBox(t *testing.T) {
 	if _, err = os.Stat(inventoryPath); !os.IsNotExist(err) {
 		t.Fatalf("direct observation created local inventory at %s: %v", inventoryPath, err)
 	}
+	otherRoot := filepath.Join(home, "other-worktrees")
+	if output, initErr := exec.Command("git", "init", filepath.Join(otherRoot, "other")).CombinedOutput(); initErr != nil {
+		t.Fatalf("git init other: %v\n%s", initErr, output)
+	}
+	if err = os.Rename(canonicalRoot, canonicalRoot+"-original"); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.Symlink(otherRoot, canonicalRoot); err != nil {
+		t.Fatal(err)
+	}
+	code, _, stderr = run(t.Context(), []string{"worktree", "list", "--no-input"}, testBuild(), nil)
+	if code != 1 || !strings.Contains(stderr, "worktree root differs from host configuration") {
+		t.Fatalf("drift code=%d stderr=%q", code, stderr)
+	}
 }
 
 func TestWorktreeDirectModeRequiresHostConfiguration(t *testing.T) {

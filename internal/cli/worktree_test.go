@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/thewelshrich/schooner/internal/box"
+	"github.com/thewelshrich/schooner/internal/config"
 	"github.com/thewelshrich/schooner/internal/repository"
 )
 
@@ -72,6 +73,17 @@ func TestValidateRemoteWorktreeRootRejectsDrift(t *testing.T) {
 		t.Fatal(err)
 	}
 	err := validateRemoteWorktreeRoot(record, "/home/alice/other")
+	if box.ErrorCode(err) != "conflict" || !strings.Contains(err.Error(), "box setup work") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestValidateDirectWorktreeRootRejectsCanonicalDrift(t *testing.T) {
+	target := worktreeTarget{configured: config.Host{WorktreeRoot: "/home/alice/schooner"}, record: box.Record{Name: "work", WorktreeRoot: "/home/alice/schooner"}}
+	if err := validateDirectWorktreeRoot(target, target.configured.WorktreeRoot); err != nil {
+		t.Fatal(err)
+	}
+	err := validateDirectWorktreeRoot(target, "/home/alice/other")
 	if box.ErrorCode(err) != "conflict" || !strings.Contains(err.Error(), "box setup work") {
 		t.Fatalf("error = %v", err)
 	}
