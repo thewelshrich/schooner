@@ -5,8 +5,8 @@
 
 ## Context
 
-Schooner needs reliable, versioned behavior for Projects, remote-first
-Workspaces, Sessions, Agents, and Git-aware synchronization. Embedding an
+Schooner needs reliable, versioned behavior for Repositories, remote-first
+Worktrees, Sessions, Agents, and Git-aware synchronization. Embedding an
 expanding collection of shell programs in the local application would make
 atomic behavior, structured inspection, compatibility, and testing harder to
 maintain. A persistent daemon would add installation, supervision, availability,

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -17,6 +18,7 @@ import (
 	"github.com/thewelshrich/schooner/internal/acquisition"
 	"github.com/thewelshrich/schooner/internal/box"
 	"github.com/thewelshrich/schooner/internal/cli"
+	"github.com/thewelshrich/schooner/internal/config"
 	"github.com/thewelshrich/schooner/internal/inventory/sqlite"
 )
 
@@ -58,6 +60,71 @@ func TestBoxHelpListsSelectionAndMaintenanceCommands(t *testing.T) {
 		if !strings.Contains(stdout, command) {
 			t.Fatalf("box help missing %q: %s", command, stdout)
 		}
+	}
+}
+
+func TestWorktreeListRunsDirectlyOnIdentifiedBox(t *testing.T) {
+	home := t.TempDir()
+	root := filepath.Join(home, "worktrees")
+	repositoryPath := filepath.Join(root, "owner", "repo")
+	if output, err := exec.Command("git", "init", repositoryPath).CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, output)
+	}
+	identityPath := filepath.Join(home, ".local", "state", "schooner", "identity")
+	if err := os.MkdirAll(filepath.Dir(identityPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(identityPath, []byte("11111111-1111-4111-8111-111111111111\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_STATE_HOME", filepath.Join(home, "state"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
+	t.Setenv("SCHOONER_CONFIG", "")
+	configPath, err := config.Path()
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonicalRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = config.Write(configPath, config.Host{WorktreeRoot: canonicalRoot}); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := run(t.Context(), []string{"worktree", "list", "--output", "json", "--no-input"}, testBuild(), nil)
+	if code != 0 || stderr != "" {
+		t.Fatalf("code=%d stderr=%q stdout=%q", code, stderr, stdout)
+	}
+	if !strings.Contains(stdout, `"schema_version":"1"`) || !strings.Contains(stdout, `"relative_path":"owner/repo"`) || !strings.Contains(stdout, `"kind":"primary"`) {
+		t.Fatalf("stdout = %s", stdout)
+	}
+	inventoryPath, err := sqlite.DefaultPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = os.Stat(inventoryPath); !os.IsNotExist(err) {
+		t.Fatalf("direct observation created local inventory at %s: %v", inventoryPath, err)
+	}
+}
+
+func TestWorktreeDirectModeRequiresHostConfiguration(t *testing.T) {
+	home := t.TempDir()
+	identityPath := filepath.Join(home, ".local", "state", "schooner", "identity")
+	if err := os.MkdirAll(filepath.Dir(identityPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(identityPath, []byte("11111111-1111-4111-8111-111111111111\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_STATE_HOME", filepath.Join(home, "state"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
+	t.Setenv("SCHOONER_CONFIG", "")
+	code, _, stderr := run(t.Context(), []string{"worktree", "list", "--no-input"}, testBuild(), nil)
+	if code != 1 || !strings.Contains(stderr, "run box setup from a workstation") {
+		t.Fatalf("code=%d stderr=%q", code, stderr)
 	}
 }
 
@@ -342,6 +409,32 @@ func TestBoxLifecycleJSONThroughRun(t *testing.T) {
 	if want := golden(t, "box-status.json"); status != want {
 		t.Fatalf("status JSON mismatch\nwant: %s\ngot:  %s", want, status)
 	}
+	// Establish a valid local Box identity and deliberately unusable direct
+	// configuration. Explicit --box must still select the SSH runtime.
+	identityPath := filepath.Join(home, ".local", "state", "schooner", "identity")
+	if err := os.MkdirAll(filepath.Dir(identityPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(identityPath, []byte("11111111-1111-4111-8111-111111111111\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
+	configPath, err := config.Path()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = config.Write(configPath, config.Host{WorktreeRoot: filepath.Join(home, "missing-direct-root")}); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr = run(t.Context(), []string{"worktree", "list", "--box", "work", "--output", "json", "--no-input"}, testBuild(), nil)
+	if code != 0 || stderr != "" || !strings.Contains(stdout, `"relative_path":"owner/repo"`) {
+		t.Fatalf("worktree list: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	code, stdout, stderr = run(t.Context(), []string{"worktree", "inspect", "owner/repo", "--box", "work", "--output", "json", "--no-input"}, testBuild(), nil)
+	if code != 0 || stderr != "" || !strings.Contains(stdout, `"common_directory":"/home/alice/schooner/owner/repo/.git"`) {
+		t.Fatalf("worktree inspect: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
 
 	code, stdout, stderr = run(t.Context(), []string{"box", "remove", "work", "--yes", "--output", "json"}, testBuild(), nil)
 	if code != 0 || stderr != "" {
@@ -598,7 +691,7 @@ func TestDigitalOceanAddResumesInterruptedByName(t *testing.T) {
 		Region:        "fra1",
 		Size:          "small",
 		Image:         "ubuntu-24-04-x64",
-		WorkspaceRoot: box.DefaultWorkspaceRoot,
+		WorktreeRoot:  box.DefaultWorktreeRoot,
 		Checkpoint:    "provider_request_pending",
 		UpdatedAt:     time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC),
 	}
@@ -799,10 +892,10 @@ func saveTestBox(t *testing.T, record box.Record) {
 	now := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
 	record.ID = "box-" + record.Name
 	record.RemoteIdentity = "remote-" + record.Name
-	record.WorkspaceRoot = "/home/test/schooner"
+	record.WorktreeRoot = "/home/test/schooner"
 	record.CreatedAt = now
 	record.UpdatedAt = now
-	op := box.AddOperation{Name: record.Name, SSHDestination: record.SSHDestination, WorkspaceRoot: record.WorkspaceRoot, UpdatedAt: now}
+	op := box.AddOperation{Name: record.Name, SSHDestination: record.SSHDestination, WorktreeRoot: record.WorktreeRoot, UpdatedAt: now}
 	if err := store.BeginAdd(t.Context(), op); err != nil {
 		t.Fatal(err)
 	}
@@ -843,8 +936,8 @@ case " $* " in
   *" -G "*) exit 0 ;;
 esac
 state="$HOME/fake-host-installed"
-hello='{"schema_version":"1","protocol_version":"1","schooner_version":"v0.1.0-test","commit":"abc1234","box_identity":"11111111-1111-4111-8111-111111111111","os":"linux","architecture":"amd64","capabilities":["host.doctor.v1","host.hello.v1","host.inspect.v1"]}'
-inspection='{"schema_version":"1","protocol_version":"1","os_id":"ubuntu","os_version":"24.04","architecture":"amd64","home":"/home/alice","box_identity":"11111111-1111-4111-8111-111111111111","workspace_root":"/home/alice/schooner","workspace_root_exists":true,"git":{"available":true,"version":"git version 2.43.0"},"tmux":{"available":true,"version":"tmux 3.4"},"passwordless_sudo":true}'
+hello='{"schema_version":"1","protocol_version":"1","schooner_version":"v0.1.0-test","commit":"abc1234","box_identity":"11111111-1111-4111-8111-111111111111","os":"linux","architecture":"amd64","capabilities":["host.configure.v1","host.doctor.v1","host.hello.v1","host.inspect.v1","worktree.inspect.v1","worktree.list.v1"]}'
+inspection='{"schema_version":"1","protocol_version":"1","os_id":"ubuntu","os_version":"24.04","architecture":"amd64","home":"/home/alice","box_identity":"11111111-1111-4111-8111-111111111111","worktree_root":"/home/alice/schooner","worktree_root_exists":true,"git":{"available":true,"version":"git version 2.43.0"},"tmux":{"available":true,"version":"tmux 3.4"},"passwordless_sudo":true}'
 case " $* " in
   *"host hello"*)
     command=; for argument do command=$argument; done
@@ -853,6 +946,9 @@ case " $* " in
     if [ -f "$state" ]; then printf '%s\n' "$hello"; exit 0; fi
     exit 127 ;;
   *"host inspect"*) dd bs=4096 >/dev/null 2>&1; printf '%s\n' "$inspection"; exit 0 ;;
+  *"host configure"*) dd bs=4096 >/dev/null 2>&1; printf '%s\n' '{"schema_version":"1","protocol_version":"1","worktree_root":"/home/alice/schooner"}'; exit 0 ;;
+  *"host worktree list"*) dd bs=4096 >/dev/null 2>&1; printf '%s\n' '{"schema_version":"1","protocol_version":"1","worktree_root":"/home/alice/schooner","repositories":[{"common_directory":"/home/alice/schooner/owner/repo/.git","origin":"https://example.com/owner/repo","primary":{"path":"/home/alice/schooner/owner/repo","relative_path":"owner/repo","git_directory":"/home/alice/schooner/owner/repo/.git","kind":"primary","branch":"main","detached":false,"head":"abc","status":{"staged":0,"unstaged":0,"untracked":0,"conflicted":0}},"linked":[]}],"warnings":[]}'; exit 0 ;;
+  *"host worktree inspect"*) dd bs=4096 >/dev/null 2>&1; printf '%s\n' '{"schema_version":"1","protocol_version":"1","worktree_root":"/home/alice/schooner","repository":{"common_directory":"/home/alice/schooner/owner/repo/.git","origin":"https://example.com/owner/repo","primary":{"path":"/home/alice/schooner/owner/repo","relative_path":"owner/repo","git_directory":"/home/alice/schooner/owner/repo/.git","kind":"primary","branch":"main","detached":false,"head":"abc","status":{"staged":0,"unstaged":0,"untracked":0,"conflicted":0}},"linked":[]},"worktree":{"path":"/home/alice/schooner/owner/repo","relative_path":"owner/repo","git_directory":"/home/alice/schooner/owner/repo/.git","kind":"primary","branch":"main","detached":false,"head":"abc","status":{"staged":0,"unstaged":0,"untracked":0,"conflicted":0}}}'; exit 0 ;;
   *"flock -x 9"*) : > "$state"; exit 0 ;;
   *"cat >&3"*) dd bs=4096 >/dev/null 2>&1; exit 0 ;;
   *"printf \"%s\\n\" missing"*) printf '%s\n' missing; exit 0 ;;
@@ -863,9 +959,9 @@ case "$program" in
   *"candidate=\$1"*)
     printf '%s\n' '{"schema_version":"1","remote_identity":"11111111-1111-4111-8111-111111111111"}' ;;
   *"requested=\$1"*)
-    printf '%s\n' '{"schema_version":"1","workspace_root":"/home/alice/schooner"}' ;;
+    printf '%s\n' '{"schema_version":"1","worktree_root":"/home/alice/schooner"}' ;;
   *)
-    printf '%s\n' '{"schema_version":"1","os_id":"ubuntu","os_version":"24.04","architecture":"amd64","home":"/home/alice","remote_identity":"11111111-1111-4111-8111-111111111111","workspace_root":"/home/alice/schooner","workspace_root_exists":true,"git":{"available":true,"version":"git version 2.43.0"},"tmux":{"available":true,"version":"tmux 3.4"},"passwordless_sudo":true}' ;;
+    printf '%s\n' '{"schema_version":"1","os_id":"ubuntu","os_version":"24.04","architecture":"amd64","home":"/home/alice","remote_identity":"11111111-1111-4111-8111-111111111111","worktree_root":"/home/alice/schooner","worktree_root_exists":true,"git":{"available":true,"version":"git version 2.43.0"},"tmux":{"available":true,"version":"tmux 3.4"},"passwordless_sudo":true}' ;;
 esac
 `
 

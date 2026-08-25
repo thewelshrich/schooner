@@ -20,8 +20,8 @@ func TestRuntimeHelloInspectAndDoctor(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(identityPath, "identity"), []byte(identity+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	workspace := filepath.Join(home, "schooner")
-	if err := os.Mkdir(workspace, 0o700); err != nil {
+	worktree := filepath.Join(home, "schooner")
+	if err := os.Mkdir(worktree, 0o700); err != nil {
 		t.Fatal(err)
 	}
 
@@ -51,12 +51,12 @@ func TestRuntimeHelloInspectAndDoctor(t *testing.T) {
 	if err != nil || hello.BoxIdentity != identity || hello.OS != "linux" || hello.Architecture != "arm64" {
 		t.Fatalf("Hello() = %+v, %v", hello, err)
 	}
-	expectedWorkspace, err := filepath.EvalSymlinks(workspace)
+	expectedWorktree, err := filepath.EvalSymlinks(worktree)
 	if err != nil {
 		t.Fatal(err)
 	}
 	inspection, err := runtime.Inspect(t.Context(), hostruntime.NewInspectRequest("~/schooner"))
-	if err != nil || inspection.OSID != "ubuntu" || inspection.WorkspaceRoot != expectedWorkspace || !inspection.Git.Available || !inspection.PasswordlessSudo {
+	if err != nil || inspection.OSID != "ubuntu" || inspection.WorktreeRoot != expectedWorktree || !inspection.Git.Available || !inspection.PasswordlessSudo {
 		t.Fatalf("Inspect() = %+v, %v", inspection, err)
 	}
 	report, err := runtime.Doctor(t.Context(), hostruntime.NewInspectRequest("~/schooner"))

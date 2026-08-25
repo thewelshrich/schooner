@@ -172,16 +172,16 @@ func (r *Runtime) Resolve(ctx context.Context, connection box.Connection) error 
 	return nil
 }
 
-func (r *Runtime) Inspect(ctx context.Context, connection box.Connection, workspaceRoot string) (box.Capabilities, error) {
+func (r *Runtime) Inspect(ctx context.Context, connection box.Connection, worktreeRoot string) (box.Capabilities, error) {
 	contents, err := scripts.ReadFile("scripts/inspect.sh")
 	if err != nil {
 		return box.Capabilities{}, err
 	}
 	var result box.Capabilities
-	if workspaceRoot == "" {
-		workspaceRoot = "~"
+	if worktreeRoot == "" {
+		worktreeRoot = "~"
 	}
-	if err = r.runJSON(ctx, connection, contents, []string{workspaceRoot}, &result); err != nil {
+	if err = r.runJSON(ctx, connection, contents, []string{worktreeRoot}, &result); err != nil {
 		return box.Capabilities{}, err
 	}
 	return result, nil
@@ -225,22 +225,22 @@ func (r *Runtime) InstallTools(ctx context.Context, connection box.Connection, t
 	return r.runJSON(ctx, connection, contents, tools, &result)
 }
 
-func (r *Runtime) EnsureWorkspaceRoot(ctx context.Context, connection box.Connection, requested string) (string, error) {
+func (r *Runtime) EnsureWorktreeRoot(ctx context.Context, connection box.Connection, requested string) (string, error) {
 	probe, err := r.Inspect(ctx, connection, "~")
 	if err != nil {
 		return "", err
 	}
-	contents, err := scripts.ReadFile("scripts/workspace_root.sh")
+	contents, err := scripts.ReadFile("scripts/worktree_root.sh")
 	if err != nil {
 		return "", err
 	}
 	var result struct {
-		WorkspaceRoot string `json:"workspace_root"`
+		WorktreeRoot string `json:"worktree_root"`
 	}
 	if err = r.runJSON(ctx, connection, contents, []string{requested, probe.Home}, &result); err != nil {
 		return "", err
 	}
-	return result.WorkspaceRoot, nil
+	return result.WorktreeRoot, nil
 }
 
 func (r *Runtime) runJSON(ctx context.Context, connection box.Connection, program []byte, arguments []string, target any) error {

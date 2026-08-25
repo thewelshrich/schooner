@@ -31,7 +31,7 @@ Local machine                                Remote Box
           |                                             |
 +---------v---------------------------------------------v-----------+
 | Deep domain modules and use cases                                |
-| Box, Project, Workspace, Local Link, Session, Agent, Sync Point   |
+| Box, Repository, Worktree, Local Link, Session, Agent, Sync Point   |
 +----+-----------------+------------------+-------------------------+
      |                 |                  |
 +----v-----+     +-----v-----+      +-----v-----------------+
@@ -54,7 +54,7 @@ locator, or global registry.
 | CLI | Cobra |
 | Focused prompts | Huh v2 behind a prompt adapter |
 | Local database | SQLite through `database/sql` and `ncruces/go-sqlite3/driver` |
-| Configuration | Strict typed TOML through `pelletier/go-toml/v2` |
+| Configuration | Strict typed TOML through `BurntSushi/toml` |
 | Logging | Standard library `log/slog` |
 | Local process execution | Standard library `os/exec` behind a deep process module |
 | Remote transport | User's system `ssh` executable |
@@ -76,8 +76,7 @@ internal/cli/                 user-facing Cobra command adapter
 internal/ui/prompts/          focused Huh prompt adapter
 internal/box/                 Box identity, inspection, and lifecycle
 internal/acquisition/         adopted and provider-created acquisition
-internal/project/             Project identity and shared Git object stores
-internal/workspace/           remote Workspace lifecycle and inspection
+internal/repository/          live Git Repository and Worktree inspection
 internal/link/                Local Links and Sync Points
 internal/sync/                explicit push, pull, and sync behavior
 internal/session/             tmux-backed Sessions and optional Agents
@@ -173,49 +172,45 @@ after interruption. tmux, not a Schooner daemon, supplies persistence for
 Sessions and optional coding Agents.
 
 Remote files and processes belong to the configured SSH user. Schooner keeps
-its own state separate from visible Workspaces:
+its own state separate from visible Worktrees:
 
 ```text
 ~/.local/bin/schooner          installed on-demand application
 ~/.local/state/schooner/       Box identity and operation checkpoints
-~/.local/share/schooner/       Project and shared application metadata
-~/schooner/                    default configurable Workspace root
+~/schooner/                    default configurable Worktree root
 ```
 
 The runtime resolves the remote home directory deliberately rather than
-assuming interactive-shell environment variables. Ordinary Project, Workspace,
+assuming interactive-shell environment variables. Ordinary Repository, Worktree,
 Session, Agent, and synchronization operations do not require elevation.
 Explicit Box setup may use `sudo` after capability inspection and user consent.
 Schooner does not create a dedicated Unix user or install broad sudo rules.
 
-## Project and Workspace model
+## Repository and Worktree model
 
-A Project owns repository identity and a shared Git object store on one Box. A
-Workspace is one concrete remote checkout or Git worktree backed by that
-Project. Project data and Workspace state are authoritative on the Box and are
-inspected through the remote application.
+A Repository is one Git common object/ref store. A Worktree is any checkout
+registered with it: the normal primary checkout or an additional linked
+worktree. Canonical Git paths and `git worktree list --porcelain -z` are the
+live authority. Schooner does not persist Repository or Worktree IDs, aliases,
+inventory rows, ownership flags, or lifecycle state.
 
-Remote-only Workspaces are complete product objects. Creating, discovering,
-opening, or resuming one never requires a local checkout. A repository does not
-need a `.schooner` file or any other Schooner-specific configuration. Schooner
-metadata stays in its own local and remote state directories.
-
-A Session is associated with a Workspace and persists in tmux. An optional
-coding Agent may occupy the Session, but Agent lifecycle does not define the
-Workspace or Session lifecycle. The remote Schooner application is not an
-Agent.
+The Repository module exposes discovery and targeted inspection while hiding
+bounded filesystem traversal, fixed Git invocation, porcelain parsing, origin
+sanitization, grouping, and path confinement. Results are observations and may
+become stale immediately. A Session or Operation may annotate a canonical
+Worktree path, but must revalidate it against live Git state before use.
 
 ## Local Links and synchronization
 
-A Local Link relates one local checkout to one remote Workspace. The link and
+A Local Link relates one local checkout to one remote Worktree. The link and
 its Sync Point are local inventory; deleting them does not delete or rewrite
-either checkout. The remote Workspace remains usable without the link.
+either checkout. The remote Worktree remains usable without the link.
 
 Synchronization is explicit and attached to the invoking CLI:
 
 ```text
-push: local checkout    -> remote Workspace
-pull: remote Workspace -> local checkout
+push: local checkout    -> remote Worktree
+pull: remote Worktree -> local checkout
 sync: both sides + Sync Point -> verified safe reconciliation or conflict
 ```
 
@@ -313,10 +308,10 @@ newer application. Risky migrations require a backup. Shipped commands never
 automatically run down-migrations.
 
 This pre-release domain rebaseline is the one deliberate exception: the
-unreleased migration history is hard-cut from `project_root` to
-`workspace_root`, and development databases carrying the earlier checksums must
-be destroyed. Once this baseline is released, migration immutability applies
-normally.
+unreleased migration history is hard-cut from `workspace_root` to
+`worktree_root`, and development databases carrying the earlier checksums must
+be reset explicitly by their owners. Schooner never deletes them automatically.
+Once this baseline is released, migration immutability applies normally.
 
 Configuration and state use platform conventions:
 
@@ -329,9 +324,10 @@ Linux: $XDG_CONFIG_HOME/schooner/
        $XDG_CACHE_HOME/schooner/
 ```
 
-Documented XDG fallbacks apply. `SCHOONER_CONFIG` may select an application
-configuration file. Repositories and Workspaces require no Schooner
-configuration file.
+Documented XDG fallbacks apply. `SCHOONER_CONFIG` may select the strict host
+configuration file containing schema version 1 and one canonical
+`worktree_root`. Repositories and Worktrees require no repository-local
+Schooner configuration or metadata.
 
 ## Credentials
 
@@ -373,5 +369,5 @@ The repository enforces:
 - integration tests using the actual `ssh` process adapter against controlled
   fixtures before cloud tests;
 - narrowly scoped live-provider tests that are opt-in and resource-cleaning;
-- terminology checks that keep Project, Workspace, Local Link, Session, Agent,
+- terminology checks that keep Repository, Worktree, Local Link, Session, Agent,
   and Sync Point aligned with `DOMAIN.md`.

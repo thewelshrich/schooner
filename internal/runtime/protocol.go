@@ -11,6 +11,8 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+
+	"github.com/thewelshrich/schooner/internal/repository"
 )
 
 const (
@@ -18,9 +20,12 @@ const (
 	ProtocolVersion = "1"
 	MaxMessageBytes = 1 << 20
 
-	CapabilityHelloV1   = "host.hello.v1"
-	CapabilityInspectV1 = "host.inspect.v1"
-	CapabilityDoctorV1  = "host.doctor.v1"
+	CapabilityHelloV1           = "host.hello.v1"
+	CapabilityInspectV1         = "host.inspect.v1"
+	CapabilityDoctorV1          = "host.doctor.v1"
+	CapabilityConfigureV1       = "host.configure.v1"
+	CapabilityWorktreeListV1    = "worktree.list.v1"
+	CapabilityWorktreeInspectV1 = "worktree.inspect.v1"
 )
 
 var (
@@ -79,22 +84,52 @@ type Hello struct {
 type InspectRequest struct {
 	SchemaVersion   string `json:"schema_version"`
 	ProtocolVersion string `json:"protocol_version"`
-	WorkspaceRoot   string `json:"workspace_root"`
+	WorktreeRoot    string `json:"worktree_root"`
+}
+
+type ConfigureRequest struct {
+	SchemaVersion   string `json:"schema_version"`
+	ProtocolVersion string `json:"protocol_version"`
+	WorktreeRoot    string `json:"worktree_root"`
+}
+
+type WorktreeRequest struct {
+	SchemaVersion   string `json:"schema_version"`
+	ProtocolVersion string `json:"protocol_version"`
+	Selector        string `json:"selector,omitempty"`
+}
+
+type ConfigureResult struct {
+	SchemaVersion   string `json:"schema_version"`
+	ProtocolVersion string `json:"protocol_version"`
+	WorktreeRoot    string `json:"worktree_root"`
+}
+
+type WorktreeCatalog struct {
+	SchemaVersion   string `json:"schema_version"`
+	ProtocolVersion string `json:"protocol_version"`
+	repository.Catalog
+}
+
+type WorktreeInspection struct {
+	SchemaVersion   string `json:"schema_version"`
+	ProtocolVersion string `json:"protocol_version"`
+	repository.Inspection
 }
 
 type Inspection struct {
-	SchemaVersion       string `json:"schema_version"`
-	ProtocolVersion     string `json:"protocol_version"`
-	OSID                string `json:"os_id"`
-	OSVersion           string `json:"os_version"`
-	Architecture        string `json:"architecture"`
-	Home                string `json:"home"`
-	BoxIdentity         string `json:"box_identity,omitempty"`
-	WorkspaceRoot       string `json:"workspace_root"`
-	WorkspaceRootExists bool   `json:"workspace_root_exists"`
-	Git                 Tool   `json:"git"`
-	Tmux                Tool   `json:"tmux"`
-	PasswordlessSudo    bool   `json:"passwordless_sudo"`
+	SchemaVersion      string `json:"schema_version"`
+	ProtocolVersion    string `json:"protocol_version"`
+	OSID               string `json:"os_id"`
+	OSVersion          string `json:"os_version"`
+	Architecture       string `json:"architecture"`
+	Home               string `json:"home"`
+	BoxIdentity        string `json:"box_identity,omitempty"`
+	WorktreeRoot       string `json:"worktree_root"`
+	WorktreeRootExists bool   `json:"worktree_root_exists"`
+	Git                Tool   `json:"git"`
+	Tmux               Tool   `json:"tmux"`
+	PasswordlessSudo   bool   `json:"passwordless_sudo"`
 }
 
 type Check struct {
@@ -112,13 +147,41 @@ type DoctorReport struct {
 }
 
 func Capabilities() []string {
-	result := []string{CapabilityDoctorV1, CapabilityHelloV1, CapabilityInspectV1}
+	result := []string{CapabilityConfigureV1, CapabilityDoctorV1, CapabilityHelloV1, CapabilityInspectV1, CapabilityWorktreeInspectV1, CapabilityWorktreeListV1}
 	slices.Sort(result)
 	return result
 }
 
-func NewInspectRequest(workspaceRoot string) InspectRequest {
-	return InspectRequest{SchemaVersion: SchemaVersion, ProtocolVersion: ProtocolVersion, WorkspaceRoot: workspaceRoot}
+func NewInspectRequest(worktreeRoot string) InspectRequest {
+	return InspectRequest{SchemaVersion: SchemaVersion, ProtocolVersion: ProtocolVersion, WorktreeRoot: worktreeRoot}
+}
+
+func NewConfigureRequest(worktreeRoot string) ConfigureRequest {
+	return ConfigureRequest{SchemaVersion: SchemaVersion, ProtocolVersion: ProtocolVersion, WorktreeRoot: worktreeRoot}
+}
+
+func NewWorktreeRequest(selector string) WorktreeRequest {
+	return WorktreeRequest{SchemaVersion: SchemaVersion, ProtocolVersion: ProtocolVersion, Selector: selector}
+}
+
+func ValidateConfigureRequest(request ConfigureRequest) error {
+	if request.SchemaVersion != SchemaVersion || request.ProtocolVersion != ProtocolVersion {
+		return &Error{Code: CodeUnsupportedProtocol, Message: "host configuration request is incompatible"}
+	}
+	if !validPath(request.WorktreeRoot) {
+		return &Error{Code: CodeInvalidMessage, Message: "host configuration worktree root is invalid"}
+	}
+	return nil
+}
+
+func ValidateWorktreeRequest(request WorktreeRequest, selectorRequired bool) error {
+	if request.SchemaVersion != SchemaVersion || request.ProtocolVersion != ProtocolVersion {
+		return &Error{Code: CodeUnsupportedProtocol, Message: "worktree request is incompatible"}
+	}
+	if len(request.Selector) > 4096 || hasControl(request.Selector) || (selectorRequired && request.Selector == "") || (!selectorRequired && request.Selector != "") {
+		return &Error{Code: CodeInvalidMessage, Message: "worktree request selector is invalid"}
+	}
+	return nil
 }
 
 func InstallPath(home string) (string, error) {
@@ -135,11 +198,11 @@ func ValidateInspectRequest(request InspectRequest) error {
 	if request.ProtocolVersion != ProtocolVersion {
 		return &Error{Code: CodeUnsupportedProtocol, Message: "host request uses an unsupported protocol version"}
 	}
-	if request.WorkspaceRoot == "" || len(request.WorkspaceRoot) > 4096 || hasControl(request.WorkspaceRoot) {
-		return &Error{Code: CodeInvalidMessage, Message: "host request workspace root is invalid"}
+	if request.WorktreeRoot == "" || len(request.WorktreeRoot) > 4096 || hasControl(request.WorktreeRoot) {
+		return &Error{Code: CodeInvalidMessage, Message: "host request worktree root is invalid"}
 	}
-	if request.WorkspaceRoot != "~" && !strings.HasPrefix(request.WorkspaceRoot, "~/") && !path.IsAbs(request.WorkspaceRoot) {
-		return &Error{Code: CodeInvalidMessage, Message: "host request workspace root must be absolute or begin with ~/"}
+	if request.WorktreeRoot != "~" && !strings.HasPrefix(request.WorktreeRoot, "~/") && !path.IsAbs(request.WorktreeRoot) {
+		return &Error{Code: CodeInvalidMessage, Message: "host request worktree root must be absolute or begin with ~/"}
 	}
 	return nil
 }
@@ -181,7 +244,7 @@ func ValidateInspection(inspection Inspection, expectedIdentity string) error {
 	if inspection.ProtocolVersion != ProtocolVersion {
 		return &Error{Code: CodeUnsupportedProtocol, Message: "host inspection returned an unsupported protocol version"}
 	}
-	if !platformPattern.MatchString(inspection.OSID) || len(inspection.OSVersion) > 64 || hasControl(inspection.OSVersion) || !platformPattern.MatchString(inspection.Architecture) || !validPath(inspection.Home) || !validPath(inspection.WorkspaceRoot) {
+	if !platformPattern.MatchString(inspection.OSID) || len(inspection.OSVersion) > 64 || hasControl(inspection.OSVersion) || !platformPattern.MatchString(inspection.Architecture) || !validPath(inspection.Home) || !validPath(inspection.WorktreeRoot) {
 		return &Error{Code: CodeInvalidMessage, Message: "host inspection returned invalid platform paths"}
 	}
 	if !validTool(inspection.Git) || !validTool(inspection.Tmux) {

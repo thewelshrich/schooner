@@ -25,7 +25,7 @@ const catalogSelectHeight = 10
 type AddDraft struct {
 	Name           string
 	SSHDestination string
-	WorkspaceRoot  string
+	WorktreeRoot   string
 }
 
 type Options struct {
@@ -51,8 +51,8 @@ func NewChoiceSummary() *ChoiceSummary {
 }
 
 func Add(ctx context.Context, options Options, draft AddDraft, nameSet, sshSet, rootSet, skipConfirm bool) (AddDraft, bool, error) {
-	if draft.WorkspaceRoot == "" {
-		draft.WorkspaceRoot = box.DefaultWorkspaceRoot
+	if draft.WorktreeRoot == "" {
+		draft.WorktreeRoot = box.DefaultWorktreeRoot
 	}
 	var fields []huh.Field
 	if !nameSet {
@@ -62,7 +62,7 @@ func Add(ctx context.Context, options Options, draft AddDraft, nameSet, sshSet, 
 		fields = append(fields, huh.NewInput().Title("SSH destination").Description("An SSH config alias or user@host").Value(&draft.SSHDestination).Validate(box.ValidateSSHDestination))
 	}
 	if !rootSet {
-		fields = append(fields, huh.NewInput().Title("Remote workspace root").Value(&draft.WorkspaceRoot).Validate(box.ValidateWorkspaceRoot))
+		fields = append(fields, huh.NewInput().Title("Remote worktree root").Value(&draft.WorktreeRoot).Validate(box.ValidateWorktreeRoot))
 	}
 	section(options, "Box details")
 	if len(fields) > 0 {
@@ -73,7 +73,7 @@ func Add(ctx context.Context, options Options, draft AddDraft, nameSet, sshSet, 
 	RecordChoices(options,
 		Choice{Label: "Name", Value: draft.Name},
 		Choice{Label: "SSH destination", Value: draft.SSHDestination},
-		Choice{Label: "Workspace root", Value: draft.WorkspaceRoot},
+		Choice{Label: "Worktree root", Value: draft.WorktreeRoot},
 	)
 	if skipConfirm {
 		return draft, true, nil
@@ -86,9 +86,9 @@ func Add(ctx context.Context, options Options, draft AddDraft, nameSet, sshSet, 
 		Choice{Label: "Name", Value: draft.Name},
 		Choice{Label: "Acquisition", Value: "Existing SSH"},
 		Choice{Label: "SSH destination", Value: draft.SSHDestination},
-		Choice{Label: "Workspace root", Value: draft.WorkspaceRoot},
+		Choice{Label: "Worktree root", Value: draft.WorktreeRoot},
 	)
-	_, _ = fmt.Fprintf(options.Output, "\nSchooner will verify the host, establish identity, install missing Git/tmux prerequisites, and prepare the workspace root.\n\n")
+	_, _ = fmt.Fprintf(options.Output, "\nSchooner will verify the host, establish identity, install missing Git/tmux prerequisites, and prepare the worktree root.\n\n")
 	confirmed := false
 	confirmation := huh.NewForm(huh.NewGroup(huh.NewConfirm().Title("Continue?").Affirmative("Yes").Negative("No").Value(&confirmed)))
 	if err := run(ctx, options, confirmation); err != nil {
@@ -194,7 +194,7 @@ func PickCredentialProfile(ctx context.Context, options Options, profiles []cred
 
 type ProvisionDraft struct {
 	Name             string
-	WorkspaceRoot    string
+	WorktreeRoot     string
 	Region           string
 	Size             string
 	Image            string
@@ -206,15 +206,15 @@ type ProvisionDraft struct {
 }
 
 func ProvisionBasics(ctx context.Context, options Options, draft ProvisionDraft, nameSet, rootSet bool) (ProvisionDraft, error) {
-	if draft.WorkspaceRoot == "" {
-		draft.WorkspaceRoot = box.DefaultWorkspaceRoot
+	if draft.WorktreeRoot == "" {
+		draft.WorktreeRoot = box.DefaultWorktreeRoot
 	}
 	var fields []huh.Field
 	if !nameSet {
 		fields = append(fields, huh.NewInput().Title("Name the box").Description("Lowercase letters, numbers, and hyphens").Value(&draft.Name).Validate(box.ValidateName))
 	}
 	if !rootSet {
-		fields = append(fields, huh.NewInput().Title("Remote workspace root").Value(&draft.WorkspaceRoot).Validate(box.ValidateWorkspaceRoot))
+		fields = append(fields, huh.NewInput().Title("Remote worktree root").Value(&draft.WorktreeRoot).Validate(box.ValidateWorktreeRoot))
 	}
 	section(options, "Box details")
 	if len(fields) > 0 {
@@ -222,7 +222,7 @@ func ProvisionBasics(ctx context.Context, options Options, draft ProvisionDraft,
 			return ProvisionDraft{}, err
 		}
 	}
-	RecordChoices(options, Choice{Label: "Name", Value: draft.Name}, Choice{Label: "Workspace root", Value: draft.WorkspaceRoot})
+	RecordChoices(options, Choice{Label: "Name", Value: draft.Name}, Choice{Label: "Worktree root", Value: draft.WorktreeRoot})
 	return draft, nil
 }
 
@@ -361,7 +361,7 @@ func ConfirmProvision(ctx context.Context, options Options, profile provider.Cre
 		Choice{Label: "DO account SSH keys", Value: promptCount(len(draft.AccessKeyIDs))},
 		Choice{Label: "Automatic backups", Value: yesNo(draft.AutomaticBackups)},
 		Choice{Label: "IPv6", Value: yesNo(draft.IPv6)},
-		Choice{Label: "Workspace root", Value: draft.WorkspaceRoot},
+		Choice{Label: "Worktree root", Value: draft.WorktreeRoot},
 		Choice{Label: "Estimate", Value: fmt.Sprintf("$%.2f/month, billed by DigitalOcean", monthly)},
 	)
 	if resume {

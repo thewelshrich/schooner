@@ -10,12 +10,13 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"os/user"
 	"path/filepath"
 	goruntime "runtime"
 	"strconv"
 	"strings"
 
+	"github.com/thewelshrich/schooner/internal/config"
+	"github.com/thewelshrich/schooner/internal/repository"
 	hostruntime "github.com/thewelshrich/schooner/internal/runtime"
 )
 
@@ -95,7 +96,7 @@ func (r *Runtime) Inspect(ctx context.Context, request hostruntime.InspectReques
 	if err != nil {
 		return hostruntime.Inspection{}, err
 	}
-	workspaceRoot, workspaceRootExists, err := r.workspaceRoot(home, request.WorkspaceRoot)
+	worktreeRoot, worktreeRootExists, err := r.worktreeRoot(home, request.WorktreeRoot)
 	if err != nil {
 		return hostruntime.Inspection{}, err
 	}
@@ -115,18 +116,18 @@ func (r *Runtime) Inspect(ctx context.Context, request hostruntime.InspectReques
 		return hostruntime.Inspection{}, err
 	}
 	result := hostruntime.Inspection{
-		SchemaVersion:       hostruntime.SchemaVersion,
-		ProtocolVersion:     hostruntime.ProtocolVersion,
-		OSID:                osID,
-		OSVersion:           osVersion,
-		Architecture:        r.architecture,
-		Home:                home,
-		BoxIdentity:         identity,
-		WorkspaceRoot:       workspaceRoot,
-		WorkspaceRootExists: workspaceRootExists,
-		Git:                 git,
-		Tmux:                tmux,
-		PasswordlessSudo:    passwordlessSudo,
+		SchemaVersion:      hostruntime.SchemaVersion,
+		ProtocolVersion:    hostruntime.ProtocolVersion,
+		OSID:               osID,
+		OSVersion:          osVersion,
+		Architecture:       r.architecture,
+		Home:               home,
+		BoxIdentity:        identity,
+		WorktreeRoot:       worktreeRoot,
+		WorktreeRootExists: worktreeRootExists,
+		Git:                git,
+		Tmux:               tmux,
+		PasswordlessSudo:   passwordlessSudo,
 	}
 	if err := hostruntime.ValidateInspection(result, ""); err != nil {
 		return hostruntime.Inspection{}, err
@@ -145,7 +146,7 @@ func (r *Runtime) Doctor(ctx context.Context, request hostruntime.InspectRequest
 		check("box_identity", inspection.BoxIdentity != "", identityMessage(inspection.BoxIdentity)),
 		check("git", inspection.Git.Available, toolMessage("Git", inspection.Git)),
 		check("tmux", inspection.Tmux.Available, toolMessage("tmux", inspection.Tmux)),
-		check("workspace_root", inspection.WorkspaceRootExists, workspaceMessage(inspection.WorkspaceRoot, inspection.WorkspaceRootExists)),
+		check("worktree_root", inspection.WorktreeRootExists, worktreeMessage(inspection.WorktreeRoot, inspection.WorktreeRootExists)),
 	}
 	healthy := true
 	for _, item := range checks {
@@ -158,6 +159,50 @@ func (r *Runtime) Doctor(ctx context.Context, request hostruntime.InspectRequest
 		Inspection:      inspection,
 		Checks:          checks,
 	}, nil
+}
+
+func (r *Runtime) Configure(request hostruntime.ConfigureRequest) (hostruntime.ConfigureResult, error) {
+	if err := hostruntime.ValidateConfigureRequest(request); err != nil {
+		return hostruntime.ConfigureResult{}, err
+	}
+	path, err := config.Path()
+	if err != nil {
+		return hostruntime.ConfigureResult{}, err
+	}
+	if err = config.Write(path, config.Host{SchemaVersion: config.SchemaVersion, WorktreeRoot: request.WorktreeRoot}); err != nil {
+		return hostruntime.ConfigureResult{}, err
+	}
+	return hostruntime.ConfigureResult{SchemaVersion: hostruntime.SchemaVersion, ProtocolVersion: hostruntime.ProtocolVersion, WorktreeRoot: request.WorktreeRoot}, nil
+}
+
+func (r *Runtime) ListWorktrees(ctx context.Context, request hostruntime.WorktreeRequest) (hostruntime.WorktreeCatalog, error) {
+	if err := hostruntime.ValidateWorktreeRequest(request, false); err != nil {
+		return hostruntime.WorktreeCatalog{}, err
+	}
+	configured, err := config.ReadDefault()
+	if err != nil {
+		return hostruntime.WorktreeCatalog{}, err
+	}
+	catalog, err := repository.Discover(ctx, configured.WorktreeRoot)
+	if err != nil {
+		return hostruntime.WorktreeCatalog{}, err
+	}
+	return hostruntime.WorktreeCatalog{SchemaVersion: hostruntime.SchemaVersion, ProtocolVersion: hostruntime.ProtocolVersion, Catalog: catalog}, nil
+}
+
+func (r *Runtime) InspectWorktree(ctx context.Context, request hostruntime.WorktreeRequest) (hostruntime.WorktreeInspection, error) {
+	if err := hostruntime.ValidateWorktreeRequest(request, true); err != nil {
+		return hostruntime.WorktreeInspection{}, err
+	}
+	configured, err := config.ReadDefault()
+	if err != nil {
+		return hostruntime.WorktreeInspection{}, err
+	}
+	inspection, err := repository.Inspect(ctx, configured.WorktreeRoot, request.Selector)
+	if err != nil {
+		return hostruntime.WorktreeInspection{}, err
+	}
+	return hostruntime.WorktreeInspection{SchemaVersion: hostruntime.SchemaVersion, ProtocolVersion: hostruntime.ProtocolVersion, Inspection: inspection}, nil
 }
 
 func (r *Runtime) identity(home string) (string, error) {
@@ -209,7 +254,7 @@ func (r *Runtime) operatingSystemRelease() (string, string, error) {
 	return values["ID"], values["VERSION_ID"], nil
 }
 
-func (r *Runtime) workspaceRoot(home, requested string) (string, bool, error) {
+func (r *Runtime) worktreeRoot(home, requested string) (string, bool, error) {
 	var target string
 	switch {
 	case requested == "~":
@@ -219,21 +264,21 @@ func (r *Runtime) workspaceRoot(home, requested string) (string, bool, error) {
 	case filepath.IsAbs(requested):
 		target = filepath.Clean(requested)
 	default:
-		return "", false, fmt.Errorf("workspace root must be absolute or begin with ~/")
+		return "", false, fmt.Errorf("worktree root must be absolute or begin with ~/")
 	}
 	info, err := r.stat(target)
 	if errors.Is(err, os.ErrNotExist) {
 		return target, false, nil
 	}
 	if err != nil {
-		return "", false, fmt.Errorf("inspect workspace root: %w", err)
+		return "", false, fmt.Errorf("inspect worktree root: %w", err)
 	}
 	if !info.IsDir() {
 		return target, false, nil
 	}
 	resolved, err := r.evalSymlinks(target)
 	if err != nil {
-		return "", false, fmt.Errorf("resolve workspace root: %w", err)
+		return "", false, fmt.Errorf("resolve worktree root: %w", err)
 	}
 	return resolved, true, nil
 }
@@ -295,14 +340,14 @@ func (r *Runtime) runCommand(ctx context.Context, path string, arguments ...stri
 }
 
 func currentHome() (string, error) {
-	current, err := user.Current()
+	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("resolve current user: %w", err)
 	}
-	if current.HomeDir == "" || !filepath.IsAbs(current.HomeDir) {
+	if home == "" || !filepath.IsAbs(home) {
 		return "", fmt.Errorf("current user home directory is invalid")
 	}
-	return filepath.Clean(current.HomeDir), nil
+	return filepath.Clean(home), nil
 }
 
 func check(id string, ok bool, message string) hostruntime.Check {
@@ -323,11 +368,11 @@ func operatingSystemMessage(id, version string) string {
 	return fmt.Sprintf("Operating system is %s %s.", id, version)
 }
 
-func workspaceMessage(workspaceRoot string, exists bool) string {
+func worktreeMessage(worktreeRoot string, exists bool) string {
 	if !exists {
-		return "Workspace root is missing: " + workspaceRoot + "."
+		return "Worktree root is missing: " + worktreeRoot + "."
 	}
-	return "Workspace root is available: " + workspaceRoot + "."
+	return "Worktree root is available: " + worktreeRoot + "."
 }
 
 func toolMessage(name string, tool hostruntime.Tool) string {

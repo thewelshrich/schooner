@@ -14,7 +14,7 @@ import (
 
 func TestAddAccessibleReviewAndConfirm(t *testing.T) {
 	var output bytes.Buffer
-	draft, confirmed, err := Add(t.Context(), Options{Input: &oneByteReader{reader: strings.NewReader("1\ny\n")}, Output: &output, Accessible: true}, AddDraft{Name: "work", SSHDestination: "work-host", WorkspaceRoot: "~/schooner"}, true, true, true, false)
+	draft, confirmed, err := Add(t.Context(), Options{Input: &oneByteReader{reader: strings.NewReader("1\ny\n")}, Output: &output, Accessible: true}, AddDraft{Name: "work", SSHDestination: "work-host", WorktreeRoot: "~/schooner"}, true, true, true, false)
 	if err != nil {
 		t.Fatalf("Add() error = %v", err)
 	}
@@ -85,7 +85,7 @@ func TestSizeCatalogOptionHighlightsPrice(t *testing.T) {
 func TestDigitalOceanProvisionSeparatesLocalAndAccountSSHKeys(t *testing.T) {
 	var output bytes.Buffer
 	local := provider.PublicKey{Name: "id_ed25519", Fingerprint: "SHA256:local", PublicKey: "ssh-ed25519 AAAA"}
-	draft := ProvisionDraft{Name: "work", WorkspaceRoot: "~/schooner", Region: "fra1", Size: "small", Image: "ubuntu-24-04-x64", LocalPublicKeys: []provider.PublicKey{local}, AccessKeyIDs: []string{"9"}, IPv6: true}
+	draft := ProvisionDraft{Name: "work", WorktreeRoot: "~/schooner", Region: "fra1", Size: "small", Image: "ubuntu-24-04-x64", LocalPublicKeys: []provider.PublicKey{local}, AccessKeyIDs: []string{"9"}, IPv6: true}
 	catalog := provider.Catalog{AccessKeys: []provider.AccessKey{{ID: "9", Name: "work-laptop", Fingerprint: "fp-do"}}}
 	options := Options{Input: strings.NewReader("0\n0\nn\ny\n"), Output: &output, Accessible: true, Summary: NewChoiceSummary()}
 	got, err := DigitalOceanProvision(t.Context(), options, draft, catalog, []provider.PublicKey{local}, true, true, true, true, false)
@@ -104,7 +104,7 @@ func TestDigitalOceanProvisionSeparatesLocalAndAccountSSHKeys(t *testing.T) {
 
 func TestAddAccessibleDecline(t *testing.T) {
 	var output bytes.Buffer
-	_, confirmed, err := Add(t.Context(), Options{Input: &oneByteReader{reader: strings.NewReader("1\nn\n")}, Output: &output, Accessible: true}, AddDraft{Name: "work", SSHDestination: "work-host", WorkspaceRoot: "~/schooner"}, true, true, true, false)
+	_, confirmed, err := Add(t.Context(), Options{Input: &oneByteReader{reader: strings.NewReader("1\nn\n")}, Output: &output, Accessible: true}, AddDraft{Name: "work", SSHDestination: "work-host", WorktreeRoot: "~/schooner"}, true, true, true, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,12 +145,12 @@ func TestSectionAndKeyValuesUseTightStepRhythm(t *testing.T) {
 	section(options, "Box details")
 	renderKeyValues(options,
 		Choice{Label: "Name", Value: "work"},
-		Choice{Label: "Workspace root", Value: "~/schooner"},
+		Choice{Label: "Worktree root", Value: "~/schooner"},
 	)
 	section(options, "Review")
 	renderKeyValues(options, Choice{Label: "Name", Value: "work"})
 	got := output.String()
-	want := "\nBox details\n  Name            work\n  Workspace root  ~/schooner\n\nReview\n  Name  work\n"
+	want := "\nBox details\n  Name           work\n  Worktree root  ~/schooner\n\nReview\n  Name  work\n"
 	if got != want {
 		t.Fatalf("rhythm = %q, want %q", got, want)
 	}

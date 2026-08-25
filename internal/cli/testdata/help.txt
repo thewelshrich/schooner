@@ -12,6 +12,7 @@ Available Commands:
   help        Help about any command
   provider    Manage cloud provider credential profiles
   version     Show Schooner build information
+  worktree    Discover and inspect live Git worktrees
 
 Flags:
       --accessible      use screen-reader-friendly prompts and progress

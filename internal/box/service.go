@@ -29,10 +29,10 @@ func (s *Service) Add(ctx context.Context, req AddRequest) (AddResult, error) {
 	if err := ValidateSSHDestination(req.SSHDestination); err != nil {
 		return AddResult{}, invalid(err)
 	}
-	if req.WorkspaceRoot == "" {
-		req.WorkspaceRoot = DefaultWorkspaceRoot
+	if req.WorktreeRoot == "" {
+		req.WorktreeRoot = DefaultWorktreeRoot
 	}
-	if err := ValidateWorkspaceRoot(req.WorkspaceRoot); err != nil {
+	if err := ValidateWorktreeRoot(req.WorktreeRoot); err != nil {
 		return AddResult{}, invalid(err)
 	}
 	if _, err := s.store.FindByName(ctx, req.Name); err == nil {
@@ -42,7 +42,7 @@ func (s *Service) Add(ctx context.Context, req AddRequest) (AddResult, error) {
 	}
 
 	conn := Connection{Destination: req.SSHDestination, IdentityFile: req.IdentityFile, AcceptNewHostKey: req.AcceptNewHostKey, BatchMode: req.BatchMode}
-	op := AddOperation{Name: req.Name, SSHDestination: req.SSHDestination, WorkspaceRoot: req.WorkspaceRoot, UpdatedAt: s.now().UTC()}
+	op := AddOperation{Name: req.Name, SSHDestination: req.SSHDestination, WorktreeRoot: req.WorktreeRoot, UpdatedAt: s.now().UTC()}
 	if err := s.store.BeginAdd(ctx, op); err != nil {
 		return AddResult{}, err
 	}
@@ -53,7 +53,7 @@ func (s *Service) Add(ctx context.Context, req AddRequest) (AddResult, error) {
 	var capabilities Capabilities
 	if err := s.runStep(ctx, req.Progress, StepConnect, "Connect and verify host trust", func() error {
 		var err error
-		capabilities, err = s.runtime.Inspect(ctx, conn, req.WorkspaceRoot)
+		capabilities, err = s.runtime.Inspect(ctx, conn, req.WorktreeRoot)
 		return err
 	}); err != nil {
 		return AddResult{}, err
@@ -92,7 +92,7 @@ func (s *Service) Add(ctx context.Context, req AddRequest) (AddResult, error) {
 	prepared, err := s.prepareHost(ctx, hostPreparationRequest{
 		Connection:      conn,
 		Identity:        identity,
-		WorkspaceRoot:   req.WorkspaceRoot,
+		WorktreeRoot:    req.WorktreeRoot,
 		Capabilities:    capabilities,
 		Mode:            HostRepair,
 		Prerequisites:   true,
@@ -113,7 +113,7 @@ func (s *Service) Add(ctx context.Context, req AddRequest) (AddResult, error) {
 	if acquisition == "" {
 		acquisition = "adopted"
 	}
-	record := Record{ID: recordID, Name: req.Name, Acquisition: acquisition, SSHDestination: req.SSHDestination, IdentityFile: req.IdentityFile, RemoteIdentity: identity, RuntimePath: prepared.RuntimePath, WorkspaceRoot: prepared.WorkspaceRoot, Provider: req.Provider, ProviderResourceID: req.ProviderResourceID, ProviderCorrelationID: req.ProviderCorrelationID, CredentialProfile: req.CredentialProfile, ProviderRegion: req.ProviderRegion, CreatedAt: now, UpdatedAt: now}
+	record := Record{ID: recordID, Name: req.Name, Acquisition: acquisition, SSHDestination: req.SSHDestination, IdentityFile: req.IdentityFile, RemoteIdentity: identity, RuntimePath: prepared.RuntimePath, WorktreeRoot: prepared.WorktreeRoot, Provider: req.Provider, ProviderResourceID: req.ProviderResourceID, ProviderCorrelationID: req.ProviderCorrelationID, CredentialProfile: req.CredentialProfile, ProviderRegion: req.ProviderRegion, CreatedAt: now, UpdatedAt: now}
 	observation := Observation{BoxID: record.ID, ObservedAt: now, Capabilities: capabilities}
 	if err := s.runStep(ctx, req.Progress, StepSave, "Save local inventory", func() error { return s.store.CompleteAdd(ctx, op, record, observation) }); err != nil {
 		return AddResult{}, err
@@ -137,7 +137,7 @@ func (s *Service) Status(ctx context.Context, req StatusRequest) (StatusResult, 
 			return NewError("host_runtime_missing", fmt.Sprintf("the box does not have a recorded host runtime; run \"schooner box setup %s\"", record.Name), nil)
 		}
 		var inspectErr error
-		capabilities, inspectErr = s.runtime.InspectHost(ctx, conn, HostRuntime{Path: record.RuntimePath}, record.WorkspaceRoot, record.RemoteIdentity)
+		capabilities, inspectErr = s.runtime.InspectHost(ctx, conn, HostRuntime{Path: record.RuntimePath}, record.WorktreeRoot, record.RemoteIdentity)
 		if ErrorCode(inspectErr) == "host_runtime_missing" {
 			return NewError("host_runtime_missing", fmt.Sprintf("the host runtime is missing; run \"schooner box setup %s\"", record.Name), inspectErr)
 		}
@@ -226,7 +226,7 @@ func (s *Service) maintain(ctx context.Context, req maintenanceRequest) (mainten
 	var capabilities Capabilities
 	if err = s.runStep(ctx, req.Progress, StepInspect, "Inspect and verify the recorded box", func() error {
 		var inspectErr error
-		capabilities, inspectErr = s.runtime.Inspect(ctx, connection, record.WorkspaceRoot)
+		capabilities, inspectErr = s.runtime.Inspect(ctx, connection, record.WorktreeRoot)
 		if inspectErr != nil {
 			return inspectErr
 		}
@@ -248,7 +248,7 @@ func (s *Service) maintain(ctx context.Context, req maintenanceRequest) (mainten
 		Connection:      connection,
 		Identity:        record.RemoteIdentity,
 		RuntimePath:     runtimePath,
-		WorkspaceRoot:   record.WorkspaceRoot,
+		WorktreeRoot:    record.WorktreeRoot,
 		Capabilities:    capabilities,
 		Mode:            req.Mode,
 		Prerequisites:   req.Prerequisites,
@@ -275,7 +275,7 @@ type hostPreparationRequest struct {
 	Connection      Connection
 	Identity        string
 	RuntimePath     string
-	WorkspaceRoot   string
+	WorktreeRoot    string
 	Capabilities    Capabilities
 	Mode            HostInstallMode
 	Prerequisites   bool
@@ -284,11 +284,11 @@ type hostPreparationRequest struct {
 }
 
 type hostPreparationResult struct {
-	RuntimePath   string
-	WorkspaceRoot string
-	Capabilities  Capabilities
-	Host          HostInstallResult
-	Installed     []string
+	RuntimePath  string
+	WorktreeRoot string
+	Capabilities Capabilities
+	Host         HostInstallResult
+	Installed    []string
 }
 
 // prepareHost owns the mutating host-convergence sequence shared by initial
@@ -320,7 +320,7 @@ func (s *Service) prepareHost(ctx context.Context, req hostPreparationRequest) (
 	}
 
 	installed := []string(nil)
-	workspaceRoot := req.WorkspaceRoot
+	worktreeRoot := req.WorktreeRoot
 	if req.Prerequisites {
 		installed = missingTools(req.Capabilities)
 		if err = s.runStep(ctx, req.Progress, StepPrerequisites, "Install or verify Git and tmux", func() error {
@@ -334,19 +334,24 @@ func (s *Service) prepareHost(ctx context.Context, req hostPreparationRequest) (
 		}); err != nil {
 			return hostPreparationResult{}, err
 		}
-		if err = s.runStep(ctx, req.Progress, StepWorkspaceRoot, "Prepare workspace root", func() error {
-			var rootErr error
-			workspaceRoot, rootErr = s.runtime.EnsureWorkspaceRoot(ctx, req.Connection, req.WorkspaceRoot)
-			return rootErr
-		}); err != nil {
-			return hostPreparationResult{}, err
-		}
+	}
+	if err = s.runStep(ctx, req.Progress, StepWorktreeRoot, "Prepare worktree root", func() error {
+		var rootErr error
+		worktreeRoot, rootErr = s.runtime.EnsureWorktreeRoot(ctx, req.Connection, req.WorktreeRoot)
+		return rootErr
+	}); err != nil {
+		return hostPreparationResult{}, err
+	}
+	if err = s.runStep(ctx, req.Progress, StepConfigure, "Configure host worktree root", func() error {
+		return s.runtime.ConfigureHost(ctx, req.Connection, host.Runtime, worktreeRoot, req.Identity)
+	}); err != nil {
+		return hostPreparationResult{}, err
 	}
 
 	capabilities := req.Capabilities
 	if err = s.runStep(ctx, req.Progress, StepVerify, "Verify the Schooner host runtime", func() error {
 		var verifyErr error
-		capabilities, verifyErr = s.runtime.InspectHost(ctx, req.Connection, host.Runtime, workspaceRoot, req.Identity)
+		capabilities, verifyErr = s.runtime.InspectHost(ctx, req.Connection, host.Runtime, worktreeRoot, req.Identity)
 		if verifyErr != nil {
 			return verifyErr
 		}
@@ -359,8 +364,8 @@ func (s *Service) prepareHost(ctx context.Context, req hostPreparationRequest) (
 		if req.Prerequisites && (!capabilities.Git.Available || !capabilities.Tmux.Available) {
 			return &Error{Code: "unsupported", Message: "Git and tmux are required but were not available after setup"}
 		}
-		if req.Prerequisites && !capabilities.WorkspaceRootExists {
-			return &Error{Code: "unsupported", Message: "workspace root was not available after setup"}
+		if !capabilities.WorktreeRootExists || capabilities.WorktreeRoot != worktreeRoot {
+			return &Error{Code: "unsupported", Message: "worktree root was not available after setup"}
 		}
 		return nil
 	}); err != nil {
@@ -368,11 +373,11 @@ func (s *Service) prepareHost(ctx context.Context, req hostPreparationRequest) (
 	}
 
 	return hostPreparationResult{
-		RuntimePath:   runtimePath,
-		WorkspaceRoot: workspaceRoot,
-		Capabilities:  capabilities,
-		Host:          host,
-		Installed:     installed,
+		RuntimePath:  runtimePath,
+		WorktreeRoot: worktreeRoot,
+		Capabilities: capabilities,
+		Host:         host,
+		Installed:    installed,
 	}, nil
 }
 

@@ -19,7 +19,7 @@ ambiguity fails deterministically. Removal and destruction do not implicitly
 use the default.
 
 `box status` is observational. `box setup` repairs the runtime, prerequisites,
-and workspace root after verifying the recorded Box identity. `box update`
+and worktree root after verifying the recorded Box identity. `box update`
 requires an existing runtime and targets the invoking local CLI's verified
 artifact. It updates older compatible runtimes, reuses equal versions, retains
 newer compatible versions, and never silently downgrades.

@@ -40,8 +40,8 @@ func TestValidateHelloNegotiatesProtocolCapabilitiesAndIdentity(t *testing.T) {
 
 func TestDecodeStrictRejectsUnknownTrailingAndOversizedMessages(t *testing.T) {
 	for _, input := range [][]byte{
-		[]byte(`{"schema_version":"1","protocol_version":"1","workspace_root":"~/schooner","unknown":true}`),
-		[]byte(`{"schema_version":"1","protocol_version":"1","workspace_root":"~/schooner"} {}`),
+		[]byte(`{"schema_version":"1","protocol_version":"1","worktree_root":"~/schooner","unknown":true}`),
+		[]byte(`{"schema_version":"1","protocol_version":"1","worktree_root":"~/schooner"} {}`),
 		bytes.Repeat([]byte("x"), MaxMessageBytes+1),
 	} {
 		var request InspectRequest
@@ -54,7 +54,7 @@ func TestDecodeStrictRejectsUnknownTrailingAndOversizedMessages(t *testing.T) {
 func TestInspectRequestAndInstallPathRejectHostilePaths(t *testing.T) {
 	for _, root := range []string{"relative/path", "~/bad\npath", ""} {
 		if err := ValidateInspectRequest(NewInspectRequest(root)); ErrorCode(err) != CodeInvalidMessage {
-			t.Fatalf("workspace root %q error = %v", root, err)
+			t.Fatalf("worktree root %q error = %v", root, err)
 		}
 	}
 	if got, err := InstallPath("/home/alice"); err != nil || got != "/home/alice/.local/bin/schooner" {
@@ -64,5 +64,28 @@ func TestInspectRequestAndInstallPathRejectHostilePaths(t *testing.T) {
 		if _, err := InstallPath(home); ErrorCode(err) != CodeInvalidMessage {
 			t.Fatalf("home %q error = %v", home, err)
 		}
+	}
+}
+
+func TestConfigureAndWorktreeRequestsAreStrict(t *testing.T) {
+	if err := ValidateConfigureRequest(NewConfigureRequest("/home/alice/schooner")); err != nil {
+		t.Fatal(err)
+	}
+	for _, root := range []string{"~/schooner", "/home/alice/../alice/schooner", "/bad\nroot"} {
+		if err := ValidateConfigureRequest(NewConfigureRequest(root)); ErrorCode(err) != CodeInvalidMessage {
+			t.Fatalf("root %q error = %v", root, err)
+		}
+	}
+	if err := ValidateWorktreeRequest(NewWorktreeRequest(""), false); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateWorktreeRequest(NewWorktreeRequest("owner/repo"), true); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateWorktreeRequest(NewWorktreeRequest(""), true); ErrorCode(err) != CodeInvalidMessage {
+		t.Fatalf("missing selector error = %v", err)
+	}
+	if err := ValidateWorktreeRequest(NewWorktreeRequest("unexpected"), false); ErrorCode(err) != CodeInvalidMessage {
+		t.Fatalf("list selector error = %v", err)
 	}
 }

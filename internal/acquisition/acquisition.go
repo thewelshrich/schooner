@@ -28,7 +28,7 @@ type ProvisionOperation struct {
 	LocalPublicKeys  []provider.PublicKey
 	AutomaticBackups bool
 	IPv6             bool
-	WorkspaceRoot    string
+	WorktreeRoot     string
 	ResourceID       string
 	SSHDestination   string
 	IdentityFile     string
@@ -83,7 +83,7 @@ type ProvisionRequest struct {
 	LocalPublicKeys  []provider.PublicKey
 	AutomaticBackups bool
 	IPv6             bool
-	WorkspaceRoot    string
+	WorktreeRoot     string
 	AcceptNewHostKey bool
 	BatchMode        bool
 	Progress         box.Progress
@@ -163,7 +163,7 @@ func (s *Service) Provision(ctx context.Context, request ProvisionRequest) (Prov
 	sort.Strings(accessKeyIDs)
 	localPublicKeys := append([]provider.PublicKey(nil), request.LocalPublicKeys...)
 	sort.Slice(localPublicKeys, func(i, j int) bool { return localPublicKeys[i].Fingerprint < localPublicKeys[j].Fingerprint })
-	operation := ProvisionOperation{Name: request.Name, CorrelationID: correlationID, Profile: credential.Profile, Region: request.Region, Size: request.Size, Image: request.Image, NetworkID: request.NetworkID, AccessKeyIDs: accessKeyIDs, LocalPublicKeys: localPublicKeys, AutomaticBackups: request.AutomaticBackups, IPv6: request.IPv6, WorkspaceRoot: request.WorkspaceRoot, IdentityFile: identity.PrivateKey, Checkpoint: "requested", UpdatedAt: s.now().UTC()}
+	operation := ProvisionOperation{Name: request.Name, CorrelationID: correlationID, Profile: credential.Profile, Region: request.Region, Size: request.Size, Image: request.Image, NetworkID: request.NetworkID, AccessKeyIDs: accessKeyIDs, LocalPublicKeys: localPublicKeys, AutomaticBackups: request.AutomaticBackups, IPv6: request.IPv6, WorktreeRoot: request.WorktreeRoot, IdentityFile: identity.PrivateKey, Checkpoint: "requested", UpdatedAt: s.now().UTC()}
 	operation, err = s.store.BeginProvision(ctx, operation)
 	if err != nil {
 		return ProvisionResult{}, err
@@ -211,7 +211,7 @@ func (s *Service) Provision(ctx context.Context, request ProvisionRequest) (Prov
 		return ProvisionResult{}, err
 	}
 	resource := provider.ResourceRef{Provider: provider.DigitalOcean, ResourceID: machine.ResourceID, CorrelationID: operation.CorrelationID, Profile: credential.Profile}
-	added, err := s.boxes.Add(ctx, box.AddRequest{Name: request.Name, SSHDestination: operation.SSHDestination, IdentityFile: identity.PrivateKey, WorkspaceRoot: request.WorkspaceRoot, Acquisition: "provisioned", Provider: string(provider.DigitalOcean), ProviderResourceID: resource.ResourceID, ProviderCorrelationID: resource.CorrelationID, CredentialProfile: string(resource.Profile), ProviderRegion: operation.Region, AcceptNewHostKey: request.AcceptNewHostKey, BatchMode: true, Progress: request.Progress})
+	added, err := s.boxes.Add(ctx, box.AddRequest{Name: request.Name, SSHDestination: operation.SSHDestination, IdentityFile: identity.PrivateKey, WorktreeRoot: request.WorktreeRoot, Acquisition: "provisioned", Provider: string(provider.DigitalOcean), ProviderResourceID: resource.ResourceID, ProviderCorrelationID: resource.CorrelationID, CredentialProfile: string(resource.Profile), ProviderRegion: operation.Region, AcceptNewHostKey: request.AcceptNewHostKey, BatchMode: true, Progress: request.Progress})
 	if err != nil {
 		operation.Checkpoint = failureCheckpoint(err)
 		operation.UpdatedAt = s.now().UTC()
@@ -303,7 +303,7 @@ func runProgress(progress box.Progress, step box.Step, message string, action fu
 }
 
 func sameOperation(a, b ProvisionOperation) bool {
-	return a.Name == b.Name && a.Profile == b.Profile && a.Region == b.Region && a.Size == b.Size && a.Image == b.Image && a.NetworkID == b.NetworkID && slices.Equal(a.AccessKeyIDs, b.AccessKeyIDs) && slices.Equal(a.LocalPublicKeys, b.LocalPublicKeys) && a.AutomaticBackups == b.AutomaticBackups && a.IPv6 == b.IPv6 && a.WorkspaceRoot == b.WorkspaceRoot
+	return a.Name == b.Name && a.Profile == b.Profile && a.Region == b.Region && a.Size == b.Size && a.Image == b.Image && a.NetworkID == b.NetworkID && slices.Equal(a.AccessKeyIDs, b.AccessKeyIDs) && slices.Equal(a.LocalPublicKeys, b.LocalPublicKeys) && a.AutomaticBackups == b.AutomaticBackups && a.IPv6 == b.IPv6 && a.WorktreeRoot == b.WorktreeRoot
 }
 
 func randomID() (string, error) {

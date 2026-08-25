@@ -193,18 +193,18 @@ func (s *Store) SetDefault(ctx context.Context, name string) (box.Record, error)
 }
 
 func (s *Store) BeginAdd(ctx context.Context, op box.AddOperation) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO add_operations(name, ssh_destination, workspace_root, checkpoint, remote_identity, updated_at)
+	_, err := s.db.ExecContext(ctx, `INSERT INTO add_operations(name, ssh_destination, worktree_root, checkpoint, remote_identity, updated_at)
 		VALUES(?, ?, ?, ?, ?, ?)
-		ON CONFLICT(name) DO UPDATE SET ssh_destination=excluded.ssh_destination, workspace_root=excluded.workspace_root, updated_at=excluded.updated_at
-		WHERE add_operations.ssh_destination=excluded.ssh_destination AND add_operations.workspace_root=excluded.workspace_root`, op.Name, op.SSHDestination, op.WorkspaceRoot, op.Checkpoint, op.RemoteIdentity, formatTime(op.UpdatedAt))
+		ON CONFLICT(name) DO UPDATE SET ssh_destination=excluded.ssh_destination, worktree_root=excluded.worktree_root, updated_at=excluded.updated_at
+		WHERE add_operations.ssh_destination=excluded.ssh_destination AND add_operations.worktree_root=excluded.worktree_root`, op.Name, op.SSHDestination, op.WorktreeRoot, op.Checkpoint, op.RemoteIdentity, formatTime(op.UpdatedAt))
 	if err != nil {
 		return fmt.Errorf("record add operation: %w", err)
 	}
 	var destination, root string
-	if err = s.db.QueryRowContext(ctx, `SELECT ssh_destination, workspace_root FROM add_operations WHERE name=?`, op.Name).Scan(&destination, &root); err != nil {
+	if err = s.db.QueryRowContext(ctx, `SELECT ssh_destination, worktree_root FROM add_operations WHERE name=?`, op.Name).Scan(&destination, &root); err != nil {
 		return err
 	}
-	if destination != op.SSHDestination || root != op.WorkspaceRoot {
+	if destination != op.SSHDestination || root != op.WorktreeRoot {
 		return &box.Error{Code: "conflict", Message: fmt.Sprintf("an interrupted add for %q uses different connection details", op.Name)}
 	}
 	return nil
@@ -231,7 +231,7 @@ func (s *Store) CompleteAdd(ctx context.Context, op box.AddOperation, record box
 	} else {
 		region = ""
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO boxes(id,name,acquisition,ssh_destination,identity_file,remote_identity,runtime_path,workspace_root,provider,provider_resource_id,provider_correlation_id,credential_profile,provider_region,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, record.ID, record.Name, record.Acquisition, record.SSHDestination, record.IdentityFile, record.RemoteIdentity, record.RuntimePath, record.WorkspaceRoot, providerID, resourceID, correlationID, profile, region, formatTime(record.CreatedAt), formatTime(record.UpdatedAt))
+	_, err = tx.ExecContext(ctx, `INSERT INTO boxes(id,name,acquisition,ssh_destination,identity_file,remote_identity,runtime_path,worktree_root,provider,provider_resource_id,provider_correlation_id,credential_profile,provider_region,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, record.ID, record.Name, record.Acquisition, record.SSHDestination, record.IdentityFile, record.RemoteIdentity, record.RuntimePath, record.WorktreeRoot, providerID, resourceID, correlationID, profile, region, formatTime(record.CreatedAt), formatTime(record.UpdatedAt))
 	if err == nil {
 		err = saveObservation(ctx, tx, observation)
 	}
@@ -264,12 +264,12 @@ func (s *Store) UpdateRuntimePath(ctx context.Context, boxID, runtimePath string
 }
 
 func (s *Store) LastObservation(ctx context.Context, boxID string) (box.Observation, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT observed_at,os_id,os_version,architecture,home,remote_identity,workspace_root,workspace_root_exists,git_available,git_version,tmux_available,tmux_version,passwordless_sudo,host_runtime_path,host_runtime_version,host_protocol_version,host_capabilities_json FROM observations WHERE box_id=?`, boxID)
+	row := s.db.QueryRowContext(ctx, `SELECT observed_at,os_id,os_version,architecture,home,remote_identity,worktree_root,worktree_root_exists,git_available,git_version,tmux_available,tmux_version,passwordless_sudo,host_runtime_path,host_runtime_version,host_protocol_version,host_capabilities_json FROM observations WHERE box_id=?`, boxID)
 	var result box.Observation
 	var observed string
 	var hostCapabilities string
 	result.BoxID = boxID
-	err := row.Scan(&observed, &result.Capabilities.OSID, &result.Capabilities.OSVersion, &result.Capabilities.Architecture, &result.Capabilities.Home, &result.Capabilities.RemoteIdentity, &result.Capabilities.WorkspaceRoot, &result.Capabilities.WorkspaceRootExists, &result.Capabilities.Git.Available, &result.Capabilities.Git.Version, &result.Capabilities.Tmux.Available, &result.Capabilities.Tmux.Version, &result.Capabilities.PasswordlessSudo, &result.Capabilities.Host.Path, &result.Capabilities.Host.Version, &result.Capabilities.Host.ProtocolVersion, &hostCapabilities)
+	err := row.Scan(&observed, &result.Capabilities.OSID, &result.Capabilities.OSVersion, &result.Capabilities.Architecture, &result.Capabilities.Home, &result.Capabilities.RemoteIdentity, &result.Capabilities.WorktreeRoot, &result.Capabilities.WorktreeRootExists, &result.Capabilities.Git.Available, &result.Capabilities.Git.Version, &result.Capabilities.Tmux.Available, &result.Capabilities.Tmux.Version, &result.Capabilities.PasswordlessSudo, &result.Capabilities.Host.Path, &result.Capabilities.Host.Version, &result.Capabilities.Host.ProtocolVersion, &hostCapabilities)
 	if errors.Is(err, sql.ErrNoRows) {
 		return box.Observation{}, box.NotFound(boxID)
 	}
@@ -305,14 +305,14 @@ func (s *Store) Remove(ctx context.Context, name string) (box.Record, error) {
 	return record, nil
 }
 
-const selectRecord = `SELECT id,name,acquisition,ssh_destination,identity_file,remote_identity,runtime_path,workspace_root,COALESCE(provider,''),COALESCE(provider_resource_id,''),COALESCE(provider_correlation_id,''),COALESCE(credential_profile,''),COALESCE(provider_region,''),is_default,created_at,updated_at FROM boxes`
+const selectRecord = `SELECT id,name,acquisition,ssh_destination,identity_file,remote_identity,runtime_path,worktree_root,COALESCE(provider,''),COALESCE(provider_resource_id,''),COALESCE(provider_correlation_id,''),COALESCE(credential_profile,''),COALESCE(provider_region,''),is_default,created_at,updated_at FROM boxes`
 
 type scanner interface{ Scan(...any) error }
 
 func scanRecord(row scanner, key string) (box.Record, error) {
 	var result box.Record
 	var created, updated string
-	err := row.Scan(&result.ID, &result.Name, &result.Acquisition, &result.SSHDestination, &result.IdentityFile, &result.RemoteIdentity, &result.RuntimePath, &result.WorkspaceRoot, &result.Provider, &result.ProviderResourceID, &result.ProviderCorrelationID, &result.CredentialProfile, &result.ProviderRegion, &result.Default, &created, &updated)
+	err := row.Scan(&result.ID, &result.Name, &result.Acquisition, &result.SSHDestination, &result.IdentityFile, &result.RemoteIdentity, &result.RuntimePath, &result.WorktreeRoot, &result.Provider, &result.ProviderResourceID, &result.ProviderCorrelationID, &result.CredentialProfile, &result.ProviderRegion, &result.Default, &created, &updated)
 	if errors.Is(err, sql.ErrNoRows) {
 		return box.Record{}, box.NotFound(key)
 	}
@@ -338,8 +338,8 @@ func saveObservation(ctx context.Context, db executor, o box.Observation) error 
 	if err != nil {
 		return fmt.Errorf("encode host capabilities: %w", err)
 	}
-	_, err = db.ExecContext(ctx, `INSERT INTO observations(box_id,observed_at,os_id,os_version,architecture,home,remote_identity,workspace_root,workspace_root_exists,git_available,git_version,tmux_available,tmux_version,passwordless_sudo,host_runtime_path,host_runtime_version,host_protocol_version,host_capabilities_json)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(box_id) DO UPDATE SET observed_at=excluded.observed_at,os_id=excluded.os_id,os_version=excluded.os_version,architecture=excluded.architecture,home=excluded.home,remote_identity=excluded.remote_identity,workspace_root=excluded.workspace_root,workspace_root_exists=excluded.workspace_root_exists,git_available=excluded.git_available,git_version=excluded.git_version,tmux_available=excluded.tmux_available,tmux_version=excluded.tmux_version,passwordless_sudo=excluded.passwordless_sudo,host_runtime_path=excluded.host_runtime_path,host_runtime_version=excluded.host_runtime_version,host_protocol_version=excluded.host_protocol_version,host_capabilities_json=excluded.host_capabilities_json`, o.BoxID, formatTime(o.ObservedAt), c.OSID, c.OSVersion, c.Architecture, c.Home, c.RemoteIdentity, c.WorkspaceRoot, c.WorkspaceRootExists, c.Git.Available, c.Git.Version, c.Tmux.Available, c.Tmux.Version, c.PasswordlessSudo, c.Host.Path, c.Host.Version, c.Host.ProtocolVersion, string(encodedCapabilities))
+	_, err = db.ExecContext(ctx, `INSERT INTO observations(box_id,observed_at,os_id,os_version,architecture,home,remote_identity,worktree_root,worktree_root_exists,git_available,git_version,tmux_available,tmux_version,passwordless_sudo,host_runtime_path,host_runtime_version,host_protocol_version,host_capabilities_json)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(box_id) DO UPDATE SET observed_at=excluded.observed_at,os_id=excluded.os_id,os_version=excluded.os_version,architecture=excluded.architecture,home=excluded.home,remote_identity=excluded.remote_identity,worktree_root=excluded.worktree_root,worktree_root_exists=excluded.worktree_root_exists,git_available=excluded.git_available,git_version=excluded.git_version,tmux_available=excluded.tmux_available,tmux_version=excluded.tmux_version,passwordless_sudo=excluded.passwordless_sudo,host_runtime_path=excluded.host_runtime_path,host_runtime_version=excluded.host_runtime_version,host_protocol_version=excluded.host_protocol_version,host_capabilities_json=excluded.host_capabilities_json`, o.BoxID, formatTime(o.ObservedAt), c.OSID, c.OSVersion, c.Architecture, c.Home, c.RemoteIdentity, c.WorktreeRoot, c.WorktreeRootExists, c.Git.Available, c.Git.Version, c.Tmux.Available, c.Tmux.Version, c.PasswordlessSudo, c.Host.Path, c.Host.Version, c.Host.ProtocolVersion, string(encodedCapabilities))
 	return err
 }
 
@@ -431,7 +431,7 @@ func (s *Store) BeginProvision(ctx context.Context, requested acquisition.Provis
 	if err != nil {
 		return acquisition.ProvisionOperation{}, err
 	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO provision_operations(name,correlation_id,credential_profile,region,size,image,network_id,access_key_ids_json,local_public_keys_json,automatic_backups,ipv6,workspace_root,resource_id,ssh_destination,identity_file,checkpoint,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, requested.Name, requested.CorrelationID, requested.Profile, requested.Region, requested.Size, requested.Image, requested.NetworkID, string(keys), string(localKeys), requested.AutomaticBackups, requested.IPv6, requested.WorkspaceRoot, requested.ResourceID, requested.SSHDestination, requested.IdentityFile, requested.Checkpoint, formatTime(requested.UpdatedAt))
+	_, err = s.db.ExecContext(ctx, `INSERT INTO provision_operations(name,correlation_id,credential_profile,region,size,image,network_id,access_key_ids_json,local_public_keys_json,automatic_backups,ipv6,worktree_root,resource_id,ssh_destination,identity_file,checkpoint,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, requested.Name, requested.CorrelationID, requested.Profile, requested.Region, requested.Size, requested.Image, requested.NetworkID, string(keys), string(localKeys), requested.AutomaticBackups, requested.IPv6, requested.WorktreeRoot, requested.ResourceID, requested.SSHDestination, requested.IdentityFile, requested.Checkpoint, formatTime(requested.UpdatedAt))
 	if err != nil {
 		return acquisition.ProvisionOperation{}, mapConflict("begin provider provisioning", err)
 	}
@@ -439,10 +439,10 @@ func (s *Store) BeginProvision(ctx context.Context, requested acquisition.Provis
 }
 
 func (s *Store) FindProvision(ctx context.Context, name string) (acquisition.ProvisionOperation, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT name,correlation_id,credential_profile,region,size,image,network_id,access_key_ids_json,local_public_keys_json,automatic_backups,ipv6,workspace_root,resource_id,ssh_destination,identity_file,checkpoint,updated_at FROM provision_operations WHERE name=?`, name)
+	row := s.db.QueryRowContext(ctx, `SELECT name,correlation_id,credential_profile,region,size,image,network_id,access_key_ids_json,local_public_keys_json,automatic_backups,ipv6,worktree_root,resource_id,ssh_destination,identity_file,checkpoint,updated_at FROM provision_operations WHERE name=?`, name)
 	var result acquisition.ProvisionOperation
 	var keys, localKeys, updated string
-	err := row.Scan(&result.Name, &result.CorrelationID, &result.Profile, &result.Region, &result.Size, &result.Image, &result.NetworkID, &keys, &localKeys, &result.AutomaticBackups, &result.IPv6, &result.WorkspaceRoot, &result.ResourceID, &result.SSHDestination, &result.IdentityFile, &result.Checkpoint, &updated)
+	err := row.Scan(&result.Name, &result.CorrelationID, &result.Profile, &result.Region, &result.Size, &result.Image, &result.NetworkID, &keys, &localKeys, &result.AutomaticBackups, &result.IPv6, &result.WorktreeRoot, &result.ResourceID, &result.SSHDestination, &result.IdentityFile, &result.Checkpoint, &updated)
 	if errors.Is(err, sql.ErrNoRows) {
 		return acquisition.ProvisionOperation{}, box.NotFound(name)
 	}

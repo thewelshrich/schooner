@@ -132,6 +132,7 @@ func newRootCommand(build BuildInfo, streams Streams, options *globalOptions) *c
 	root.AddCommand(newDatabaseCommand(streams, options))
 	root.AddCommand(newProviderCommand(streams, options))
 	root.AddCommand(newBoxCommand(streams, options))
+	root.AddCommand(newWorktreeCommand(streams, options))
 	return root
 }
 

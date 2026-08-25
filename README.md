@@ -4,12 +4,23 @@ Schooner is an open-source, CLI-first application for creating and operating
 persistent, user-owned development machines.
 
 It adopts existing machines through OpenSSH or provisions them through a
-supported provider, then applies the same Box, Project, Workspace, and Session
-model regardless of acquisition path. A Workspace is a first-class remote
+supported provider, then applies the same Box, Repository, Worktree, and Session
+model regardless of acquisition path. A Worktree is a first-class remote
 checkout and does not require a local checkout. Live state remains on the Box,
 and users retain independent SSH access.
 
 This repository is currently establishing the V1 implementation foundation.
+
+List or inspect live Git Worktrees on a selected Box:
+
+```bash
+schooner worktree list --box work-api
+schooner worktree inspect owner/repository --box work-api
+```
+
+The same commands run directly after SSH without a second SSH hop. Git and the
+filesystem remain authoritative; Schooner creates no Repository or Worktree
+IDs or inventory.
 
 ## Authoritative documents
 
@@ -46,7 +57,7 @@ schooner box remove work-api --yes
 ```
 
 `box use` records a default for commands where no Box is supplied. Otherwise,
-Schooner uses the Box linked to the current local Workspace when available, the
+Schooner uses the Box linked to the current local Worktree when available, the
 only configured Box, or a focused interactive selector. Ambiguous
 non-interactive selection fails with guidance instead of guessing. Destructive
 `box remove` and `box destroy` commands never consume the default implicitly.
@@ -64,17 +75,17 @@ policy; it never accepts a changed key.
 `box ssh` hands the current terminal directly to the system OpenSSH client and
 opens the remote user's normal login shell. It uses the connection details
 recorded during `box add`, without launching another terminal or changing to
-the workspace root. Supplying `--no-input` with a box name enables OpenSSH batch
+the worktree root. Supplying `--no-input` with a box name enables OpenSSH batch
 mode, so authentication and host-trust prompts fail instead of blocking.
 
 `box add` verifies the remote system, establishes a stable machine identity,
 installs the same Schooner executable for that SSH user at
 `~/.local/bin/schooner`, installs missing Git and tmux packages when `sudo -n`
-is available, and creates the workspace root (default `~/schooner`). The
+is available, and creates the worktree root (default `~/schooner`). The
 runtime is a bounded, on-demand SSH target, not a daemon. `box status` reports
 its version, protocol, path, and negotiated capabilities without repairing the
 machine. `box setup` explicitly repairs a missing or damaged runtime,
-prerequisites, and workspace root. `box update` atomically updates an existing
+prerequisites, and worktree root. `box update` atomically updates an existing
 older runtime to the invoking CLI's verified version, while retaining a newer
 compatible runtime. `box remove` only forgets local inventory and never changes
 the remote machine.
@@ -104,8 +115,10 @@ also respected.
 - Use the user's system OpenSSH client.
 - Install and invoke the same Schooner application on supported Boxes without
   running a persistent daemon.
-- Keep Project, Workspace, Session, and Agent state authoritative on the Box.
-- Treat local checkouts as optional Local Links to remote Workspaces.
+- Keep Repository, Worktree, Session, and Agent state authoritative on the Box.
+- Let Git own Repository/Worktree identity and lifecycle; orchestrate it rather
+  than reproducing it.
+- Treat local checkouts as optional Local Links to remote Worktrees.
 - Make `push`, `pull`, and `sync` explicit, one-shot, Git-aware operations.
 - Preserve independent SSH, Git, tmux, terminal, and editor use.
 - Never require a repository configuration file.
@@ -128,6 +141,31 @@ go build ./cmd/schooner
 go test ./...
 go vet ./...
 ```
+
+The pre-release `workspace_root` to `worktree_root` hard cut rewrites unreleased
+SQLite migration checksums. Developers with an older development database must
+reset it explicitly (for example with `schooner db destroy --yes`) before using
+this build. Schooner never removes an incompatible database automatically.
+
+### Ubuntu SSH worktree smoke
+
+After `box setup` or `box update`, verify the same live Git state through the
+workstation runtime and directly on the Ubuntu Box:
+
+```bash
+# Workstation
+schooner worktree list --box work-api
+schooner worktree inspect owner/repository --box work-api
+
+# Directly on the Box
+ssh work-api
+~/.local/bin/schooner worktree list
+~/.local/bin/schooner worktree inspect owner/repository
+```
+
+The two paths must report the same canonical Repository relationship and
+Worktree status. Direct execution fails with setup guidance when host
+configuration is missing or drifts from a matching local Box record.
 
 ### Development remote artifacts
 
