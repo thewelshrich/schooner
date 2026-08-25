@@ -308,12 +308,12 @@ func TestDiscoverHandlesDetachedAndUnbornHeads(t *testing.T) {
 
 func TestParseStatusCountsConflictAndRename(t *testing.T) {
 	data := []byte("u UU N... 100644 100644 100644 100644 a b c path\x00" +
-		"2 R. N... 100644 100644 100644 a b R100 new\x00old\x00? untracked\x00")
+		"2 R. N... 100644 100644 100644 a b R100 new\x00old\x00? untracked\x00! ignored\x00")
 	status, err := parseStatus(data)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status.Conflicted != 1 || status.Staged != 1 || status.Untracked != 1 || status.Unstaged != 0 {
+	if status.Conflicted != 1 || status.Staged != 1 || status.Untracked != 1 || status.Unstaged != 0 || status.Ignored != 1 {
 		t.Fatalf("status = %+v", status)
 	}
 }

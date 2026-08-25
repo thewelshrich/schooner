@@ -87,6 +87,7 @@ type Status struct {
 	Unstaged   int `json:"unstaged"`
 	Untracked  int `json:"untracked"`
 	Conflicted int `json:"conflicted"`
+	Ignored    int `json:"ignored"`
 }
 
 type Worktree struct {
@@ -123,6 +124,12 @@ type Inspection struct {
 	Repository   Repository `json:"repository"`
 	Worktree     Worktree   `json:"worktree"`
 	Warnings     []Warning  `json:"warnings"`
+}
+
+type discoveryMetrics struct {
+	Visited   int
+	Inspected int
+	Truncated bool
 }
 
 func Discover(ctx context.Context, worktreeRoot string) (Catalog, error) {
@@ -273,6 +280,11 @@ func walkCandidates(ctx context.Context, root string, commands runner) ([]string
 }
 
 func walkCandidatesBounded(ctx context.Context, root string, visitLimit int, commands runner) ([]string, []Warning, error) {
+	candidates, warnings, _, err := walkCandidatesMeasured(ctx, root, visitLimit, commands)
+	return candidates, warnings, err
+}
+
+func walkCandidatesMeasured(ctx context.Context, root string, visitLimit int, commands runner) ([]string, []Warning, discoveryMetrics, error) {
 	candidates := make([]string, 0)
 	warnings := make([]Warning, 0)
 	errCandidateLimit := errors.New("candidate limit reached")
@@ -359,10 +371,11 @@ func walkCandidatesBounded(ctx context.Context, root string, visitLimit int, com
 		}
 	}
 	err := walk(root, 0)
+	metrics := discoveryMetrics{Visited: visited, Inspected: inspected, Truncated: errors.Is(err, errCandidateLimit) || errors.Is(err, errVisitLimit)}
 	if errors.Is(err, errCandidateLimit) || errors.Is(err, errVisitLimit) {
 		err = nil
 	}
-	return candidates, warnings, err
+	return candidates, warnings, metrics, err
 }
 
 func validateTopmostCandidate(ctx context.Context, root, candidate string, commands runner) error {
@@ -464,7 +477,7 @@ func inspectCandidate(ctx context.Context, root, candidate string, commands runn
 	} else if exitCode(headErr) != 128 {
 		return observation{}, fmt.Errorf("read HEAD: %w", headErr)
 	}
-	status, err := git(ctx, commands, canonical, "status", "--porcelain=v2", "-z", "--untracked-files=all")
+	status, err := git(ctx, commands, canonical, "status", "--porcelain=v2", "-z", "--untracked-files=all", "--ignored=matching")
 	if err != nil {
 		return observation{}, fmt.Errorf("read worktree status: %w", err)
 	}
@@ -577,6 +590,7 @@ func parseStatus(data []byte) (Status, error) {
 				index++ // rename/copy records carry the original path as the next NUL field
 			}
 		case '!':
+			result.Ignored++
 		default:
 			return Status{}, fmt.Errorf("Git returned unknown status record")
 		}

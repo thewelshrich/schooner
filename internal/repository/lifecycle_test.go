@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -422,6 +423,120 @@ func TestLifecycleAddRejectsUndiscoverableDestinations(t *testing.T) {
 				t.Fatalf("undiscoverable destination error = %v", addErr)
 			}
 		})
+	}
+}
+
+func TestValidateDiscoveryCapacityRejectsCandidateAndVisitExhaustion(t *testing.T) {
+	for name, metrics := range map[string]discoveryMetrics{
+		"candidate": {Inspected: maxCandidates},
+		"visited":   {Visited: maxVisited},
+		"truncated": {Truncated: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := validateDiscoveryCapacity(metrics, 1); ErrorCode(err) != CodeConflict {
+				t.Fatalf("capacity error = %v", err)
+			}
+		})
+	}
+}
+
+func TestLifecycleAddRecoversWhenSourceWorktreeWasRemoved(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "root")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	source := createLifecycleSource(t)
+	lifecycle, err := NewLifecycle(root, filepath.Join(t.TempDir(), "state"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cloned, err := lifecycle.Clone(t.Context(), CloneRequest{Source: source})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runLifecycleGit(t, cloned.Path, "branch", "source-linked")
+	runLifecycleGit(t, cloned.Path, "branch", "target-linked")
+	sourceLinked, err := lifecycle.Add(t.Context(), AddRequest{RepositoryPath: cloned.Path, Path: "source-linked", Branch: "source-linked"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	targetLinked, err := lifecycle.Add(t.Context(), AddRequest{RepositoryPath: sourceLinked.Path, Path: "target-linked", Branch: "target-linked"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = lifecycle.Remove(t.Context(), sourceLinked.Path); err != nil {
+		t.Fatal(err)
+	}
+
+	recovered, err := lifecycle.Add(t.Context(), AddRequest{RepositoryPath: sourceLinked.Path, Path: "target-linked", Branch: "target-linked"})
+	if err != nil || !recovered.Recovered || recovered.Path != targetLinked.Path {
+		t.Fatalf("missing source recovery = %+v, %v", recovered, err)
+	}
+}
+
+func TestLifecycleRemoveRejectsIgnoredFiles(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "root")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	source := createLifecycleSource(t)
+	lifecycle, err := NewLifecycle(root, filepath.Join(t.TempDir(), "state"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cloned, err := lifecycle.Clone(t.Context(), CloneRequest{Source: source})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(filepath.Join(cloned.Path, ".gitignore"), []byte(".env\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runLifecycleGit(t, cloned.Path, "add", ".gitignore")
+	runLifecycleGit(t, cloned.Path, "-c", "user.name=Schooner Test", "-c", "user.email=test@example.com", "commit", "-m", "ignore env")
+	runLifecycleGit(t, cloned.Path, "branch", "ignored")
+	linked, err := lifecycle.Add(t.Context(), AddRequest{RepositoryPath: cloned.Path, Path: "ignored", Branch: "ignored"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ignored := filepath.Join(linked.Path, ".env")
+	if err = os.WriteFile(ignored, []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err = lifecycle.Remove(t.Context(), linked.Path); ErrorCode(err) != CodeConflict {
+		t.Fatalf("ignored-file removal error = %v", err)
+	}
+	if contents, err := os.ReadFile(ignored); err != nil || string(contents) != "secret" {
+		t.Fatalf("ignored file changed: %q, %v", contents, err)
+	}
+}
+
+func TestLifecycleClassifiesCheckpointFailureAfterGitEffect(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "root")
+	state := filepath.Join(t.TempDir(), "state")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	source := createLifecycleSource(t)
+	lifecycle, err := NewLifecycle(root, state, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lifecycle.commands = lifecycleRunnerFunc(func(ctx context.Context, name string, args ...string) (process.Result, error) {
+		result, runErr := (osMutationRunner{}).Run(ctx, name, args...)
+		if runErr == nil && slices.Contains(args, "clone") {
+			if renameErr := os.Rename(state, state+"-moved"); renameErr != nil {
+				t.Fatal(renameErr)
+			}
+			if writeErr := os.WriteFile(state, []byte("not a directory"), 0o600); writeErr != nil {
+				t.Fatal(writeErr)
+			}
+		}
+		return result, runErr
+	})
+
+	if _, err = lifecycle.Clone(t.Context(), CloneRequest{Source: source}); ErrorCode(err) != CodeOutcomeUnknown {
+		t.Fatalf("post-effect checkpoint error = %v", err)
 	}
 }
 
