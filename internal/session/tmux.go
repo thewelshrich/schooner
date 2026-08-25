@@ -27,13 +27,14 @@ const (
 	CreatedAtOption    = "@schooner_session_created_at"
 	WorktreePathOption = "@schooner_worktree_path"
 
-	SchemaVersion    = "1"
-	KindShell        = "shell"
-	DefaultLogLines  = 200
-	MaxLogLines      = 2000
-	MaxLogBytes      = 64 << 10
-	maxMetadataBytes = 1 << 20
-	maxSessions      = 256
+	SchemaVersion       = "2"
+	LegacySchemaVersion = "1"
+	KindShell           = "shell"
+	DefaultLogLines     = 200
+	MaxLogLines         = 2000
+	MaxLogBytes         = 64 << 10
+	maxMetadataBytes    = 1 << 20
+	maxSessions         = 256
 
 	managedActionGranted = "schooner-managed-action-v1"
 	managedActionRefused = "schooner-managed-action-refused-v1"
@@ -70,6 +71,7 @@ type Session struct {
 	RepositoryCommonDirectory string           `json:"repository_common_directory,omitempty"`
 	Association               AssociationState `json:"association"`
 	SchoonerMetadata          bool             `json:"-"`
+	LegacyMetadata            bool             `json:"-"`
 }
 
 type Catalog struct {
@@ -281,20 +283,21 @@ func (s *Service) Resolve(ctx context.Context, selector string) (Session, error)
 				matches = append(matches, value)
 			}
 		}
-	} else if validID(selector) {
+	} else {
 		for _, value := range catalog.Sessions {
 			if value.ID == selector && value.Ownership == Managed {
 				matches = append(matches, value)
 			}
 		}
-	} else {
-		inspection, inspectErr := repository.Inspect(ctx, s.root, selector)
-		if inspectErr != nil {
-			return Session{}, inspectErr
-		}
-		for _, value := range catalog.Sessions {
-			if value.Ownership == Managed && value.Association == AssociationLive && value.WorktreePath == inspection.Worktree.Path {
-				matches = append(matches, value)
+		if len(matches) == 0 {
+			inspection, inspectErr := repository.Inspect(ctx, s.root, selector)
+			if inspectErr != nil {
+				return Session{}, inspectErr
+			}
+			for _, value := range catalog.Sessions {
+				if value.Ownership == Managed && value.Association == AssociationLive && value.WorktreePath == inspection.Worktree.Path {
+					matches = append(matches, value)
+				}
 			}
 		}
 	}
@@ -320,7 +323,7 @@ func (s *Service) Attachment(ctx context.Context, selector string, insideTmux bo
 }
 
 func (s *Service) Logs(ctx context.Context, id string, lines int) (LogsResult, error) {
-	if !validID(id) {
+	if !validManagedID(id) {
 		return LogsResult{}, &repository.Error{Code: repository.CodeInvalidInput, Message: "logs require a managed Session ID"}
 	}
 	if lines == 0 {
@@ -348,7 +351,7 @@ func (s *Service) Logs(ctx context.Context, id string, lines int) (LogsResult, e
 }
 
 func (s *Service) Stop(ctx context.Context, id string) (StopResult, error) {
-	if !validID(id) {
+	if !validManagedID(id) {
 		return StopResult{}, &repository.Error{Code: repository.CodeInvalidInput, Message: "stop requires a managed Session ID"}
 	}
 	value, err := s.Resolve(ctx, id)
@@ -394,10 +397,19 @@ func (s *Service) runManagedAction(ctx context.Context, value Session, maximum i
 func managedSessionCondition(value Session) string {
 	checks := []string{
 		fmt.Sprintf("#{==:#{%s},%s}", SchemaOption, SchemaVersion),
-		fmt.Sprintf("#{==:#{%s},%s}", IDOption, value.ID),
+		fmt.Sprintf("#{==:#{%s},%s}", IDOption, tmuxFormatLiteral(value.ID)),
 		fmt.Sprintf("#{==:#{%s},%s}", KindOption, KindShell),
 		fmt.Sprintf("#{==:#{%s},%s}", CreatedAtOption, value.CreatedAt.UTC().Format(time.RFC3339)),
 		fmt.Sprintf("#{==:#{%s},%s}", WorktreePathOption, tmuxFormatLiteral(value.WorktreePath)),
+	}
+	if value.LegacyMetadata {
+		checks = []string{
+			fmt.Sprintf("#{==:#{%s},%s}", SchemaOption, LegacySchemaVersion),
+			fmt.Sprintf("#{==:#{%s},%s}", IDOption, tmuxFormatLiteral(value.ID)),
+			fmt.Sprintf("#{==:#{%s},}", KindOption),
+			fmt.Sprintf("#{==:#{%s},}", CreatedAtOption),
+			fmt.Sprintf("#{==:#{%s},%s}", WorktreePathOption, tmuxFormatLiteral(value.WorktreePath)),
+		}
 	}
 	condition := checks[len(checks)-1]
 	for index := len(checks) - 2; index >= 0; index-- {
@@ -471,6 +483,11 @@ func classifyRow(row tmuxRow) Session {
 	}
 	value.CreatedAt, value.ActivityAt, value.AttachedClients = created, activity, attached
 	if !value.SchoonerMetadata {
+		return value
+	}
+	if row.schema == LegacySchemaVersion && validLegacyID(row.id) && row.kind == "" && row.managedCreated == "" && canonicalAbsolute(row.worktree) {
+		value.Ownership, value.ID, value.Kind, value.WorktreePath = Managed, row.id, KindShell, row.worktree
+		value.LegacyMetadata = true
 		return value
 	}
 	managedCreated, err := time.Parse(time.RFC3339, row.managedCreated)
@@ -618,6 +635,10 @@ func validID(value string) bool {
 	decoded, err := hex.DecodeString(compact)
 	return err == nil && len(decoded) == 16 && decoded[8]&0xc0 == 0x80
 }
+
+func validLegacyID(value string) bool { return safeLabel(value, 256) }
+
+func validManagedID(value string) bool { return validID(value) || validLegacyID(value) }
 
 func validTmuxID(value string) bool {
 	if len(value) < 2 || value[0] != '$' {

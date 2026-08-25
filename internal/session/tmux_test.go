@@ -14,6 +14,7 @@ import (
 )
 
 const testSessionID = "11111111-1111-4111-8111-111111111111"
+const testLegacySessionID = "legacy-session"
 
 func TestClassifyRowRequiresCompleteVersionedMetadata(t *testing.T) {
 	base := tmuxRow{tmuxID: "$1", name: "work", created: "1720000000", activity: "1720000300", attached: "0"}
@@ -30,6 +31,18 @@ func TestClassifyRowRequiresCompleteVersionedMetadata(t *testing.T) {
 	managed.id = "bad"
 	if got = classifyRow(managed); got.Ownership != Invalid || !got.SchoonerMetadata {
 		t.Fatalf("partial row = %+v", got)
+	}
+}
+
+func TestClassifyRowPreservesLegacySchemaOneMetadata(t *testing.T) {
+	row := tmuxRow{tmuxID: "$1", name: "work", created: "1720000000", activity: "1720000300", attached: "0", schema: LegacySchemaVersion, id: testLegacySessionID, worktree: "/work/repo"}
+	got := classifyRow(row)
+	if got.Ownership != Managed || !got.LegacyMetadata || got.ID != testLegacySessionID || got.Kind != KindShell || got.WorktreePath != "/work/repo" {
+		t.Fatalf("legacy managed row = %+v", got)
+	}
+	condition := managedSessionCondition(got)
+	if !strings.Contains(condition, "#{==:#{"+SchemaOption+"},"+LegacySchemaVersion+"}") || !strings.Contains(condition, "#{==:#{"+KindOption+"},}") {
+		t.Fatalf("legacy ownership condition = %s", condition)
 	}
 }
 
@@ -90,14 +103,14 @@ func (f *fakeTmux) Run(_ context.Context, _ int, name string, args ...string) (p
 		}
 		return process.Result{Stdout: []byte("$4\t" + f.path + "\n")}, nil
 	case "new-session":
-		f.row = "$4\tschooner-111111111111\t1720000000\t1720000000\t0\t1\t" + testSessionID + "\tshell\t2024-07-03T09:46:40Z\t" + f.path + "\n"
+		f.row = "$4\tschooner-111111111111\t1720000000\t1720000000\t0\t" + SchemaVersion + "\t" + testSessionID + "\tshell\t2024-07-03T09:46:40Z\t" + f.path + "\n"
 		return process.Result{Stdout: []byte("$4\n")}, nil
 	case "if-shell":
 		if f.replaceBeforeAtomic {
 			f.row = "$4\texternal\t1720000000\t1720000000\t0\t\t\t\t\t\n"
 			f.replaceBeforeAtomic = false
 		}
-		managed := strings.Contains(f.row, "\t1\t"+testSessionID+"\tshell\t")
+		managed := strings.Contains(f.row, "\t"+SchemaVersion+"\t"+testSessionID+"\tshell\t") || strings.Contains(f.row, "\t"+LegacySchemaVersion+"\t"+testLegacySessionID+"\t\t\t")
 		if !managed {
 			return process.Result{Stdout: []byte(managedActionRefused + "\n")}, nil
 		}
@@ -119,13 +132,35 @@ func (f *fakeTmux) Run(_ context.Context, _ int, name string, args ...string) (p
 	}
 }
 
+func TestLegacyManagedSessionCanBeCapturedAndStopped(t *testing.T) {
+	root, worktree := initializeSessionWorktree(t)
+	fake := &fakeTmux{
+		path:    worktree,
+		row:     "$4\tlegacy\t1720000000\t1720000000\t0\t" + LegacySchemaVersion + "\t" + testLegacySessionID + "\t\t\t" + worktree + "\n",
+		content: "legacy output\n",
+	}
+	manager, err := New(root, filepath.Join(t.TempDir(), "operations", "git"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.commands = fake
+	logs, err := manager.Logs(t.Context(), testLegacySessionID, 2)
+	if err != nil || logs.Content != "legacy output\n" || !fake.captured {
+		t.Fatalf("logs = %+v, captured=%t, error=%v", logs, fake.captured, err)
+	}
+	stopped, err := manager.Stop(t.Context(), testLegacySessionID)
+	if err != nil || !stopped.Stopped || !fake.killed {
+		t.Fatalf("stop = %+v, killed=%t, error=%v", stopped, fake.killed, err)
+	}
+}
+
 func TestManagedActionsRefuseReusedUnmanagedTarget(t *testing.T) {
 	root, worktree := initializeSessionWorktree(t)
 	for _, operation := range []string{"logs", "stop"} {
 		t.Run(operation, func(t *testing.T) {
 			fake := &fakeTmux{
 				path:                worktree,
-				row:                 "$4\tmanaged\t1720000000\t1720000000\t0\t1\t" + testSessionID + "\tshell\t2024-07-03T09:46:40Z\t" + worktree + "\n",
+				row:                 "$4\tmanaged\t1720000000\t1720000000\t0\t" + SchemaVersion + "\t" + testSessionID + "\tshell\t2024-07-03T09:46:40Z\t" + worktree + "\n",
 				content:             "private unmanaged output\n",
 				replaceBeforeAtomic: true,
 			}
@@ -204,7 +239,7 @@ func initializeSessionWorktree(t *testing.T) (string, string) {
 }
 
 func TestTmuxUseFailsClosedOnMalformedSchoonerMetadata(t *testing.T) {
-	fake := &fakeTmux{row: "$4\tbroken\t1720000000\t1720000000\t0\t1\tbad\tshell\t2024-07-03T09:46:40Z\t/work/repo\n"}
+	fake := &fakeTmux{row: "$4\tbroken\t1720000000\t1720000000\t0\t" + SchemaVersion + "\tbad\tshell\t2024-07-03T09:46:40Z\t/work/repo\n"}
 	_, err := (TmuxUse{commands: fake}).ManagedSessions(t.Context(), "/work/repo")
 	if err == nil || !strings.Contains(err.Error(), "invalid Schooner Session metadata") {
 		t.Fatalf("error = %v", err)

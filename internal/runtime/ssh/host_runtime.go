@@ -445,7 +445,10 @@ func (r *Runtime) openHostInteractive(ctx context.Context, connection box.Connec
 	}
 	hello, attempt, err := r.helloAt(ctx, connection, installed.Path)
 	if err != nil {
-		return ShellResult{}, protocolError(err)
+		if isProtocolError(err) {
+			return ShellResult{}, protocolError(err)
+		}
+		return ShellResult{}, err
 	}
 	if attempt.ExitCode != 0 {
 		return ShellResult{}, box.NewError("host_runtime_missing", "the recorded host runtime is unavailable and must be repaired", fmt.Errorf("remote exit status %d", attempt.ExitCode))

@@ -18,6 +18,15 @@ import (
 
 const hostTestIdentity = "11111111-1111-4111-8111-111111111111"
 
+func TestInteractiveHostHandshakePreservesTransportError(t *testing.T) {
+	ssh := writeExecutable(t, "#!/bin/sh\nprintf 'Permission denied (publickey).\\n' >&2\nexit 255\n")
+	runtime := NewHost(ssh, nil, "v1.2.3", nil)
+	_, err := runtime.OpenWorktreeShell(t.Context(), box.Connection{Destination: "trusted-host"}, box.HostRuntime{Path: "/home/alice/.local/bin/schooner"}, hostTestIdentity, "/worktrees", "repo", TerminalIO{})
+	if box.ErrorCode(err) != "authentication_required" {
+		t.Fatalf("error = %v, code = %s", err, box.ErrorCode(err))
+	}
+}
+
 func TestCloneRepositoryUsesTypedHostLifecycleOperation(t *testing.T) {
 	testRemoteShell(t)
 	target := filepath.Join(t.TempDir(), "host-runtime")

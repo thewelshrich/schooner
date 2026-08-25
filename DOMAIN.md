@@ -68,6 +68,10 @@ the same per-Worktree mutation lock so neither can pass live validation while
 the other is committing its effect. An ephemeral Worktree shell holds the same
 lock for its lifetime.
 
+New Sessions use metadata schema 2. The original schema 1 shape containing
+schema, Session ID, and Worktree path remains readable and operable during
+upgrade; new metadata fields are never silently assumed to exist on it.
+
 Unmanaged tmux sessions remain outside Schooner lifecycle ownership. Schooner
 may list and resume them by their live `tmux:$N` target, but never captures
 their logs or stops them. Pane paths create a Worktree association only when

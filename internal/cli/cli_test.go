@@ -200,7 +200,7 @@ func TestGitLifecycleCommandsRunDirectlyOnIdentifiedBox(t *testing.T) {
 		t.Fatalf("add code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 	featurePath := filepath.Join(root, "feature")
-	if err = os.WriteFile(tmuxMetadata, []byte("$1\tschooner-test\t1720000000\t1720000000\t0\t1\t11111111-1111-4111-8111-111111111111\tshell\t2024-07-03T09:46:40Z\t"+featurePath+"\n"), 0o600); err != nil {
+	if err = os.WriteFile(tmuxMetadata, []byte("$1\tschooner-test\t1720000000\t1720000000\t0\t2\t11111111-1111-4111-8111-111111111111\tshell\t2024-07-03T09:46:40Z\t"+featurePath+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	code, _, stderr = run(t.Context(), []string{"worktree", "remove", "feature", "--output", "json", "--no-input"}, testBuild(), nil)

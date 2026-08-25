@@ -27,6 +27,12 @@ func TestRunInteractiveAttachesStreamsDirectoryAndExitStatus(t *testing.T) {
 	}
 }
 
+func TestInteractiveTerminalRejectsNonTTYStreams(t *testing.T) {
+	if interactiveTerminal(strings.NewReader("not a terminal")) {
+		t.Fatal("ordinary reader was treated as an interactive terminal")
+	}
+}
+
 func TestRunInteractiveCancellationTerminatesDescendants(t *testing.T) {
 	output := filepath.Join(t.TempDir(), "descendant-output")
 	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)

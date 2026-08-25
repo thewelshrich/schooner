@@ -10,6 +10,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"golang.org/x/term"
 )
 
 const commandPipeWaitDelay = time.Second
@@ -113,11 +115,14 @@ func ExitCode(err error) int {
 	return -1
 }
 
-// RunInteractive attaches the supplied streams directly while preserving the
-// same process-group cancellation semantics as bounded fixed operations.
+// RunInteractive attaches the supplied streams directly. A child reading from
+// a real terminal must remain in Schooner's foreground process group; non-TTY
+// operations retain descendant-aware process-group cancellation.
 func RunInteractive(ctx context.Context, directory, name string, arguments []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
 	command := exec.CommandContext(ctx, name, arguments...)
-	configureCommandCancellation(command)
+	if !interactiveTerminal(stdin) {
+		configureCommandCancellation(command)
+	}
 	command.Dir = directory
 	command.Stdin, command.Stdout, command.Stderr = stdin, stdout, stderr
 	if err := command.Run(); err != nil {
@@ -131,6 +136,11 @@ func RunInteractive(ctx context.Context, directory, name string, arguments []str
 		return 0, err
 	}
 	return 0, nil
+}
+
+func interactiveTerminal(reader io.Reader) bool {
+	file, ok := reader.(*os.File)
+	return ok && term.IsTerminal(int(file.Fd()))
 }
 
 type limitedBuffer struct {
