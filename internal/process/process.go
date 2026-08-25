@@ -9,7 +9,10 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 )
+
+const commandPipeWaitDelay = time.Second
 
 func Run(ctx context.Context, maximum int, name string, arguments ...string) ([]byte, error) {
 	return run(ctx, maximum, nil, name, arguments...)
@@ -61,12 +64,16 @@ func RunCapturedWithoutEnvironment(ctx context.Context, maximum int, excluded []
 	environment = append(environment, extra...)
 	command := exec.CommandContext(ctx, name, arguments...)
 	configureCommandCancellation(command)
+	command.WaitDelay = commandPipeWaitDelay
 	command.Env = environment
 	stdout := &boundedWriter{maximum: maximum}
 	stderr := &boundedWriter{maximum: maximum}
 	command.Stdout = stdout
 	command.Stderr = stderr
 	err := command.Run()
+	if errors.Is(err, exec.ErrWaitDelay) {
+		err = nil
+	}
 	if ctx.Err() != nil {
 		return Result{Stdout: stdout.data, Stderr: stderr.data, Truncated: stdout.truncated || stderr.truncated}, ctx.Err()
 	}
@@ -78,6 +85,7 @@ func run(ctx context.Context, maximum int, environment []string, name string, ar
 	defer cancel()
 	command := exec.CommandContext(commandContext, name, arguments...)
 	configureCommandCancellation(command)
+	command.WaitDelay = commandPipeWaitDelay
 	if environment != nil {
 		command.Env = environment
 	}
@@ -85,6 +93,9 @@ func run(ctx context.Context, maximum int, environment []string, name string, ar
 	command.Stdout = output
 	command.Stderr = io.Discard
 	err := command.Run()
+	if errors.Is(err, exec.ErrWaitDelay) {
+		err = nil
+	}
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}

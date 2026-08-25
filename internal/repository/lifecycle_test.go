@@ -941,6 +941,70 @@ func TestLifecycleAddRejectsChangedMovePendingStage(t *testing.T) {
 	}
 }
 
+func TestLifecycleAddRejectsChangedPromotedSnapshot(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "root")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	lifecycle, err := NewLifecycle(root, filepath.Join(t.TempDir(), "state"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cloned, err := lifecycle.Clone(t.Context(), CloneRequest{Source: createLifecycleSource(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runLifecycleGit(t, cloned.Path, "branch", "promoted-original")
+	runLifecycleGit(t, cloned.Path, "branch", "promoted-changed")
+	target, err := lifecycle.newPath("promoted-target")
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed := false
+	lifecycle.commands = lifecycleRunnerFunc(func(ctx context.Context, name string, args ...string) (process.Result, error) {
+		result, runErr := (osMutationRunner{}).Run(ctx, name, args...)
+		if runErr == nil && slices.Contains(args, "repair") && args[len(args)-1] == target && !changed {
+			changed = true
+			runLifecycleGit(t, target, "checkout", "promoted-changed")
+		}
+		return result, runErr
+	})
+	if _, err = lifecycle.Add(t.Context(), AddRequest{RepositoryPath: cloned.Path, Path: target, Branch: "promoted-original"}); ErrorCode(err) != CodeOutcomeUnknown {
+		t.Fatalf("changed promoted snapshot error = %v", err)
+	}
+	inspected, err := Inspect(t.Context(), lifecycle.root, target)
+	if err != nil || inspected.Worktree.Branch != "promoted-changed" {
+		t.Fatalf("changed promoted Worktree = %+v, %v", inspected.Worktree, err)
+	}
+}
+
+func TestLifecycleAddDestinationConflictDoesNotBlockRemoval(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "root")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	lifecycle, err := NewLifecycle(root, filepath.Join(t.TempDir(), "state"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cloned, err := lifecycle.Clone(t.Context(), CloneRequest{Source: createLifecycleSource(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runLifecycleGit(t, cloned.Path, "branch", "occupied")
+	runLifecycleGit(t, cloned.Path, "branch", "other-intent")
+	occupied, err := lifecycle.Add(t.Context(), AddRequest{RepositoryPath: cloned.Path, Path: "occupied", Branch: "occupied"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = lifecycle.Add(t.Context(), AddRequest{RepositoryPath: cloned.Path, Path: occupied.Path, Branch: "other-intent"}); ErrorCode(err) != CodeConflict {
+		t.Fatalf("destination conflict error = %v", err)
+	}
+	if _, err = lifecycle.Remove(t.Context(), occupied.Path); err != nil {
+		t.Fatalf("removal after pre-effect add conflict = %v", err)
+	}
+}
+
 func TestLifecycleCompletedAddRecoveryCleansOwnedStage(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "root")
 	state := filepath.Join(t.TempDir(), "state")
@@ -1028,13 +1092,13 @@ func TestUnlockStagedWorktreeRecoversWithoutLocalizedDiagnostics(t *testing.T) {
 }
 
 func TestGitMutationsUseNonInteractiveSSH(t *testing.T) {
-	for _, expected := range []string{"GIT_SSH_COMMAND=ssh -o BatchMode=yes", "GIT_SSH_VARIANT=ssh"} {
+	for _, expected := range []string{"LC_ALL=C", "LANG=C", "GIT_SSH_COMMAND=ssh -o BatchMode=yes", "GIT_SSH_VARIANT=ssh"} {
 		if !slices.Contains(gitMutationEnvironment(true), expected) {
 			t.Fatalf("noninteractive Git mutation environment does not contain %q: %v", expected, gitMutationEnvironment(true))
 		}
 	}
-	if environment := gitMutationEnvironment(false); len(environment) != 0 {
-		t.Fatalf("interactive Git mutation environment disables prompts: %v", environment)
+	if environment := gitMutationEnvironment(false); !slices.Contains(environment, "LC_ALL=C") || slices.Contains(environment, "GIT_TERMINAL_PROMPT=0") {
+		t.Fatalf("interactive Git mutation environment has the wrong prompt/locale policy: %v", environment)
 	}
 }
 
@@ -1273,8 +1337,8 @@ func TestLifecycleRejectsUnsafeCloneSourcesAndDestinations(t *testing.T) {
 	if err = os.Remove(filepath.Join(lifecycle.root, "source")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = lifecycle.Clone(t.Context(), CloneRequest{Source: source, Branch: "main"}); ErrorCode(err) != CodeConflict {
-		t.Fatalf("different interrupted intent error = %v", err)
+	if cloned, cloneErr := lifecycle.Clone(t.Context(), CloneRequest{Source: source, Branch: "main"}); cloneErr != nil || cloned.Inspection == nil {
+		t.Fatalf("clone after retired destination conflict = %+v, %v", cloned, cloneErr)
 	}
 }
 

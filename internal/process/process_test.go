@@ -57,6 +57,20 @@ func TestRunCapturedBoundsWithoutCancellingCommand(t *testing.T) {
 	}
 }
 
+func TestRunCapturedBoundsInheritedPipeWait(t *testing.T) {
+	started := time.Now()
+	result, err := RunCapturedWithoutEnvironment(t.Context(), 64, nil, nil, "/bin/sh", "-c", "(sleep 2) & printf done")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(result.Stdout) != "done" {
+		t.Fatalf("stdout = %q", result.Stdout)
+	}
+	if elapsed := time.Since(started); elapsed > 1500*time.Millisecond {
+		t.Fatalf("inherited pipe kept command blocked for %s", elapsed)
+	}
+}
+
 func TestRunCapturedCancellationTerminatesDescendants(t *testing.T) {
 	output := filepath.Join(t.TempDir(), "descendant-output")
 	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)

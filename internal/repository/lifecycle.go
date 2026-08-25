@@ -124,10 +124,11 @@ type mutationRunner interface {
 type osMutationRunner struct{ nonInteractive bool }
 
 func gitMutationEnvironment(nonInteractive bool) []string {
+	environment := []string{"LC_ALL=C", "LANG=C"}
 	if !nonInteractive {
-		return nil
+		return environment
 	}
-	return []string{"GIT_TERMINAL_PROMPT=0", "GCM_INTERACTIVE=never", "GIT_SSH_COMMAND=ssh -o BatchMode=yes", "GIT_SSH_VARIANT=ssh"}
+	return append(environment, "GIT_TERMINAL_PROMPT=0", "GCM_INTERACTIVE=never", "GIT_SSH_COMMAND=ssh -o BatchMode=yes", "GIT_SSH_VARIANT=ssh")
 }
 
 func (runner osMutationRunner) Run(ctx context.Context, name string, args ...string) (process.Result, error) {
@@ -204,6 +205,12 @@ func (l *Lifecycle) Clone(ctx context.Context, request CloneRequest) (MutationRe
 					}
 					_ = removeOwnedStage(record)
 					return MutationResult{Action: "clone", Recovered: true, WorktreeRoot: l.root, Inspection: &inspected, Path: inspected.Worktree.Path}, nil
+				}
+			}
+			if record.Checkpoint == "requested" {
+				record.Checkpoint = "aborted"
+				if saveErr := l.save(record); saveErr != nil {
+					return MutationResult{}, saveErr
 				}
 			}
 			return MutationResult{}, &Error{Code: CodeConflict, Message: fmt.Sprintf("clone destination %q already exists", target), Cause: statErr}
@@ -334,6 +341,12 @@ func (l *Lifecycle) Add(ctx context.Context, request AddRequest) (MutationResult
 					return MutationResult{}, err
 				}
 				return MutationResult{Action: "worktree_add", Recovered: true, WorktreeRoot: l.root, Inspection: &existing, Path: existing.Worktree.Path}, nil
+			}
+			if record.Checkpoint == "requested" {
+				record.Checkpoint = "aborted"
+				if err = l.save(record); err != nil {
+					return MutationResult{}, err
+				}
 			}
 			return MutationResult{}, &Error{Code: CodeConflict, Message: fmt.Sprintf("Worktree destination %q already exists", target)}
 		}
@@ -474,7 +487,9 @@ func (l *Lifecycle) Add(ctx context.Context, request AddRequest) (MutationResult
 		if err != nil {
 			return MutationResult{}, &Error{Code: CodeOutcomeUnknown, Message: "linked Worktree could not be verified", Cause: err}
 		}
-		recordSnapshot(record, inspected)
+		if !worktreeMatchesRecord(inspected, record, target, commonDirectory) {
+			return MutationResult{}, &Error{Code: CodeOutcomeUnknown, Message: "promoted Worktree changed after its saved snapshot was verified"}
+		}
 		record.Checkpoint = "complete"
 		if err = l.saveAfterEffect(record); err != nil {
 			return MutationResult{}, err
@@ -895,6 +910,9 @@ func ensureWorktreeIncarnation(record *operationRecord, inspected Inspection) er
 			if writeErr != nil {
 				return &Error{Code: CodeOutcomeUnknown, Message: "Worktree incarnation marker could not be recorded", Cause: writeErr}
 			}
+			if syncErr := syncDirectory(inspected.Worktree.GitDirectory); syncErr != nil {
+				return &Error{Code: CodeOutcomeUnknown, Message: "Worktree incarnation marker directory could not be synced", Cause: syncErr}
+			}
 		}
 	} else if err != nil {
 		return &Error{Code: CodeOutcomeUnknown, Message: "Worktree incarnation marker could not be read", Cause: err}
@@ -960,6 +978,18 @@ func movePathNoReplace(root, source, target string) error {
 		moveErr = closeErr
 	}
 	return moveErr
+}
+
+func syncDirectory(path string) error {
+	directory, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	syncErr := directory.Sync()
+	if closeErr := directory.Close(); syncErr == nil {
+		syncErr = closeErr
+	}
+	return syncErr
 }
 
 func (l *Lifecycle) validateDiscoverableTarget(ctx context.Context, target string, replacingStage bool) error {
@@ -1052,7 +1082,7 @@ func (l *Lifecycle) findAddRecovery(target, selectorHash, repositoryHash string)
 		if loadErr != nil {
 			return operationRecord{}, false, loadErr
 		}
-		if !present || record.Kind != "worktree_add" || record.TargetPath != target || record.RefSHA256 != selectorHash || record.RepositorySHA256 != repositoryHash || record.CommonDirectory == "" {
+		if !present || record.Kind != "worktree_add" || record.TargetPath != target || record.Checkpoint == "aborted" || record.RefSHA256 != selectorHash || record.RepositorySHA256 != repositoryHash || record.CommonDirectory == "" {
 			continue
 		}
 		if found {
@@ -1484,7 +1514,7 @@ func (l *Lifecycle) incompleteConflict(target, intent string) (bool, error) {
 		if loadErr != nil {
 			return false, loadErr
 		}
-		if found && record.TargetPath == target && record.Checkpoint != "complete" {
+		if found && record.TargetPath == target && record.Checkpoint != "complete" && record.Checkpoint != "aborted" {
 			return true, nil
 		}
 	}
