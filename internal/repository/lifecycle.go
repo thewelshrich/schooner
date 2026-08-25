@@ -259,7 +259,7 @@ func (l *Lifecycle) Clone(ctx context.Context, request CloneRequest) (MutationRe
 		if err = l.validateDiscoverableTarget(ctx, target, true); err != nil {
 			return MutationResult{}, err
 		}
-		if err = renameNoReplace(record.StagingPath, target); err != nil {
+		if err = movePathNoReplace(l.root, record.StagingPath, target); err != nil {
 			return MutationResult{}, &Error{Code: CodeOutcomeUnknown, Message: "cloned Worktree could not be promoted safely", Cause: err}
 		}
 		_ = removeOwnedStage(record)
@@ -310,6 +310,11 @@ func (l *Lifecycle) Add(ctx context.Context, request AddRequest) (MutationResult
 	commonDirectory := repositoryInspection.Repository.CommonDirectory
 	selectorHash := fingerprint(request.Branch)
 	return l.withOperation(ctx, "worktree_add", target, intent, func(record *operationRecord, recovered bool) (MutationResult, error) {
+		repositoryLock, lockErr := acquireMutationLock(l.state, commonDirectory+"#repository")
+		if lockErr != nil {
+			return MutationResult{}, lockErr
+		}
+		defer func() { _ = repositoryLock.Close() }()
 		if record.RefSHA256 != "" && record.RefSHA256 != selectorHash || record.CommonDirectory != "" && record.CommonDirectory != commonDirectory || record.RepositorySHA256 != "" && record.RepositorySHA256 != repositoryHash {
 			return MutationResult{}, &Error{Code: CodeOutcomeUnknown, Message: "Worktree add checkpoint does not match its repository or ref selector"}
 		}
@@ -495,6 +500,11 @@ func (l *Lifecycle) Remove(ctx context.Context, selector string) (MutationResult
 			return MutationResult{}, findErr
 		}
 		if found {
+			repositoryLock, lockErr := acquireMutationLock(l.state, record.CommonDirectory+"#repository")
+			if lockErr != nil {
+				return MutationResult{}, lockErr
+			}
+			defer func() { _ = repositoryLock.Close() }()
 			return l.reconcileRemovalState(ctx, target, &record, true)
 		}
 		return MutationResult{}, err
@@ -516,6 +526,11 @@ func (l *Lifecycle) Remove(ctx context.Context, selector string) (MutationResult
 	recordSnapshot(&seed, initial)
 	intent := fingerprint("worktree_remove", target, initial.Repository.CommonDirectory, seed.IncarnationSHA256)
 	return l.withOperationLocked(ctx, "worktree_remove", target, intent, func(record *operationRecord, recovered bool) (MutationResult, error) {
+		repositoryLock, lockErr := acquireMutationLock(l.state, initial.Repository.CommonDirectory+"#repository")
+		if lockErr != nil {
+			return MutationResult{}, lockErr
+		}
+		defer func() { _ = repositoryLock.Close() }()
 		if record.CommonDirectory == "" {
 			record.CommonDirectory = seed.CommonDirectory
 			record.Branch = seed.Branch
@@ -527,6 +542,12 @@ func (l *Lifecycle) Remove(ctx context.Context, selector string) (MutationResult
 				return MutationResult{}, err
 			}
 		}
+		if record.Checkpoint == "restore_pending" {
+			if err = l.restoreQuarantined(ctx, target, record); err != nil {
+				return MutationResult{}, err
+			}
+			return MutationResult{}, &Error{Code: CodeConflict, Message: "the previous removal was restored safely; retry after reviewing the Worktree"}
+		}
 		current, inspectErr := Inspect(ctx, l.root, target)
 		if ErrorCode(inspectErr) == CodeNotFound {
 			return l.reconcileRemovalState(ctx, target, record, true)
@@ -537,7 +558,7 @@ func (l *Lifecycle) Remove(ctx context.Context, selector string) (MutationResult
 		if record.IncarnationSHA256 == "" {
 			record.IncarnationSHA256 = seed.IncarnationSHA256
 		}
-		if record.Checkpoint == "remove_pending" || record.Checkpoint == "complete" {
+		if record.Checkpoint == "remove_pending" || record.Checkpoint == "quarantine_pending" || record.Checkpoint == "complete" {
 			matches, matchErr := worktreeIdentityMatchesRecord(current, record, target)
 			if matchErr != nil {
 				return MutationResult{}, &Error{Code: CodeOutcomeUnknown, Message: "Worktree removal identity could not be verified", Cause: matchErr}
@@ -621,7 +642,15 @@ func (l *Lifecycle) Prune(ctx context.Context) (MutationResult, error) {
 			if path == "" {
 				continue
 			}
+			repositoryLock, lockErr := acquireMutationLock(l.state, value.CommonDirectory+"#repository")
+			if lockErr != nil {
+				return MutationResult{}, lockErr
+			}
 			if _, err = l.runGit(ctx, "-C", path, "worktree", "prune"); err != nil {
+				_ = repositoryLock.Close()
+				return MutationResult{}, err
+			}
+			if err = repositoryLock.Close(); err != nil {
 				return MutationResult{}, err
 			}
 		}
@@ -1052,7 +1081,7 @@ func (l *Lifecycle) findRemoveRecovery(target string) (operationRecord, bool, er
 		if loadErr != nil {
 			return operationRecord{}, false, loadErr
 		}
-		if !present || record.Kind != "worktree_remove" || record.TargetPath != target || record.Checkpoint != "complete" && record.Checkpoint != "remove_pending" && record.Checkpoint != "quarantine_pending" && record.Checkpoint != "requested" {
+		if !present || record.Kind != "worktree_remove" || record.TargetPath != target || record.Checkpoint != "complete" && record.Checkpoint != "remove_pending" && record.Checkpoint != "quarantine_pending" && record.Checkpoint != "restore_pending" && record.Checkpoint != "requested" {
 			continue
 		}
 		if !found || record.UpdatedAt.After(latest.UpdatedAt) {
@@ -1072,6 +1101,12 @@ func catalogDiscoveryTruncated(catalog Catalog) bool {
 }
 
 func (l *Lifecycle) reconcileRemovalState(ctx context.Context, target string, record *operationRecord, recovered bool) (MutationResult, error) {
+	if record.Checkpoint == "restore_pending" {
+		if err := l.restoreQuarantined(ctx, target, record); err != nil {
+			return MutationResult{}, err
+		}
+		return MutationResult{}, &Error{Code: CodeConflict, Message: "the previous removal was restored safely; retry after reviewing the Worktree"}
+	}
 	if record.StagingPath != "" {
 		if _, err := os.Lstat(record.StagingPath); err == nil {
 			return l.removeQuarantined(ctx, target, record, recovered)
@@ -1128,13 +1163,27 @@ func (l *Lifecycle) removeQuarantined(ctx context.Context, target string, record
 }
 
 func (l *Lifecycle) restoreQuarantined(ctx context.Context, target string, record *operationRecord) error {
-	if err := movePathNoReplace(l.root, record.StagingPath, target); err != nil {
-		return &Error{Code: CodeOutcomeUnknown, Message: "quarantined Worktree could not be restored", Cause: err}
+	record.Checkpoint = "restore_pending"
+	if err := l.save(record); err != nil {
+		return err
+	}
+	if _, err := os.Lstat(record.StagingPath); err == nil {
+		if err = movePathNoReplace(l.root, record.StagingPath, target); err != nil {
+			return &Error{Code: CodeOutcomeUnknown, Message: "quarantined Worktree could not be restored", Cause: err}
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return &Error{Code: CodeOutcomeUnknown, Message: "quarantined Worktree could not be inspected during restoration", Cause: err}
+	} else if _, targetErr := os.Lstat(target); targetErr != nil {
+		return &Error{Code: CodeOutcomeUnknown, Message: "restored Worktree location could not be established", Cause: targetErr}
 	}
 	if _, err := l.runGit(ctx, "--git-dir", record.CommonDirectory, "worktree", "repair", target); err != nil {
 		return &Error{Code: CodeOutcomeUnknown, Message: "restored Worktree registration could not be repaired", Cause: err}
 	}
-	return removeOwnedStage(record)
+	if err := removeOwnedStage(record); err != nil {
+		return err
+	}
+	record.Checkpoint = "requested"
+	return l.saveAfterEffect(record)
 }
 
 func (l *Lifecycle) reconcileRemoved(ctx context.Context, target string, record *operationRecord, recovered bool) (MutationResult, error) {

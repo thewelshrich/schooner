@@ -810,6 +810,91 @@ func TestLifecycleAddRecoversAfterRenameBeforeGitRepair(t *testing.T) {
 	}
 }
 
+func TestRepositoryMutationLockSerializesAddAndPrune(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "root")
+	state := filepath.Join(t.TempDir(), "state")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	lifecycle, err := NewLifecycle(root, state, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cloned, err := lifecycle.Clone(t.Context(), CloneRequest{Source: createLifecycleSource(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	commonDirectory := cloned.Inspection.Repository.CommonDirectory
+	runLifecycleGit(t, cloned.Path, "branch", "serialized")
+	repositoryLock, err := acquireMutationLock(state, commonDirectory+"#repository")
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := AddRequest{RepositoryPath: cloned.Path, Path: "serialized", Branch: "serialized"}
+	if _, err = lifecycle.Add(t.Context(), request); ErrorCode(err) != CodeOperationInProgress {
+		t.Fatalf("concurrent add error = %v", err)
+	}
+	if _, err = lifecycle.Prune(t.Context()); ErrorCode(err) != CodeOperationInProgress {
+		t.Fatalf("concurrent prune error = %v", err)
+	}
+	if err = repositoryLock.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = lifecycle.Add(t.Context(), request); err != nil {
+		t.Fatalf("add after repository lock release = %v", err)
+	}
+	if _, err = lifecycle.Prune(t.Context()); err != nil {
+		t.Fatalf("prune after repository lock release = %v", err)
+	}
+}
+
+func TestLifecycleRemovalRecoversInterruptedQuarantineRestore(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "root")
+	state := filepath.Join(t.TempDir(), "state")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	lifecycle, err := NewLifecycle(root, state, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cloned, err := lifecycle.Clone(t.Context(), CloneRequest{Source: createLifecycleSource(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runLifecycleGit(t, cloned.Path, "branch", "restore-race")
+	linked, err := lifecycle.Add(t.Context(), AddRequest{RepositoryPath: cloned.Path, Path: "restore-race", Branch: "restore-race"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	failedRemove, failedRestore := false, false
+	lifecycle.commands = lifecycleRunnerFunc(func(ctx context.Context, name string, args ...string) (process.Result, error) {
+		last := args[len(args)-1]
+		if slices.Contains(args, "remove") && strings.Contains(last, ".schooner-stage-") && !failedRemove {
+			failedRemove = true
+			return process.Result{}, errors.New("injected remove failure")
+		}
+		if slices.Contains(args, "repair") && last == linked.Path && !failedRestore {
+			failedRestore = true
+			return process.Result{}, errors.New("injected restore repair failure")
+		}
+		return (osMutationRunner{}).Run(ctx, name, args...)
+	})
+	if _, err = lifecycle.Remove(t.Context(), linked.Path); ErrorCode(err) != CodeOutcomeUnknown {
+		t.Fatalf("interrupted restore error = %v", err)
+	}
+	if _, statErr := os.Stat(linked.Path); statErr != nil {
+		t.Fatalf("restored Worktree path is missing: %v", statErr)
+	}
+	lifecycle.commands = osMutationRunner{}
+	if _, err = lifecycle.Remove(t.Context(), linked.Path); ErrorCode(err) != CodeConflict {
+		t.Fatalf("restore reconciliation error = %v", err)
+	}
+	if _, err = lifecycle.Remove(t.Context(), linked.Path); err != nil {
+		t.Fatalf("removal after restore reconciliation = %v", err)
+	}
+}
+
 func TestLifecycleAddRejectsChangedMovePendingStage(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "root")
 	state := filepath.Join(t.TempDir(), "state")
