@@ -65,7 +65,7 @@ type worktreeTarget struct {
 
 func resolveWorktreeTarget(ctx context.Context, streams Streams, global *globalOptions, explicit string) (worktreeTarget, error) {
 	if explicit == "" {
-		local := host.New(hostBuildInfo(global.build))
+		local := global.hostRuntime()
 		if hello, helloErr := local.Hello(); helloErr == nil {
 			configured, configErr := config.ReadDefault()
 			if configErr != nil {

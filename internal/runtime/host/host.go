@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	goruntime "runtime"
 	"strconv"
@@ -46,6 +47,17 @@ func New(build hostruntime.BuildInfo) *Runtime {
 		lookPath:        exec.LookPath,
 	}
 	runtime.run = runtime.runCommand
+	return runtime
+}
+
+func NewAtHome(build hostruntime.BuildInfo, home string) *Runtime {
+	runtime := New(build)
+	runtime.home = func() (string, error) {
+		if home == "" || !filepath.IsAbs(home) {
+			return "", fmt.Errorf("current user home directory is invalid")
+		}
+		return filepath.Clean(home), nil
+	}
 	return runtime
 }
 
@@ -367,14 +379,14 @@ func (r *Runtime) runCommand(ctx context.Context, path string, arguments ...stri
 }
 
 func currentHome() (string, error) {
-	home, err := os.UserHomeDir()
+	current, err := user.Current()
 	if err != nil {
 		return "", fmt.Errorf("resolve current user: %w", err)
 	}
-	if home == "" || !filepath.IsAbs(home) {
+	if current.HomeDir == "" || !filepath.IsAbs(current.HomeDir) {
 		return "", fmt.Errorf("current user home directory is invalid")
 	}
-	return filepath.Clean(home), nil
+	return filepath.Clean(current.HomeDir), nil
 }
 
 func check(id string, ok bool, message string) hostruntime.Check {

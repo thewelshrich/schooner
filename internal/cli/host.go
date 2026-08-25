@@ -10,11 +10,10 @@ import (
 	"github.com/thewelshrich/schooner/internal/box"
 	"github.com/thewelshrich/schooner/internal/repository"
 	hostruntime "github.com/thewelshrich/schooner/internal/runtime"
-	"github.com/thewelshrich/schooner/internal/runtime/host"
 )
 
-func newHostCommand(build BuildInfo, streams Streams) *cobra.Command {
-	runtime := host.New(hostBuildInfo(build))
+func newHostCommand(streams Streams, options *globalOptions) *cobra.Command {
+	runtime := options.hostRuntime()
 	cmd := &cobra.Command{
 		Use:    "host",
 		Short:  "Run private host operations",
@@ -122,14 +121,14 @@ func newHostCommand(build BuildInfo, streams Streams) *cobra.Command {
 	return cmd
 }
 
-func newDoctorCommand(build BuildInfo, streams Streams, options *globalOptions) *cobra.Command {
+func newDoctorCommand(streams Streams, options *globalOptions) *cobra.Command {
 	return &cobra.Command{
 		Use:          "doctor",
 		Short:        "Check this machine for Schooner readiness",
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			runtime := host.New(hostBuildInfo(build))
+			runtime := options.hostRuntime()
 			report, err := runtime.Doctor(cmd.Context(), hostruntime.NewInspectRequest(box.DefaultWorktreeRoot))
 			if err != nil {
 				return executionError{cause: err}

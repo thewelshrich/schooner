@@ -97,6 +97,24 @@ func TestDiscoverStopsAtTopmostCheckoutAndIgnoresSymlinks(t *testing.T) {
 	}
 }
 
+func TestDiscoverDoesNotLetStaleGitEntryHideNestedCheckout(t *testing.T) {
+	root := t.TempDir()
+	parent := filepath.Join(root, "stale")
+	mustWrite(t, filepath.Join(parent, ".git"), "not a checkout\n")
+	nested := filepath.Join(parent, "nested")
+	mustGit(t, "init", nested)
+	catalog, err := Discover(t.Context(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(catalog.Repositories) != 1 || catalog.Repositories[0].Primary == nil || catalog.Repositories[0].Primary.RelativePath != "stale/nested" {
+		t.Fatalf("catalog = %+v", catalog)
+	}
+	if len(catalog.Warnings) != 1 || filepath.Base(catalog.Warnings[0].Path) != filepath.Base(parent) {
+		t.Fatalf("warnings = %+v", catalog.Warnings)
+	}
+}
+
 func TestDiscoverRejectsNonUTF8WorktreePaths(t *testing.T) {
 	if goruntime.GOOS != "linux" {
 		t.Skip("the local filesystem rejects non-UTF-8 path creation")
@@ -202,6 +220,15 @@ func TestInspectReturnsTypedNotFoundForMissingExactPath(t *testing.T) {
 	}
 }
 
+func TestInspectReturnsTypedNotFoundForExistingNonWorktree(t *testing.T) {
+	root := t.TempDir()
+	mustMkdir(t, filepath.Join(root, "stale"))
+	_, err := Inspect(t.Context(), root, "stale")
+	if ErrorCode(err) != CodeNotFound {
+		t.Fatalf("error = %v, code = %q", err, ErrorCode(err))
+	}
+}
+
 func TestInspectAcceptsDotForWorktreeAtConfiguredRoot(t *testing.T) {
 	root := t.TempDir()
 	mustGit(t, "init", root)
@@ -303,7 +330,7 @@ func TestWalkCandidatesBoundsVisitedEntries(t *testing.T) {
 	for _, name := range []string{"a", "b", "c", "d"} {
 		mustWrite(t, filepath.Join(root, name), name)
 	}
-	candidates, warnings, err := walkCandidatesBounded(t.Context(), root, 3)
+	candidates, warnings, err := walkCandidatesBounded(t.Context(), root, 3, commandRunner{})
 	if err != nil {
 		t.Fatal(err)
 	}

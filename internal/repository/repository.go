@@ -48,6 +48,8 @@ var gitRepositoryEnvironment = []string{
 	"GIT_WORK_TREE",
 }
 
+var errNotWorktree = errors.New("not a live Git worktree")
+
 type WorktreeKind string
 
 type Code string
@@ -149,7 +151,7 @@ func discover(ctx context.Context, root string, commands runner) (Catalog, error
 		return Catalog{}, err
 	}
 	result := Catalog{WorktreeRoot: canonicalRoot, Repositories: []Repository{}, Warnings: []Warning{}}
-	candidates, warnings, err := walkCandidates(ctx, canonicalRoot)
+	candidates, warnings, err := walkCandidates(ctx, canonicalRoot, commands)
 	if err != nil {
 		return Catalog{}, err
 	}
@@ -201,7 +203,7 @@ func inspect(ctx context.Context, root, selector string, commands runner) (Inspe
 	}
 	item, err := inspectCandidate(ctx, canonicalRoot, target, commands)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) || pathMissing(target) {
+		if errors.Is(err, errNotWorktree) || errors.Is(err, os.ErrNotExist) || pathMissing(target) {
 			return Inspection{}, worktreeNotFound(selector, err)
 		}
 		return Inspection{}, fmt.Errorf("inspect worktree %q: %w", selector, err)
@@ -213,7 +215,7 @@ func inspect(ctx context.Context, root, selector string, commands runner) (Inspe
 	repository := repositoryRelationship(catalog, item)
 	latest, err := inspectCandidate(ctx, canonicalRoot, target, commands)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) || pathMissing(target) {
+		if errors.Is(err, errNotWorktree) || errors.Is(err, os.ErrNotExist) || pathMissing(target) {
 			return Inspection{}, worktreeNotFound(selector, err)
 		}
 		return Inspection{}, fmt.Errorf("revalidate worktree %q: %w", selector, err)
@@ -262,16 +264,17 @@ func repositoryRelationship(catalog Catalog, item observation) Repository {
 	return repository
 }
 
-func walkCandidates(ctx context.Context, root string) ([]string, []Warning, error) {
-	return walkCandidatesBounded(ctx, root, maxVisited)
+func walkCandidates(ctx context.Context, root string, commands runner) ([]string, []Warning, error) {
+	return walkCandidatesBounded(ctx, root, maxVisited, commands)
 }
 
-func walkCandidatesBounded(ctx context.Context, root string, visitLimit int) ([]string, []Warning, error) {
+func walkCandidatesBounded(ctx context.Context, root string, visitLimit int, commands runner) ([]string, []Warning, error) {
 	candidates := make([]string, 0)
 	warnings := make([]Warning, 0)
 	errCandidateLimit := errors.New("candidate limit reached")
 	errVisitLimit := errors.New("filesystem entry limit reached")
 	visited := 0
+	inspected := 0
 	depthLimited := false
 	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
 		if err := ctx.Err(); err != nil {
@@ -322,19 +325,27 @@ func walkCandidatesBounded(ctx context.Context, root string, visitLimit int) ([]
 		if statErr == nil {
 			if info.Mode()&os.ModeSymlink != 0 {
 				appendWarning(&warnings, path, ".git symlink was ignored")
-				return filepath.SkipDir
+				return nil
 			}
 			if info.IsDir() || info.Mode().IsRegular() {
-				if len(candidates) == maxCandidates {
+				if inspected == maxCandidates {
 					appendRequiredWarning(&warnings, root, fmt.Sprintf("checkout candidate limit of %d reached", maxCandidates))
 					return errCandidateLimit
+				}
+				inspected++
+				if validationErr := validateTopmostCandidate(ctx, root, path, commands); validationErr != nil {
+					if ctx.Err() != nil {
+						return ctx.Err()
+					}
+					appendWarning(&warnings, path, validationErr.Error())
+					return nil
 				}
 				candidates = append(candidates, path)
 				return filepath.SkipDir
 			}
 		} else if !errors.Is(statErr, os.ErrNotExist) {
 			appendWarning(&warnings, path, statErr.Error())
-			return filepath.SkipDir
+			return nil
 		}
 		return nil
 	})
@@ -342,6 +353,40 @@ func walkCandidatesBounded(ctx context.Context, root string, visitLimit int) ([]
 		err = nil
 	}
 	return candidates, warnings, err
+}
+
+func validateTopmostCandidate(ctx context.Context, root, candidate string, commands runner) error {
+	canonical, err := canonicalDirectory(candidate)
+	if err != nil {
+		return err
+	}
+	if !within(root, canonical) {
+		return fmt.Errorf("worktree path escapes configured root")
+	}
+	paths, err := git(ctx, commands, canonical, "rev-parse", "--path-format=absolute", "--show-toplevel")
+	if err != nil {
+		return fmt.Errorf("read Git top-level: %w", err)
+	}
+	top := strings.TrimSuffix(string(paths), "\n")
+	if top == "" || hasControl(top) {
+		return fmt.Errorf("Git returned malformed top-level")
+	}
+	resolvedTop, err := filepath.EvalSymlinks(filepath.Clean(top))
+	if err != nil || resolvedTop != canonical {
+		return fmt.Errorf("candidate is not the Git top-level worktree")
+	}
+	membershipOutput, err := git(ctx, commands, canonical, "worktree", "list", "--porcelain", "-z")
+	if err != nil {
+		return fmt.Errorf("list Git worktrees: %w", err)
+	}
+	members, err := parseWorktreeList(membershipOutput)
+	if err != nil {
+		return err
+	}
+	if _, found := membership(canonical, members); !found {
+		return fmt.Errorf("checkout is not a live Git worktree member")
+	}
+	return nil
 }
 
 func inspectCandidate(ctx context.Context, root, candidate string, commands runner) (observation, error) {
@@ -354,6 +399,9 @@ func inspectCandidate(ctx context.Context, root, candidate string, commands runn
 	}
 	paths, err := git(ctx, commands, canonical, "rev-parse", "--path-format=absolute", "--show-toplevel", "--absolute-git-dir", "--git-common-dir")
 	if err != nil {
+		if exitCode(err) >= 0 {
+			return observation{}, fmt.Errorf("%w: read Git paths: %v", errNotWorktree, err)
+		}
 		return observation{}, fmt.Errorf("read Git paths: %w", err)
 	}
 	lines := strings.Split(strings.TrimSuffix(string(paths), "\n"), "\n")
@@ -362,7 +410,7 @@ func inspectCandidate(ctx context.Context, root, candidate string, commands runn
 	}
 	top, err := filepath.EvalSymlinks(filepath.Clean(lines[0]))
 	if err != nil || top != canonical {
-		return observation{}, fmt.Errorf("candidate is not the Git top-level worktree")
+		return observation{}, fmt.Errorf("%w: candidate is not the Git top-level worktree", errNotWorktree)
 	}
 	gitDirectory, err := canonicalPath(lines[1])
 	if err != nil {
@@ -382,7 +430,7 @@ func inspectCandidate(ctx context.Context, root, candidate string, commands runn
 	}
 	kind, found := membership(canonical, members)
 	if !found {
-		return observation{}, fmt.Errorf("checkout is not a live Git worktree member")
+		return observation{}, fmt.Errorf("%w: checkout is not a live Git worktree member", errNotWorktree)
 	}
 	relative, err := filepath.Rel(root, canonical)
 	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {

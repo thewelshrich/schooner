@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/user"
 	"path/filepath"
 	"testing"
 
@@ -100,5 +101,20 @@ func TestRuntimeHelloInspectAndDoctor(t *testing.T) {
 	}
 	if _, err = runtime.Doctor(ctx, hostruntime.NewInspectRequest("~/schooner")); !errors.Is(err, context.Canceled) {
 		t.Fatalf("Doctor cancellation returned %v", err)
+	}
+}
+
+func TestCurrentHomeIgnoresOverriddenHOME(t *testing.T) {
+	current, err := user.Current()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", t.TempDir())
+	home, err := currentHome()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if home != filepath.Clean(current.HomeDir) {
+		t.Fatalf("home = %q, account home = %q", home, current.HomeDir)
 	}
 }

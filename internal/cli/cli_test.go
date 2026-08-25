@@ -858,25 +858,25 @@ func run(ctx context.Context, args []string, build cli.BuildInfo, out io.Writer)
 		out = &stdout
 	}
 
-	code := cli.Run(ctx, args, cli.Streams{
+	code := cli.RunAtHostHome(ctx, args, cli.Streams{
 		In:  strings.NewReader(""),
 		Out: out,
 		Err: &stderr,
-	}, build)
+	}, build, os.Getenv("HOME"))
 
 	return code, stdout.String(), stderr.String()
 }
 
 func runTerminal(ctx context.Context, args []string, input string) (int, string, string) {
 	var stdout, stderr bytes.Buffer
-	code := cli.Run(ctx, args, cli.Streams{
+	code := cli.RunAtHostHome(ctx, args, cli.Streams{
 		In:            strings.NewReader(input),
 		Out:           &stdout,
 		Err:           &stderr,
 		InIsTerminal:  true,
 		OutIsTerminal: true,
 		ErrIsTerminal: true,
-	}, testBuild())
+	}, testBuild(), os.Getenv("HOME"))
 	return code, stdout.String(), stderr.String()
 }
 
