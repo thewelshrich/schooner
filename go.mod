@@ -5,6 +5,7 @@ go 1.27.0
 require (
 	charm.land/huh/v2 v2.0.3
 	charm.land/lipgloss/v2 v2.0.1
+	github.com/BurntSushi/toml v1.5.0
 	github.com/charmbracelet/x/ansi v0.11.6
 	github.com/digitalocean/godo v1.204.0
 	github.com/ncruces/go-sqlite3 v0.35.3
@@ -17,7 +18,6 @@ require (
 require (
 	charm.land/bubbles/v2 v2.0.0 // indirect
 	charm.land/bubbletea/v2 v2.0.2 // indirect
-	github.com/BurntSushi/toml v1.5.0 // indirect
 	github.com/atotto/clipboard v0.1.4 // indirect
 	github.com/catppuccin/go v0.2.0 // indirect
 	github.com/charmbracelet/colorprofile v0.4.2 // indirect
