@@ -3,6 +3,7 @@ package ssh
 import (
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -19,6 +20,7 @@ import (
 	"github.com/thewelshrich/schooner/internal/repository"
 	hostruntime "github.com/thewelshrich/schooner/internal/runtime"
 	"github.com/thewelshrich/schooner/internal/semver"
+	"github.com/thewelshrich/schooner/internal/session"
 )
 
 const maxArtifactBytes = 256 << 20
@@ -323,6 +325,64 @@ func (r *Runtime) PruneWorktrees(ctx context.Context, connection box.Connection,
 	return result.MutationResult, nil
 }
 
+func (r *Runtime) ListSessions(ctx context.Context, connection box.Connection, installed box.HostRuntime, expectedIdentity, worktreeRoot string) (session.Catalog, error) {
+	var result hostruntime.SessionCatalog
+	request := hostruntime.NewSessionListRequest(worktreeRoot, expectedIdentity)
+	if err := r.invokeHostJSON(ctx, connection, installed, expectedIdentity, hostruntime.CapabilitySessionListV1, "host session list", request, &result); err != nil {
+		return session.Catalog{}, err
+	}
+	if result.SchemaVersion != hostruntime.SchemaVersion || result.ProtocolVersion != hostruntime.ProtocolVersion || result.BoxIdentity != expectedIdentity || result.WorktreeRoot != worktreeRoot {
+		return session.Catalog{}, box.NewError("host_runtime_incompatible", "Session list returned an incompatible result", nil)
+	}
+	return result.Catalog, nil
+}
+
+func (r *Runtime) StartSession(ctx context.Context, connection box.Connection, installed box.HostRuntime, expectedIdentity, worktreeRoot, worktree string) (session.StartResult, error) {
+	var result hostruntime.SessionStartResult
+	request := hostruntime.NewSessionStartRequest(worktreeRoot, expectedIdentity, worktree)
+	if err := r.invokeHostJSON(ctx, connection, installed, expectedIdentity, hostruntime.CapabilitySessionStartV1, "host session start", request, &result); err != nil {
+		return session.StartResult{}, err
+	}
+	if result.SchemaVersion != hostruntime.SchemaVersion || result.ProtocolVersion != hostruntime.ProtocolVersion || result.BoxIdentity != expectedIdentity || result.WorktreeRoot != worktreeRoot || result.Session.WorktreePath == "" {
+		return session.StartResult{}, box.NewError("host_runtime_incompatible", "Session start returned an incompatible result", nil)
+	}
+	return result.StartResult, nil
+}
+
+func (r *Runtime) SessionLogs(ctx context.Context, connection box.Connection, installed box.HostRuntime, expectedIdentity, worktreeRoot, id string, lines int) (session.LogsResult, error) {
+	var result hostruntime.SessionLogsResult
+	request := hostruntime.NewSessionLogsRequest(worktreeRoot, expectedIdentity, id, lines)
+	if err := r.invokeHostJSON(ctx, connection, installed, expectedIdentity, hostruntime.CapabilitySessionLogsV1, "host session logs", request, &result); err != nil {
+		return session.LogsResult{}, err
+	}
+	if result.SchemaVersion != hostruntime.SchemaVersion || result.ProtocolVersion != hostruntime.ProtocolVersion || result.BoxIdentity != expectedIdentity || result.WorktreeRoot != worktreeRoot || result.SessionID != id {
+		return session.LogsResult{}, box.NewError("host_runtime_incompatible", "Session logs returned an incompatible result", nil)
+	}
+	return result.LogsResult, nil
+}
+
+func (r *Runtime) StopSession(ctx context.Context, connection box.Connection, installed box.HostRuntime, expectedIdentity, worktreeRoot, id string) (session.StopResult, error) {
+	var result hostruntime.SessionStopResult
+	request := hostruntime.NewSessionTargetRequest(worktreeRoot, expectedIdentity, id)
+	if err := r.invokeHostJSON(ctx, connection, installed, expectedIdentity, hostruntime.CapabilitySessionStopV1, "host session stop", request, &result); err != nil {
+		return session.StopResult{}, err
+	}
+	if result.SchemaVersion != hostruntime.SchemaVersion || result.ProtocolVersion != hostruntime.ProtocolVersion || result.BoxIdentity != expectedIdentity || result.WorktreeRoot != worktreeRoot || result.SessionID != id || !result.Stopped {
+		return session.StopResult{}, box.NewError("host_runtime_incompatible", "Session stop returned an incompatible result", nil)
+	}
+	return result.StopResult, nil
+}
+
+func (r *Runtime) ResumeSession(ctx context.Context, connection box.Connection, installed box.HostRuntime, expectedIdentity, worktreeRoot, selector string, terminal TerminalIO) (ShellResult, error) {
+	request := hostruntime.NewSessionTargetRequest(worktreeRoot, expectedIdentity, selector)
+	return r.openHostInteractive(ctx, connection, installed, expectedIdentity, hostruntime.CapabilitySessionResumeV1, "host session resume", request, terminal)
+}
+
+func (r *Runtime) OpenWorktreeShell(ctx context.Context, connection box.Connection, installed box.HostRuntime, expectedIdentity, worktreeRoot, worktree string, terminal TerminalIO) (ShellResult, error) {
+	request := hostruntime.NewWorktreeShellRequest(worktreeRoot, expectedIdentity, worktree)
+	return r.openHostInteractive(ctx, connection, installed, expectedIdentity, hostruntime.CapabilityWorktreeShellV1, "host worktree shell", request, terminal)
+}
+
 func validateLifecycleResult(result hostruntime.LifecycleResult, expectedIdentity, action string) error {
 	if result.SchemaVersion != hostruntime.SchemaVersion || result.ProtocolVersion != hostruntime.ProtocolVersion || result.BoxIdentity != expectedIdentity || result.Action != action {
 		return box.NewError("host_runtime_incompatible", "Git lifecycle operation returned an incompatible result", nil)
@@ -377,6 +437,36 @@ func (r *Runtime) invokeHostJSON(ctx context.Context, connection box.Connection,
 		return protocolError(err)
 	}
 	return nil
+}
+
+func (r *Runtime) openHostInteractive(ctx context.Context, connection box.Connection, installed box.HostRuntime, expectedIdentity, capability, operation string, request any, terminal TerminalIO) (ShellResult, error) {
+	if err := validateRuntimePath(installed.Path); err != nil {
+		return ShellResult{}, err
+	}
+	hello, attempt, err := r.helloAt(ctx, connection, installed.Path)
+	if err != nil {
+		return ShellResult{}, protocolError(err)
+	}
+	if attempt.ExitCode != 0 {
+		return ShellResult{}, box.NewError("host_runtime_missing", "the recorded host runtime is unavailable and must be repaired", fmt.Errorf("remote exit status %d", attempt.ExitCode))
+	}
+	if err = hostruntime.ValidateHello(hello, expectedIdentity, capability); err != nil {
+		if hostruntime.ErrorCode(err) == hostruntime.CodeCapabilityUnavailable {
+			return ShellResult{}, box.NewError("host_runtime_incompatible", "the host runtime lacks required support; run box update", err)
+		}
+		return ShellResult{}, protocolError(err)
+	}
+	payload, err := json.Marshal(request)
+	if err != nil {
+		return ShellResult{}, box.NewError("internal", "encode interactive host operation request", err)
+	}
+	encoded := base64.RawURLEncoding.EncodeToString(payload)
+	hostOperation := operation
+	if connection.BatchMode {
+		hostOperation = "--no-input " + hostOperation
+	}
+	command := fixedShellCommand(`runtime_path=$(printf %s "$1" | base64 -d) || exit 64; request=$(printf %s "$2" | base64 -d) || exit 64; exec "$runtime_path" `+hostOperation+` "$request"`, installed.Path, encoded)
+	return r.openInteractiveCommand(ctx, connection, command, terminal)
 }
 
 func (r *Runtime) installHost(ctx context.Context, connection box.Connection, request box.HostInstallRequest, result artifact.Result, baseline string) (box.HostRuntime, error) {

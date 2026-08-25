@@ -60,11 +60,19 @@ usable through tmux. It is not an SSH connection or a hidden background-job
 mechanism.
 
 A managed tmux Session is identified by session-scoped
-`@schooner_session_schema`, `@schooner_session_id`, and
-`@schooner_worktree_path` metadata. Worktree removal and Session creation share
+`@schooner_session_schema`, `@schooner_session_id`,
+`@schooner_session_kind`, `@schooner_session_created_at`, and
+`@schooner_worktree_path` metadata. A Worktree has at most one managed shell
+Session; repeated starts reuse it. Worktree removal and Session creation share
 the same per-Worktree mutation lock so neither can pass live validation while
-the other is committing its effect. Unmanaged tmux sessions remain outside
-Schooner lifecycle ownership.
+the other is committing its effect. An ephemeral Worktree shell holds the same
+lock for its lifetime.
+
+Unmanaged tmux sessions remain outside Schooner lifecycle ownership. Schooner
+may list and resume them by their live `tmux:$N` target, but never captures
+their logs or stops them. Pane paths create a Worktree association only when
+every pane maps unambiguously to the same live Worktree. Partial or malformed
+Schooner metadata is never treated as unmanaged.
 
 ### Agent
 

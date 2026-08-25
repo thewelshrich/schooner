@@ -113,6 +113,31 @@ func PickBox(ctx context.Context, options Options, title string, boxes []box.Rec
 	return value, nil
 }
 
+func Pick(ctx context.Context, options Options, title string, choices []Choice) (string, error) {
+	if len(choices) == 0 {
+		return "", box.NewError("not_found", "no choices are available", nil)
+	}
+	items := make([]huh.Option[string], 0, len(choices))
+	for _, choice := range choices {
+		items = append(items, huh.NewOption(choice.Label, choice.Value))
+	}
+	value := choices[0].Value
+	form := huh.NewForm(huh.NewGroup(huh.NewSelect[string]().Title(title).Options(items...).Value(&value).Height(catalogSelectHeight)))
+	if err := run(ctx, options, form); err != nil {
+		return "", err
+	}
+	return value, nil
+}
+
+func Confirm(ctx context.Context, options Options, title, affirmative, negative string) (bool, error) {
+	confirmed := false
+	form := huh.NewForm(huh.NewGroup(huh.NewConfirm().Title(title).Affirmative(affirmative).Negative(negative).Value(&confirmed)))
+	if err := run(ctx, options, form); err != nil {
+		return false, err
+	}
+	return confirmed, nil
+}
+
 func ConfirmRemove(ctx context.Context, options Options, record box.Record) (bool, error) {
 	_, _ = fmt.Fprintf(options.Output, "\nRemove %s from Schooner?\n  SSH destination: %s\n  The remote machine and its Schooner identity will remain unchanged.\n\n", record.Name, record.SSHDestination)
 	confirmed := false

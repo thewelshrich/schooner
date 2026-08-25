@@ -113,6 +113,26 @@ func ExitCode(err error) int {
 	return -1
 }
 
+// RunInteractive attaches the supplied streams directly while preserving the
+// same process-group cancellation semantics as bounded fixed operations.
+func RunInteractive(ctx context.Context, directory, name string, arguments []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
+	command := exec.CommandContext(ctx, name, arguments...)
+	configureCommandCancellation(command)
+	command.Dir = directory
+	command.Stdin, command.Stdout, command.Stderr = stdin, stdout, stderr
+	if err := command.Run(); err != nil {
+		if ctx.Err() != nil {
+			return 0, ctx.Err()
+		}
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() >= 0 {
+			return exitErr.ExitCode(), nil
+		}
+		return 0, err
+	}
+	return 0, nil
+}
+
 type limitedBuffer struct {
 	maximum  int
 	data     []byte

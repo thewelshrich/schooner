@@ -17,6 +17,7 @@ import (
 	"strings"
 
 	"github.com/thewelshrich/schooner/internal/config"
+	"github.com/thewelshrich/schooner/internal/process"
 	"github.com/thewelshrich/schooner/internal/repository"
 	hostruntime "github.com/thewelshrich/schooner/internal/runtime"
 	"github.com/thewelshrich/schooner/internal/session"
@@ -35,6 +36,14 @@ type Runtime struct {
 	lookPath        func(string) (string, error)
 	run             func(context.Context, string, ...string) (string, error)
 }
+
+type TerminalIO struct {
+	In  io.Reader
+	Out io.Writer
+	Err io.Writer
+}
+
+type InteractiveResult struct{ ExitCode int }
 
 func New(build hostruntime.BuildInfo) *Runtime {
 	runtime := &Runtime{
@@ -301,6 +310,148 @@ func (r *Runtime) PruneWorktrees(ctx context.Context, request hostruntime.Worktr
 		return hostruntime.LifecycleResult{}, err
 	}
 	return hostruntime.LifecycleResult{SchemaVersion: hostruntime.SchemaVersion, ProtocolVersion: hostruntime.ProtocolVersion, BoxIdentity: identity, MutationResult: result}, nil
+}
+
+func (r *Runtime) ListSessions(ctx context.Context, request hostruntime.SessionListRequest) (hostruntime.SessionCatalog, error) {
+	if err := hostruntime.ValidateSessionListRequest(request); err != nil {
+		return hostruntime.SessionCatalog{}, err
+	}
+	manager, identity, err := r.sessionManager(request.BoxIdentity, request.WorktreeRoot)
+	if err != nil {
+		return hostruntime.SessionCatalog{}, err
+	}
+	catalog, err := manager.List(ctx)
+	if err != nil {
+		return hostruntime.SessionCatalog{}, err
+	}
+	return hostruntime.SessionCatalog{SchemaVersion: hostruntime.SchemaVersion, ProtocolVersion: hostruntime.ProtocolVersion, BoxIdentity: identity, Catalog: catalog}, nil
+}
+
+func (r *Runtime) StartSession(ctx context.Context, request hostruntime.SessionStartRequest) (hostruntime.SessionStartResult, error) {
+	if err := hostruntime.ValidateSessionStartRequest(request); err != nil {
+		return hostruntime.SessionStartResult{}, err
+	}
+	manager, identity, err := r.sessionManager(request.BoxIdentity, request.WorktreeRoot)
+	if err != nil {
+		return hostruntime.SessionStartResult{}, err
+	}
+	result, err := manager.Start(ctx, request.Worktree)
+	if err != nil {
+		return hostruntime.SessionStartResult{}, err
+	}
+	return hostruntime.SessionStartResult{SchemaVersion: hostruntime.SchemaVersion, ProtocolVersion: hostruntime.ProtocolVersion, BoxIdentity: identity, WorktreeRoot: request.WorktreeRoot, StartResult: result}, nil
+}
+
+func (r *Runtime) SessionLogs(ctx context.Context, request hostruntime.SessionLogsRequest) (hostruntime.SessionLogsResult, error) {
+	if err := hostruntime.ValidateSessionLogsRequest(request); err != nil {
+		return hostruntime.SessionLogsResult{}, err
+	}
+	manager, identity, err := r.sessionManager(request.BoxIdentity, request.WorktreeRoot)
+	if err != nil {
+		return hostruntime.SessionLogsResult{}, err
+	}
+	result, err := manager.Logs(ctx, request.SessionID, request.Lines)
+	if err != nil {
+		return hostruntime.SessionLogsResult{}, err
+	}
+	return hostruntime.SessionLogsResult{SchemaVersion: hostruntime.SchemaVersion, ProtocolVersion: hostruntime.ProtocolVersion, BoxIdentity: identity, WorktreeRoot: request.WorktreeRoot, LogsResult: result}, nil
+}
+
+func (r *Runtime) StopSession(ctx context.Context, request hostruntime.SessionTargetRequest) (hostruntime.SessionStopResult, error) {
+	if err := hostruntime.ValidateSessionTargetRequest(request); err != nil {
+		return hostruntime.SessionStopResult{}, err
+	}
+	manager, identity, err := r.sessionManager(request.BoxIdentity, request.WorktreeRoot)
+	if err != nil {
+		return hostruntime.SessionStopResult{}, err
+	}
+	result, err := manager.Stop(ctx, request.Selector)
+	if err != nil {
+		return hostruntime.SessionStopResult{}, err
+	}
+	return hostruntime.SessionStopResult{SchemaVersion: hostruntime.SchemaVersion, ProtocolVersion: hostruntime.ProtocolVersion, BoxIdentity: identity, WorktreeRoot: request.WorktreeRoot, StopResult: result}, nil
+}
+
+func (r *Runtime) ResumeSession(ctx context.Context, request hostruntime.SessionTargetRequest, terminal TerminalIO) (InteractiveResult, error) {
+	if err := hostruntime.ValidateSessionTargetRequest(request); err != nil {
+		return InteractiveResult{}, err
+	}
+	manager, _, err := r.sessionManager(request.BoxIdentity, request.WorktreeRoot)
+	if err != nil {
+		return InteractiveResult{}, err
+	}
+	attachment, err := manager.Attachment(ctx, request.Selector, session.InsideTmux())
+	if err != nil {
+		return InteractiveResult{}, err
+	}
+	return runInteractive(ctx, "", attachment.Path, attachment.Args, terminal)
+}
+
+func (r *Runtime) OpenWorktreeShell(ctx context.Context, request hostruntime.WorktreeShellRequest, terminal TerminalIO) (InteractiveResult, error) {
+	if err := hostruntime.ValidateWorktreeShellRequest(request); err != nil {
+		return InteractiveResult{}, err
+	}
+	if _, _, err := r.sessionManager(request.BoxIdentity, request.WorktreeRoot); err != nil {
+		return InteractiveResult{}, err
+	}
+	inspection, err := repository.Inspect(ctx, request.WorktreeRoot, request.Worktree)
+	if err != nil {
+		return InteractiveResult{}, err
+	}
+	home, err := r.home()
+	if err != nil {
+		return InteractiveResult{}, err
+	}
+	stateDirectory, err := repository.OperationStateDirectory(home)
+	if err != nil {
+		return InteractiveResult{}, err
+	}
+	lock, err := repository.AcquireWorktreeMutationLock(stateDirectory, inspection.Worktree.Path)
+	if err != nil {
+		return InteractiveResult{}, err
+	}
+	defer func() { _ = lock.Close() }()
+	inspection, err = repository.Inspect(ctx, request.WorktreeRoot, inspection.Worktree.Path)
+	if err != nil {
+		return InteractiveResult{}, err
+	}
+	shell := os.Getenv("SHELL")
+	if shell == "" || !filepath.IsAbs(shell) || filepath.Clean(shell) != shell || strings.ContainsAny(shell, "\x00\r\n") {
+		shell = "/bin/sh"
+	}
+	if info, statErr := os.Stat(shell); statErr != nil || !info.Mode().IsRegular() || info.Mode()&0o111 == 0 {
+		shell = "/bin/sh"
+	}
+	return runInteractive(ctx, inspection.Worktree.Path, shell, []string{"-i"}, terminal)
+}
+
+func (r *Runtime) sessionManager(expectedIdentity, expectedWorktreeRoot string) (*session.Service, string, error) {
+	identity, err := r.operationIdentity(expectedIdentity)
+	if err != nil {
+		return nil, "", err
+	}
+	configured, err := config.ReadDefault()
+	if err != nil {
+		return nil, "", err
+	}
+	if configured.WorktreeRoot != expectedWorktreeRoot {
+		return nil, "", &hostruntime.Error{Code: hostruntime.CodeConflict, Message: "configured Worktree Root does not match the Session request"}
+	}
+	home, err := r.home()
+	if err != nil {
+		return nil, "", err
+	}
+	stateDirectory, err := repository.OperationStateDirectory(home)
+	if err != nil {
+		return nil, "", err
+	}
+	manager, err := session.New(configured.WorktreeRoot, stateDirectory)
+	return manager, identity, err
+}
+
+func runInteractive(ctx context.Context, directory, name string, args []string, terminal TerminalIO) (InteractiveResult, error) {
+	exitCode, err := process.RunInteractive(ctx, directory, name, args, terminal.In, terminal.Out, terminal.Err)
+	return InteractiveResult{ExitCode: exitCode}, err
 }
 
 func (r *Runtime) lifecycle(expectedIdentity, expectedWorktreeRoot string, nonInteractive bool) (*repository.Lifecycle, string, error) {

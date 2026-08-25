@@ -108,6 +108,22 @@ printf 'native diagnostic' >&2
 	}
 }
 
+func TestInteractiveHostCommandAllocatesTTYAndPreservesTerminal(t *testing.T) {
+	path := writeExecutable(t, `#!/bin/sh
+IFS= read -r input
+printf 'input=%s args=%s' "$input" "$*"
+`)
+	runtime := New(path, nil)
+	var stdout bytes.Buffer
+	result, err := runtime.openInteractiveCommand(t.Context(), box.Connection{Destination: "work", BatchMode: true}, "fixed-command", TerminalIO{In: strings.NewReader("hello\n"), Out: &stdout})
+	if err != nil || result.ExitCode != 0 {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	if got := stdout.String(); got != "input=hello args=-o BatchMode=yes -t work fixed-command" {
+		t.Fatalf("stdout=%q", got)
+	}
+}
+
 func TestOpenShellReturnsRemoteAndConnectionExitStatuses(t *testing.T) {
 	t.Run("remote shell", func(t *testing.T) {
 		runtime := New(writeExecutable(t, "#!/bin/sh\nexit 42\n"), nil)

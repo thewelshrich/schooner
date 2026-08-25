@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"github.com/thewelshrich/schooner/internal/box"
 	"github.com/thewelshrich/schooner/internal/repository"
 	hostruntime "github.com/thewelshrich/schooner/internal/runtime"
+	"github.com/thewelshrich/schooner/internal/runtime/host"
 )
 
 func newHostCommand(streams Streams, options *globalOptions) *cobra.Command {
@@ -124,6 +126,85 @@ func newHostCommand(streams Streams, options *globalOptions) *cobra.Command {
 			},
 		},
 	)
+	worktree.AddCommand(&cobra.Command{
+		Use: "shell <request>", Args: cobra.ExactArgs(1), SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			var request hostruntime.WorktreeShellRequest
+			if err := decodeInteractiveHostRequest(args[0], &request); err != nil {
+				return usageError{cause: err}
+			}
+			result, err := runtime.OpenWorktreeShell(cmd.Context(), request, host.TerminalIO{In: streams.In, Out: streams.Out, Err: streams.Err})
+			if err != nil {
+				return executionError{cause: err}
+			}
+			if result.ExitCode != 0 {
+				return exitStatusError{code: result.ExitCode}
+			}
+			return nil
+		},
+	})
+	sessions := &cobra.Command{Use: "session", Hidden: true, Args: cobra.NoArgs, RunE: helpRun}
+	sessions.AddCommand(
+		&cobra.Command{Use: "list", Args: cobra.NoArgs, SilenceUsage: true, RunE: func(cmd *cobra.Command, _ []string) error {
+			var request hostruntime.SessionListRequest
+			if err := readRequiredHostRequest(streams, &request); err != nil {
+				return executionError{cause: err}
+			}
+			result, err := runtime.ListSessions(cmd.Context(), request)
+			if err != nil {
+				return encodeLifecycleError(cmd.OutOrStdout(), request.BoxIdentity, err)
+			}
+			return encodeHostResult(cmd.OutOrStdout(), result)
+		}},
+		&cobra.Command{Use: "start", Args: cobra.NoArgs, SilenceUsage: true, RunE: func(cmd *cobra.Command, _ []string) error {
+			var request hostruntime.SessionStartRequest
+			if err := readRequiredHostRequest(streams, &request); err != nil {
+				return executionError{cause: err}
+			}
+			result, err := runtime.StartSession(cmd.Context(), request)
+			if err != nil {
+				return encodeLifecycleError(cmd.OutOrStdout(), request.BoxIdentity, err)
+			}
+			return encodeHostResult(cmd.OutOrStdout(), result)
+		}},
+		&cobra.Command{Use: "logs", Args: cobra.NoArgs, SilenceUsage: true, RunE: func(cmd *cobra.Command, _ []string) error {
+			var request hostruntime.SessionLogsRequest
+			if err := readRequiredHostRequest(streams, &request); err != nil {
+				return executionError{cause: err}
+			}
+			result, err := runtime.SessionLogs(cmd.Context(), request)
+			if err != nil {
+				return encodeLifecycleError(cmd.OutOrStdout(), request.BoxIdentity, err)
+			}
+			return encodeHostResult(cmd.OutOrStdout(), result)
+		}},
+		&cobra.Command{Use: "stop", Args: cobra.NoArgs, SilenceUsage: true, RunE: func(cmd *cobra.Command, _ []string) error {
+			var request hostruntime.SessionTargetRequest
+			if err := readRequiredHostRequest(streams, &request); err != nil {
+				return executionError{cause: err}
+			}
+			result, err := runtime.StopSession(cmd.Context(), request)
+			if err != nil {
+				return encodeLifecycleError(cmd.OutOrStdout(), request.BoxIdentity, err)
+			}
+			return encodeHostResult(cmd.OutOrStdout(), result)
+		}},
+		&cobra.Command{Use: "resume <request>", Args: cobra.ExactArgs(1), SilenceUsage: true, RunE: func(cmd *cobra.Command, args []string) error {
+			var request hostruntime.SessionTargetRequest
+			if err := decodeInteractiveHostRequest(args[0], &request); err != nil {
+				return usageError{cause: err}
+			}
+			result, err := runtime.ResumeSession(cmd.Context(), request, host.TerminalIO{In: streams.In, Out: streams.Out, Err: streams.Err})
+			if err != nil {
+				return executionError{cause: err}
+			}
+			if result.ExitCode != 0 {
+				return exitStatusError{code: result.ExitCode}
+			}
+			return nil
+		}},
+	)
+	cmd.AddCommand(sessions)
 	cmd.AddCommand(worktree)
 	repositoryCommand := &cobra.Command{Use: "repository", Hidden: true, Args: cobra.NoArgs, RunE: helpRun}
 	repositoryCommand.AddCommand(&cobra.Command{
@@ -190,6 +271,20 @@ func newHostCommand(streams Streams, options *globalOptions) *cobra.Command {
 		},
 	)
 	return cmd
+}
+
+func decodeInteractiveHostRequest(value string, target any) error {
+	if value == "" || len(value) > 16<<10 {
+		return fmt.Errorf("interactive host request is invalid")
+	}
+	decoded, err := base64.RawURLEncoding.DecodeString(value)
+	if err != nil {
+		return fmt.Errorf("decode interactive host request: %w", err)
+	}
+	if err = hostruntime.DecodeStrict(decoded, target); err != nil {
+		return fmt.Errorf("decode interactive host request: %w", err)
+	}
+	return nil
 }
 
 func encodeLifecycleError(writer io.Writer, identity string, err error) error {

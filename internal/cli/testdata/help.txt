@@ -11,7 +11,13 @@ Available Commands:
   db          Manage local Schooner database state
   doctor      Check this machine for Schooner readiness
   help        Help about any command
+  logs        Capture bounded history from a managed Session
   provider    Manage cloud provider credential profiles
+  resume      Resume an existing persistent Session
+  sessions    List live managed and unmanaged tmux Sessions
+  shell       Open an ephemeral shell in a live Worktree
+  start       Start or reuse a persistent Worktree Session
+  stop        Stop a managed Session without changing its Worktree
   version     Show Schooner build information
   worktree    Discover and inspect live Git worktrees
 

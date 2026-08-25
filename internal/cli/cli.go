@@ -144,6 +144,7 @@ func newRootCommand(build BuildInfo, streams Streams, options *globalOptions) *c
 	root.AddCommand(newBoxCommand(streams, options))
 	root.AddCommand(newCloneCommand(streams, options))
 	root.AddCommand(newWorktreeCommand(streams, options))
+	root.AddCommand(newSessionCommands(streams, options)...)
 	return root
 }
 
