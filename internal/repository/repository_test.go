@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -119,6 +120,12 @@ func TestInspectRequiresExactConfinedPath(t *testing.T) {
 			t.Fatalf("Inspect(%q) succeeded", selector)
 		}
 	}
+	if err := os.Symlink(repositoryPath, filepath.Join(root, "alias")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Inspect(t.Context(), root, "alias"); err == nil {
+		t.Fatal("relative symlink selector succeeded")
+	}
 }
 
 func TestInspectAcceptsDotForWorktreeAtConfiguredRoot(t *testing.T) {
@@ -196,6 +203,57 @@ func TestDiscoverBoundsWarningsAndHonorsCancellation(t *testing.T) {
 	cancel()
 	if _, err := Discover(ctx, root); !errorsIsCanceled(err) {
 		t.Fatalf("cancel error = %v", err)
+	}
+}
+
+func TestWalkCandidatesBoundsVisitedEntries(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{"a", "b", "c", "d"} {
+		mustWrite(t, filepath.Join(root, name), name)
+	}
+	candidates, warnings, err := walkCandidatesBounded(t.Context(), root, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 0 || len(warnings) != 1 || !strings.Contains(warnings[0].Message, "filesystem entry limit") {
+		t.Fatalf("candidates = %v, warnings = %+v", candidates, warnings)
+	}
+}
+
+func TestSanitizeOriginRemovesUserInfoFromEveryURI(t *testing.T) {
+	if got := sanitizeOrigin("ssh://alice:secret@example.com/owner/repo.git?token=x#fragment"); got != "ssh://example.com/owner/repo" {
+		t.Fatalf("origin = %q", got)
+	}
+}
+
+func TestBoundCatalogFitsRemoteMessageBudget(t *testing.T) {
+	catalog := Catalog{WorktreeRoot: "/root", Repositories: []Repository{{CommonDirectory: "/common", Linked: []Worktree{}}}, Warnings: []Warning{}}
+	for index := 0; index < 500; index++ {
+		path := "/root/" + strings.Repeat("x", 2_000) + fmtInt(index)
+		catalog.Repositories[0].Linked = append(catalog.Repositories[0].Linked, Worktree{Path: path, RelativePath: path, GitDirectory: path + "/.git", Kind: Linked})
+	}
+	boundCatalog(&catalog)
+	encoded, err := json.Marshal(catalog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(encoded) > maxCatalogBytes || len(catalog.Repositories) == 0 || len(catalog.Repositories[0].Linked) >= 500 {
+		t.Fatalf("encoded bytes = %d, catalog repositories = %d", len(encoded), len(catalog.Repositories))
+	}
+	if len(catalog.Warnings) != 1 || !strings.Contains(catalog.Warnings[0].Message, "catalog output limit") {
+		t.Fatalf("warnings = %+v", catalog.Warnings)
+	}
+}
+
+func TestBoundCatalogDropsOversizedWarningDetails(t *testing.T) {
+	catalog := Catalog{WorktreeRoot: "/root", Repositories: []Repository{}, Warnings: []Warning{{Path: "/root/repo", Message: strings.Repeat("x", maxCatalogBytes)}}}
+	boundCatalog(&catalog)
+	encoded, err := json.Marshal(catalog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(encoded) > maxCatalogBytes || len(catalog.Warnings) != 1 || !strings.Contains(catalog.Warnings[0].Message, "catalog output limit") {
+		t.Fatalf("encoded bytes = %d, warnings = %+v", len(encoded), catalog.Warnings)
 	}
 }
 

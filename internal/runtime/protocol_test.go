@@ -19,7 +19,7 @@ func TestValidateHelloNegotiatesProtocolCapabilitiesAndIdentity(t *testing.T) {
 		Architecture:    "amd64",
 		Capabilities:    Capabilities(),
 	}
-	if err := ValidateHello(hello, testIdentity, CapabilityHelloV1, CapabilityInspectV1); err != nil {
+	if err := ValidateHello(hello, testIdentity, CapabilityHelloV1, CapabilityInspectV2); err != nil {
 		t.Fatal(err)
 	}
 
@@ -29,7 +29,7 @@ func TestValidateHelloNegotiatesProtocolCapabilitiesAndIdentity(t *testing.T) {
 	}
 	hello.ProtocolVersion = ProtocolVersion
 	hello.Capabilities = []string{CapabilityHelloV1}
-	if err := ValidateHello(hello, testIdentity, CapabilityInspectV1); ErrorCode(err) != CodeCapabilityUnavailable {
+	if err := ValidateHello(hello, testIdentity, CapabilityInspectV2); ErrorCode(err) != CodeCapabilityUnavailable {
 		t.Fatalf("capability error = %v", err)
 	}
 	hello.Capabilities = Capabilities()

@@ -278,7 +278,7 @@ func testService(runtime Runtime, store Inventory) *Service {
 }
 
 func readyCapabilities() Capabilities {
-	return Capabilities{OSID: "ubuntu", OSVersion: "24.04", Architecture: "amd64", Home: "/home/alice", WorktreeRoot: "/home/alice/schooner", WorktreeRootExists: true, Git: Tool{Available: true, Version: "git version 2.43.0"}, Tmux: Tool{Available: true, Version: "tmux 3.4"}, PasswordlessSudo: true, Host: HostRuntime{Path: "/home/alice/.local/bin/schooner", Version: "v1.2.3", ProtocolVersion: "1", Capabilities: []string{"host.configure.v1", "host.doctor.v1", "host.hello.v1", "host.inspect.v1", "worktree.inspect.v1", "worktree.list.v1"}}}
+	return Capabilities{OSID: "ubuntu", OSVersion: "24.04", Architecture: "amd64", Home: "/home/alice", WorktreeRoot: "/home/alice/schooner", WorktreeRootExists: true, Git: Tool{Available: true, Version: "git version 2.43.0"}, Tmux: Tool{Available: true, Version: "tmux 3.4"}, PasswordlessSudo: true, Host: HostRuntime{Path: "/home/alice/.local/bin/schooner", Version: "v1.2.3", ProtocolVersion: "1", Capabilities: []string{"host.configure.v1", "host.doctor.v1", "host.hello.v1", "host.inspect.v2", "worktree.inspect.v1", "worktree.list.v1"}}}
 }
 
 type fakeRuntime struct {
@@ -316,7 +316,7 @@ func (f *fakeRuntime) EnsureHost(_ context.Context, _ Connection, request HostIn
 	f.calls++
 	f.ensureHostCalls++
 	f.ensured = request
-	f.capabilities.Host = HostRuntime{Path: request.Path, Version: "v1.2.3", ProtocolVersion: "1", Capabilities: []string{"host.configure.v1", "host.doctor.v1", "host.hello.v1", "host.inspect.v1", "worktree.inspect.v1", "worktree.list.v1"}}
+	f.capabilities.Host = HostRuntime{Path: request.Path, Version: "v1.2.3", ProtocolVersion: "1", Capabilities: []string{"host.configure.v1", "host.doctor.v1", "host.hello.v1", "host.inspect.v2", "worktree.inspect.v1", "worktree.list.v1"}}
 	return HostInstallResult{Runtime: f.capabilities.Host, TargetVersion: "v1.2.3", Action: HostReused}, nil
 }
 func (f *fakeRuntime) InspectHost(_ context.Context, _ Connection, installed HostRuntime, _ string, _ string) (Capabilities, error) {
@@ -326,7 +326,7 @@ func (f *fakeRuntime) InspectHost(_ context.Context, _ Connection, installed Hos
 	if f.capabilities.Host.Version == "" {
 		f.capabilities.Host.Version = "v1.2.3"
 		f.capabilities.Host.ProtocolVersion = "1"
-		f.capabilities.Host.Capabilities = []string{"host.configure.v1", "host.doctor.v1", "host.hello.v1", "host.inspect.v1", "worktree.inspect.v1", "worktree.list.v1"}
+		f.capabilities.Host.Capabilities = []string{"host.configure.v1", "host.doctor.v1", "host.hello.v1", "host.inspect.v2", "worktree.inspect.v1", "worktree.list.v1"}
 	}
 	if len(f.inspectHostErrors) > 0 {
 		err := f.inspectHostErrors[0]

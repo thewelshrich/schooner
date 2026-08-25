@@ -48,6 +48,21 @@ func TestEnsureHostInstallsReusesAndInspectsTypedRuntime(t *testing.T) {
 	}
 }
 
+func TestInspectHostRejectsPreWorktreeInspectionCapabilityBeforeRequest(t *testing.T) {
+	testRemoteShell(t)
+	target := filepath.Join(t.TempDir(), "host-runtime")
+	artifact := writeHostArtifactAt(t, target, "v1.2.3", "1", "amd64")
+	legacy := strings.ReplaceAll(artifact.contents, "host.inspect.v2", "host.inspect.v1")
+	if err := os.WriteFile(target, []byte(legacy), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runtime := NewHost(testSSHExecutable(t), nil, "v1.2.3", nil)
+	_, err := runtime.InspectHost(t.Context(), box.Connection{Destination: "trusted-host", BatchMode: true}, box.HostRuntime{Path: target}, "/home/alice/schooner", hostTestIdentity)
+	if box.ErrorCode(err) != "host_runtime_incompatible" || !strings.Contains(err.Error(), "box update") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 func TestEnsureHostInstallsArm64Artifact(t *testing.T) {
 	testRemoteShell(t)
 	root := t.TempDir()
@@ -455,7 +470,7 @@ func writeHostArtifactAtIdentity(t *testing.T, target, version, protocol, archit
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	hello := fmt.Sprintf(`{"schema_version":"1","protocol_version":%q,"schooner_version":%q,"commit":"abc123","box_identity":%q,"os":"linux","architecture":%q,"capabilities":["host.configure.v1","host.doctor.v1","host.hello.v1","host.inspect.v1","worktree.inspect.v1","worktree.list.v1"]}`, protocol, version, identity, architecture)
+	hello := fmt.Sprintf(`{"schema_version":"1","protocol_version":%q,"schooner_version":%q,"commit":"abc123","box_identity":%q,"os":"linux","architecture":%q,"capabilities":["host.configure.v1","host.doctor.v1","host.hello.v1","host.inspect.v2","worktree.inspect.v1","worktree.list.v1"]}`, protocol, version, identity, architecture)
 	inspection := fmt.Sprintf(`{"schema_version":"1","protocol_version":"1","os_id":"ubuntu","os_version":"24.04","architecture":%q,"home":"/home/alice","box_identity":%q,"worktree_root":"/home/alice/schooner","worktree_root_exists":true,"git":{"available":true,"version":"git version 2.43.0"},"tmux":{"available":true,"version":"tmux 3.4"},"passwordless_sudo":true}`, architecture, identity)
 	versionDocument := fmt.Sprintf(`{"schema_version":"1","version":%q,"commit":"abc123","built_at":null,"go_version":"go1.27.0","os":"linux","arch":%q}`, version, architecture)
 	contents := "#!/bin/sh\ncase \"$1 $2 $3\" in\n  'host hello '*) printf '%s\\n' '" + hello + "' ;;\n  'host inspect '*) cat >/dev/null; printf '%s\\n' '" + inspection + "' ;;\n  '--output json version') printf '%s\\n' '" + versionDocument + "' ;;\n  *) exit 64 ;;\nesac\n"

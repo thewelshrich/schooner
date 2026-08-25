@@ -208,7 +208,10 @@ func (r *Runtime) InspectHost(ctx context.Context, connection box.Connection, in
 	if err = validateInstalledHello(hello, expectedIdentity); err != nil {
 		return box.Capabilities{}, protocolError(err)
 	}
-	if err = hostruntime.ValidateHello(hello, expectedIdentity, hostruntime.CapabilityInspectV1); err != nil {
+	if err = hostruntime.ValidateHello(hello, expectedIdentity, hostruntime.CapabilityInspectV2); err != nil {
+		if hostruntime.ErrorCode(err) == hostruntime.CodeCapabilityUnavailable {
+			return box.Capabilities{}, box.NewError("host_runtime_incompatible", "the host runtime lacks required inspection support; run box update", err)
+		}
 		return box.Capabilities{}, protocolError(err)
 	}
 

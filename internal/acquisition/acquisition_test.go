@@ -157,7 +157,7 @@ func (f *testRuntime) EnsureIdentity(_ context.Context, connection box.Connectio
 }
 func (f *testRuntime) EnsureHost(_ context.Context, connection box.Connection, request box.HostInstallRequest) (box.HostInstallResult, error) {
 	f.connection = connection
-	f.capabilities.Host = box.HostRuntime{Path: request.Path, Version: "v1.2.3", ProtocolVersion: "1", Capabilities: []string{"host.configure.v1", "host.doctor.v1", "host.hello.v1", "host.inspect.v1", "worktree.inspect.v1", "worktree.list.v1"}}
+	f.capabilities.Host = box.HostRuntime{Path: request.Path, Version: "v1.2.3", ProtocolVersion: "1", Capabilities: []string{"host.configure.v1", "host.doctor.v1", "host.hello.v1", "host.inspect.v2", "worktree.inspect.v1", "worktree.list.v1"}}
 	return box.HostInstallResult{Runtime: f.capabilities.Host, TargetVersion: "v1.2.3", Action: box.HostInstalled}, nil
 }
 func (f *testRuntime) InspectHost(_ context.Context, connection box.Connection, installed box.HostRuntime, _ string, _ string) (box.Capabilities, error) {

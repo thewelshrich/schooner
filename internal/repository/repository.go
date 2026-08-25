@@ -4,6 +4,7 @@ package repository
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -16,10 +17,12 @@ import (
 )
 
 const (
-	maxDepth       = 8
-	maxCandidates  = 500
-	maxWarnings    = 100
-	maxOutputBytes = 1 << 20
+	maxDepth        = 8
+	maxCandidates   = 500
+	maxVisited      = 10_000
+	maxWarnings     = 100
+	maxOutputBytes  = 1 << 20
+	maxCatalogBytes = 3 << 18
 )
 
 type WorktreeKind string
@@ -138,6 +141,7 @@ func discover(ctx context.Context, root string, commands runner) (Catalog, error
 	sort.Slice(result.Repositories, func(i, j int) bool {
 		return firstPath(result.Repositories[i]) < firstPath(result.Repositories[j])
 	})
+	boundCatalog(&result)
 	return result, nil
 }
 
@@ -178,26 +182,49 @@ func inspect(ctx context.Context, root, selector string, commands runner) (Inspe
 	if err != nil {
 		return Inspection{}, fmt.Errorf("revalidate worktree %q: %w", selector, err)
 	}
+	selectedPresent := false
 	if repository.Primary != nil && repository.Primary.Path == latest.worktree.Path {
 		copy := latest.worktree
 		repository.Primary = &copy
+		selectedPresent = true
 	}
 	for index := range repository.Linked {
 		if repository.Linked[index].Path == latest.worktree.Path {
 			repository.Linked[index] = latest.worktree
+			selectedPresent = true
+		}
+	}
+	if !selectedPresent {
+		if latest.worktree.Kind == Primary {
+			copy := latest.worktree
+			repository.Primary = &copy
+		} else {
+			repository.Linked = append(repository.Linked, latest.worktree)
+			sort.Slice(repository.Linked, func(i, j int) bool { return repository.Linked[i].RelativePath < repository.Linked[j].RelativePath })
 		}
 	}
 	return Inspection{WorktreeRoot: canonicalRoot, Repository: repository, Worktree: latest.worktree}, nil
 }
 
 func walkCandidates(ctx context.Context, root string) ([]string, []Warning, error) {
+	return walkCandidatesBounded(ctx, root, maxVisited)
+}
+
+func walkCandidatesBounded(ctx context.Context, root string, visitLimit int) ([]string, []Warning, error) {
 	candidates := make([]string, 0)
 	warnings := make([]Warning, 0)
-	errLimit := errors.New("candidate limit reached")
+	errCandidateLimit := errors.New("candidate limit reached")
+	errVisitLimit := errors.New("filesystem entry limit reached")
+	visited := 0
 	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+		if visited == visitLimit {
+			appendWarning(&warnings, root, fmt.Sprintf("filesystem entry limit of %d reached", visitLimit))
+			return errVisitLimit
+		}
+		visited++
 		if walkErr != nil {
 			appendWarning(&warnings, path, walkErr.Error())
 			if entry == nil || entry.IsDir() {
@@ -235,7 +262,7 @@ func walkCandidates(ctx context.Context, root string) ([]string, []Warning, erro
 			if info.IsDir() || info.Mode().IsRegular() {
 				if len(candidates) == maxCandidates {
 					appendWarning(&warnings, root, fmt.Sprintf("checkout candidate limit of %d reached", maxCandidates))
-					return errLimit
+					return errCandidateLimit
 				}
 				candidates = append(candidates, path)
 				return filepath.SkipDir
@@ -246,7 +273,7 @@ func walkCandidates(ctx context.Context, root string) ([]string, []Warning, erro
 		}
 		return nil
 	})
-	if errors.Is(err, errLimit) {
+	if errors.Is(err, errCandidateLimit) || errors.Is(err, errVisitLimit) {
 		err = nil
 	}
 	return candidates, warnings, err
@@ -457,8 +484,8 @@ func resolveSelector(root, selector string) (string, error) {
 	if !within(root, canonical) {
 		return "", fmt.Errorf("worktree selector escapes configured root")
 	}
-	if filepath.IsAbs(selector) && canonical != target {
-		return "", fmt.Errorf("absolute worktree selector must be canonical")
+	if canonical != target {
+		return "", fmt.Errorf("worktree selector must not resolve through symlinks")
 	}
 	return canonical, nil
 }
@@ -507,9 +534,7 @@ func sanitizeOrigin(raw string) string {
 		return ""
 	}
 	if parsed, err := url.Parse(raw); err == nil && parsed.Scheme != "" {
-		if parsed.Scheme == "http" || parsed.Scheme == "https" {
-			parsed.User = nil
-		}
+		parsed.User = nil
 		parsed.RawQuery = ""
 		parsed.Fragment = ""
 		parsed.Path = strings.TrimSuffix(parsed.Path, ".git")
@@ -519,6 +544,43 @@ func sanitizeOrigin(raw string) string {
 		raw = raw[:index]
 	}
 	return strings.TrimSuffix(raw, ".git")
+}
+
+func boundCatalog(catalog *Catalog) {
+	encoded, err := json.Marshal(catalog)
+	if err != nil || len(encoded) <= maxCatalogBytes {
+		return
+	}
+	limitWarning := Warning{Path: catalog.WorktreeRoot, Message: fmt.Sprintf("catalog output limit of %d bytes reached", maxCatalogBytes)}
+	appendCatalogWarning(catalog, limitWarning)
+	for len(catalog.Repositories) != 0 {
+		last := len(catalog.Repositories) - 1
+		repository := &catalog.Repositories[last]
+		switch {
+		case len(repository.Linked) != 0:
+			repository.Linked = repository.Linked[:len(repository.Linked)-1]
+		case repository.Primary != nil:
+			repository.Primary = nil
+		default:
+			catalog.Repositories = catalog.Repositories[:last]
+		}
+		if repository.Primary == nil && len(repository.Linked) == 0 && last < len(catalog.Repositories) {
+			catalog.Repositories = catalog.Repositories[:last]
+		}
+		encoded, err = json.Marshal(catalog)
+		if err == nil && len(encoded) <= maxCatalogBytes {
+			return
+		}
+	}
+	catalog.Warnings = []Warning{limitWarning}
+}
+
+func appendCatalogWarning(catalog *Catalog, warning Warning) {
+	if len(catalog.Warnings) < maxWarnings {
+		catalog.Warnings = append(catalog.Warnings, warning)
+		return
+	}
+	catalog.Warnings[len(catalog.Warnings)-1] = warning
 }
 
 func appendWarning(warnings *[]Warning, path, message string) {

@@ -21,7 +21,7 @@ const (
 	MaxMessageBytes = 1 << 20
 
 	CapabilityHelloV1           = "host.hello.v1"
-	CapabilityInspectV1         = "host.inspect.v1"
+	CapabilityInspectV2         = "host.inspect.v2"
 	CapabilityDoctorV1          = "host.doctor.v1"
 	CapabilityConfigureV1       = "host.configure.v1"
 	CapabilityWorktreeListV1    = "worktree.list.v1"
@@ -147,7 +147,7 @@ type DoctorReport struct {
 }
 
 func Capabilities() []string {
-	result := []string{CapabilityConfigureV1, CapabilityDoctorV1, CapabilityHelloV1, CapabilityInspectV1, CapabilityWorktreeInspectV1, CapabilityWorktreeListV1}
+	result := []string{CapabilityConfigureV1, CapabilityDoctorV1, CapabilityHelloV1, CapabilityInspectV2, CapabilityWorktreeInspectV1, CapabilityWorktreeListV1}
 	slices.Sort(result)
 	return result
 }

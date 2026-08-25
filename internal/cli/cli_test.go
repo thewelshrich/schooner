@@ -936,7 +936,7 @@ case " $* " in
   *" -G "*) exit 0 ;;
 esac
 state="$HOME/fake-host-installed"
-hello='{"schema_version":"1","protocol_version":"1","schooner_version":"v0.1.0-test","commit":"abc1234","box_identity":"11111111-1111-4111-8111-111111111111","os":"linux","architecture":"amd64","capabilities":["host.configure.v1","host.doctor.v1","host.hello.v1","host.inspect.v1","worktree.inspect.v1","worktree.list.v1"]}'
+hello='{"schema_version":"1","protocol_version":"1","schooner_version":"v0.1.0-test","commit":"abc1234","box_identity":"11111111-1111-4111-8111-111111111111","os":"linux","architecture":"amd64","capabilities":["host.configure.v1","host.doctor.v1","host.hello.v1","host.inspect.v2","worktree.inspect.v1","worktree.list.v1"]}'
 inspection='{"schema_version":"1","protocol_version":"1","os_id":"ubuntu","os_version":"24.04","architecture":"amd64","home":"/home/alice","box_identity":"11111111-1111-4111-8111-111111111111","worktree_root":"/home/alice/schooner","worktree_root_exists":true,"git":{"available":true,"version":"git version 2.43.0"},"tmux":{"available":true,"version":"tmux 3.4"},"passwordless_sudo":true}'
 case " $* " in
   *"host hello"*)

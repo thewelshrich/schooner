@@ -31,7 +31,7 @@ func TestStoreLifecycleAndMigrationHistory(t *testing.T) {
 		t.Fatalf("CheckpointAdd() error = %v", err)
 	}
 	record := box.Record{ID: "box-1", Name: "work", Acquisition: "adopted", SSHDestination: "work-host", RemoteIdentity: "remote-1", RuntimePath: "/home/alice/.local/bin/schooner", WorktreeRoot: "/home/alice/schooner", CreatedAt: now, UpdatedAt: now}
-	observation := box.Observation{BoxID: record.ID, ObservedAt: now, Capabilities: box.Capabilities{OSID: "ubuntu", OSVersion: "24.04", Architecture: "amd64", Home: "/home/alice", RemoteIdentity: "remote-1", Git: box.Tool{Available: true, Version: "git version 2.43.0"}, Tmux: box.Tool{Available: true, Version: "tmux 3.4"}, PasswordlessSudo: true, Host: box.HostRuntime{Path: record.RuntimePath, Version: "v1.2.3", ProtocolVersion: "1", Capabilities: []string{"host.inspect.v1", "host.hello.v1"}}}}
+	observation := box.Observation{BoxID: record.ID, ObservedAt: now, Capabilities: box.Capabilities{OSID: "ubuntu", OSVersion: "24.04", Architecture: "amd64", Home: "/home/alice", RemoteIdentity: "remote-1", Git: box.Tool{Available: true, Version: "git version 2.43.0"}, Tmux: box.Tool{Available: true, Version: "tmux 3.4"}, PasswordlessSudo: true, Host: box.HostRuntime{Path: record.RuntimePath, Version: "v1.2.3", ProtocolVersion: "1", Capabilities: []string{"host.inspect.v2", "host.hello.v1"}}}}
 	if err = store.CompleteAdd(t.Context(), op, record, observation); err != nil {
 		t.Fatalf("CompleteAdd() error = %v", err)
 	}
