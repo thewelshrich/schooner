@@ -42,6 +42,7 @@ const (
 	CodeUnsupportedProtocol   Code = "unsupported_protocol"
 	CodeCapabilityUnavailable Code = "capability_unavailable"
 	CodeNotFound              Code = "not_found"
+	CodeInvalidInput          Code = "invalid_input"
 )
 
 type Error struct {
@@ -206,7 +207,7 @@ func DecodeOperationError(data []byte, expectedIdentity string) (OperationError,
 	if result.BoxIdentity != expectedIdentity || !identityPattern.MatchString(result.BoxIdentity) {
 		return OperationError{}, true, &Error{Code: CodeInvalidIdentity, Message: "host operation error Box identity is invalid"}
 	}
-	if result.Error.Code != CodeNotFound || result.Error.Message == "" || strings.ContainsAny(result.Error.Message, "\x00\r\n") {
+	if (result.Error.Code != CodeNotFound && result.Error.Code != CodeInvalidInput) || result.Error.Message == "" || strings.ContainsAny(result.Error.Message, "\x00\r\n") {
 		return OperationError{}, true, &Error{Code: CodeInvalidMessage, Message: "host operation error is invalid"}
 	}
 	return result, true, nil

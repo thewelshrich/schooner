@@ -96,3 +96,11 @@ func TestPublicRepositoryErrorMapsNotFound(t *testing.T) {
 		t.Fatalf("error = %v, code = %s", err, box.ErrorCode(err))
 	}
 }
+
+func TestPublicRepositoryErrorMapsInvalidInput(t *testing.T) {
+	cause := &repository.Error{Code: repository.CodeInvalidInput, Message: "worktree selector must be canonical"}
+	err := publicRepositoryError(cause)
+	if box.ErrorCode(err) != "invalid_input" {
+		t.Fatalf("error = %v, code = %s", err, box.ErrorCode(err))
+	}
+}

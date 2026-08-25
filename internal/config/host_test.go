@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"os/user"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -12,8 +13,12 @@ func TestPathPrecedence(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", "")
 	t.Setenv("SCHOONER_CONFIG", "")
+	current, err := user.Current()
+	if err != nil {
+		t.Fatal(err)
+	}
 	path, err := Path()
-	if err != nil || path != filepath.Join(home, ".config", "schooner", "config.toml") {
+	if err != nil || path != filepath.Join(current.HomeDir, ".config", "schooner", "config.toml") {
 		t.Fatalf("Path() = %q, %v", path, err)
 	}
 	xdg := filepath.Join(home, "xdg")

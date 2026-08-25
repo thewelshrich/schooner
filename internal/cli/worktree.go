@@ -186,6 +186,9 @@ func publicRepositoryError(err error) error {
 	if repository.ErrorCode(err) == repository.CodeNotFound {
 		return box.NewError("not_found", err.Error(), err)
 	}
+	if repository.ErrorCode(err) == repository.CodeInvalidInput {
+		return box.NewError("invalid_input", err.Error(), err)
+	}
 	return err
 }
 

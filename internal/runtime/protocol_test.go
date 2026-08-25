@@ -108,3 +108,15 @@ func TestDecodeOperationErrorPreservesTypedNotFound(t *testing.T) {
 		t.Fatalf("success probe present = %t, err = %v", present, err)
 	}
 }
+
+func TestDecodeOperationErrorPreservesInvalidInput(t *testing.T) {
+	document := NewOperationError(testIdentity, CodeInvalidInput, "worktree selector must be canonical")
+	encoded, err := json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, present, err := DecodeOperationError(encoded, testIdentity)
+	if err != nil || !present || decoded.Error.Code != CodeInvalidInput {
+		t.Fatalf("decoded = %+v, present = %t, err = %v", decoded, present, err)
+	}
+}

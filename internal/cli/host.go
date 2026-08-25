@@ -108,8 +108,11 @@ func newHostCommand(streams Streams, options *globalOptions) *cobra.Command {
 				}
 				result, err := runtime.InspectWorktree(cmd.Context(), request)
 				if err != nil {
-					if repository.ErrorCode(err) == repository.CodeNotFound {
+					switch repository.ErrorCode(err) {
+					case repository.CodeNotFound:
 						return encodeHostResult(cmd.OutOrStdout(), hostruntime.NewOperationError(request.BoxIdentity, hostruntime.CodeNotFound, err.Error()))
+					case repository.CodeInvalidInput:
+						return encodeHostResult(cmd.OutOrStdout(), hostruntime.NewOperationError(request.BoxIdentity, hostruntime.CodeInvalidInput, err.Error()))
 					}
 					return executionError{cause: err}
 				}

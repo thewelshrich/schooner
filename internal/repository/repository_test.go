@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestDiscoverGroupsPrimaryAndLinkedWorktreesFromGit(t *testing.T) {
@@ -199,16 +200,19 @@ func TestInspectRequiresExactConfinedPath(t *testing.T) {
 			t.Fatal("non-canonical absolute selector succeeded")
 		}
 	}
-	for _, selector := range []string{"repo", "owner/../owner/repo", "../outside", repositoryPath + string(filepath.Separator) + ".." + string(filepath.Separator) + "repo"} {
-		if _, err := Inspect(t.Context(), root, selector); err == nil {
-			t.Fatalf("Inspect(%q) succeeded", selector)
+	if _, err := Inspect(t.Context(), root, "repo"); ErrorCode(err) != CodeNotFound {
+		t.Fatalf("Inspect missing basename error = %v, code = %q", err, ErrorCode(err))
+	}
+	for _, selector := range []string{"owner/../owner/repo", "../outside", repositoryPath + string(filepath.Separator) + ".." + string(filepath.Separator) + "repo"} {
+		if _, err := Inspect(t.Context(), root, selector); ErrorCode(err) != CodeInvalidInput {
+			t.Fatalf("Inspect(%q) error = %v, code = %q", selector, err, ErrorCode(err))
 		}
 	}
 	if err := os.Symlink(repositoryPath, filepath.Join(root, "alias")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Inspect(t.Context(), root, "alias"); err == nil {
-		t.Fatal("relative symlink selector succeeded")
+	if _, err := Inspect(t.Context(), root, "alias"); ErrorCode(err) != CodeInvalidInput {
+		t.Fatalf("relative symlink selector error = %v, code = %q", err, ErrorCode(err))
 	}
 }
 
@@ -401,6 +405,14 @@ func TestGitDisablesOptionalLocksAndFSMonitor(t *testing.T) {
 	}
 }
 
+func TestGitBoundsEachCommandDuration(t *testing.T) {
+	started := time.Now()
+	_, err := gitWithTimeout(t.Context(), blockingRunner{}, "/root/repo", 20*time.Millisecond, "status")
+	if err == nil || !strings.Contains(err.Error(), "timed out") || time.Since(started) > time.Second {
+		t.Fatalf("error = %v, duration = %s", err, time.Since(started))
+	}
+}
+
 func TestRepositoryRelationshipFallsBackToRevalidatedIdentity(t *testing.T) {
 	catalog := Catalog{Repositories: []Repository{{CommonDirectory: "/old/common", Primary: &Worktree{Path: "/root/repo", GitDirectory: "/old/git", Kind: Primary}}}}
 	latest := observation{repository: "/new/common", origin: "ssh://example.com/new/repo", worktree: Worktree{Path: "/root/repo", GitDirectory: "/new/git", Kind: Primary}}
@@ -475,4 +487,11 @@ type recordingRunner struct{ arguments []string }
 func (runner *recordingRunner) Run(_ context.Context, _ string, arguments ...string) ([]byte, error) {
 	runner.arguments = append([]string(nil), arguments...)
 	return nil, nil
+}
+
+type blockingRunner struct{}
+
+func (blockingRunner) Run(ctx context.Context, _ string, _ ...string) ([]byte, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
 }

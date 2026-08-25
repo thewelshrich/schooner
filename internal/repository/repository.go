@@ -13,19 +13,21 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/thewelshrich/schooner/internal/process"
 )
 
 const (
-	maxDepth        = 8
-	maxCandidates   = 500
-	maxVisited      = 10_000
-	maxWarnings     = 100
-	maxOutputBytes  = 1 << 20
-	maxCatalogBytes = 3 << 18
-	maxOriginBytes  = 32 << 10
+	maxDepth          = 8
+	maxCandidates     = 500
+	maxVisited        = 10_000
+	maxWarnings       = 100
+	maxOutputBytes    = 1 << 20
+	maxCatalogBytes   = 3 << 18
+	maxOriginBytes    = 32 << 10
+	gitCommandTimeout = 30 * time.Second
 )
 
 var gitRepositoryEnvironment = []string{
@@ -58,7 +60,8 @@ const (
 	Primary WorktreeKind = "primary"
 	Linked  WorktreeKind = "linked"
 
-	CodeNotFound Code = "not_found"
+	CodeNotFound     Code = "not_found"
+	CodeInvalidInput Code = "invalid_input"
 )
 
 type Error struct {
@@ -576,17 +579,17 @@ func parseStatus(data []byte) (Status, error) {
 
 func resolveSelector(root, selector string) (string, error) {
 	if selector == "" || hasControl(selector) {
-		return "", fmt.Errorf("worktree selector is required")
+		return "", invalidSelector("worktree selector is required")
 	}
 	var target string
 	if filepath.IsAbs(selector) {
 		if filepath.Clean(selector) != selector {
-			return "", fmt.Errorf("absolute worktree selector must be canonical")
+			return "", invalidSelector("absolute worktree selector must be canonical")
 		}
 		target = selector
 	} else {
 		if filepath.Clean(selector) != selector || selector == ".." || strings.HasPrefix(selector, ".."+string(filepath.Separator)) {
-			return "", fmt.Errorf("worktree selector must be an exact root-relative path")
+			return "", invalidSelector("worktree selector must be an exact root-relative path")
 		}
 		target = filepath.Join(root, selector)
 	}
@@ -598,16 +601,20 @@ func resolveSelector(root, selector string) (string, error) {
 		return "", err
 	}
 	if !within(root, canonical) {
-		return "", fmt.Errorf("worktree selector escapes configured root")
+		return "", invalidSelector("worktree selector escapes configured root")
 	}
 	if canonical != target {
-		return "", fmt.Errorf("worktree selector must not resolve through symlinks")
+		return "", invalidSelector("worktree selector must not resolve through symlinks")
 	}
 	return canonical, nil
 }
 
 func worktreeNotFound(selector string, cause error) error {
 	return &Error{Code: CodeNotFound, Message: fmt.Sprintf("worktree %q was not found", selector), Cause: cause}
+}
+
+func invalidSelector(message string) error {
+	return &Error{Code: CodeInvalidInput, Message: message}
 }
 
 func pathMissing(path string) bool {
@@ -653,10 +660,20 @@ func within(root, path string) bool {
 }
 
 func git(ctx context.Context, commands runner, worktree string, arguments ...string) ([]byte, error) {
+	return gitWithTimeout(ctx, commands, worktree, gitCommandTimeout, arguments...)
+}
+
+func gitWithTimeout(ctx context.Context, commands runner, worktree string, timeout time.Duration, arguments ...string) ([]byte, error) {
+	commandContext, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	fixed := make([]string, 0, len(arguments)+5)
 	fixed = append(fixed, "--no-optional-locks", "-c", "core.fsmonitor=false", "-C", worktree)
 	fixed = append(fixed, arguments...)
-	return commands.Run(ctx, "git", fixed...)
+	output, err := commands.Run(commandContext, "git", fixed...)
+	if errors.Is(commandContext.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
+		return nil, fmt.Errorf("Git command timed out after %s", timeout)
+	}
+	return output, err
 }
 
 func sanitizeOrigin(raw string) string {

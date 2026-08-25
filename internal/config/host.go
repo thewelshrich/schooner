@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/user"
 	"path/filepath"
 	"strings"
 
@@ -27,11 +28,14 @@ func Path() (string, error) {
 	}
 	base := os.Getenv("XDG_CONFIG_HOME")
 	if base == "" {
-		home, err := os.UserHomeDir()
+		current, err := user.Current()
 		if err != nil {
 			return "", fmt.Errorf("resolve home directory: %w", err)
 		}
-		base = filepath.Join(home, ".config")
+		if current.HomeDir == "" || !filepath.IsAbs(current.HomeDir) {
+			return "", fmt.Errorf("current user home directory is invalid")
+		}
+		base = filepath.Join(current.HomeDir, ".config")
 	} else if !filepath.IsAbs(base) {
 		return "", fmt.Errorf("XDG_CONFIG_HOME must be an absolute path")
 	}
