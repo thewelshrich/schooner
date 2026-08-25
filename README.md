@@ -20,8 +20,9 @@ This repository is currently establishing the V1 implementation foundation.
 - [Architecture decisions](docs/adr/)
 
 The first implementation milestone is the adopted-box path: `box add`,
-`box list`, `box status`, and `box remove`. It supports Ubuntu 24.04 and 26.04 on amd64 and
-arm64. See [DIRECTION.md](DIRECTION.md) for the wider V1 scope and exclusions.
+selection, inspection, maintenance, SSH handoff, and removal. It supports Ubuntu
+24.04 and 26.04 on amd64 and arm64. See [DIRECTION.md](DIRECTION.md) for the wider
+V1 scope and exclusions.
 
 ## Adopt an existing machine
 
@@ -35,16 +36,25 @@ Or provide the complete input for scripts and CI:
 
 ```bash
 schooner box add work-api --ssh work-api --yes
+schooner box use work-api
 schooner box list
 schooner box status work-api
+schooner box setup work-api
+schooner box update work-api
 schooner box ssh work-api
 schooner box remove work-api --yes
 ```
 
+`box use` records a default for commands where no Box is supplied. Otherwise,
+Schooner uses the Box linked to the current local Workspace when available, the
+only configured Box, or a focused interactive selector. Ambiguous
+non-interactive selection fails with guidance instead of guessing. Destructive
+`box remove` and `box destroy` commands never consume the default implicitly.
+
 `box list` shows what Schooner already knows locally for SSH-adopted and
 provider-created boxes alike: provider, region when recorded, last-known
-reachability, and the time of the latest successful observation. It does not
-probe machines; use `box status` for a live check.
+reachability, default selection, and the time of the latest successful
+observation. It does not probe machines; use `box status` for a live check.
 The SSH destination may be an alias from `~/.ssh/config` or a normal
 `user@host` destination. Schooner uses the system OpenSSH client and its
 existing identities, agents, proxies, and `known_hosts`. For unattended first
@@ -62,8 +72,12 @@ installs the same Schooner executable for that SSH user at
 `~/.local/bin/schooner`, installs missing Git and tmux packages when `sudo -n`
 is available, and creates the workspace root (default `~/schooner`). The
 runtime is a bounded, on-demand SSH target, not a daemon. `box status` reports
-its version, protocol, path, and negotiated capabilities. `box remove` only
-forgets local inventory and never changes the remote machine.
+its version, protocol, path, and negotiated capabilities without repairing the
+machine. `box setup` explicitly repairs a missing or damaged runtime,
+prerequisites, and workspace root. `box update` atomically updates an existing
+older runtime to the invoking CLI's verified version, while retaining a newer
+compatible runtime. `box remove` only forgets local inventory and never changes
+the remote machine.
 
 Run local readiness diagnostics, or inspect the installed application directly
 without relying on remote `PATH`:

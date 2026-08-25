@@ -30,7 +30,7 @@ func TestEnsureHostInstallsReusesAndInspectsTypedRuntime(t *testing.T) {
 	if err != nil {
 		t.Fatalf("%v (cause: %v)", err, errors.Unwrap(err))
 	}
-	if installed.Path != target || installed.Version != "v1.2.3" || installed.ProtocolVersion != "1" || resolver.calls != 1 {
+	if installed.Runtime.Path != target || installed.Runtime.Version != "v1.2.3" || installed.Runtime.ProtocolVersion != "1" || installed.Action != box.HostInstalled || resolver.calls != 1 {
 		t.Fatalf("installed=%+v resolver calls=%d", installed, resolver.calls)
 	}
 	contents, err := os.ReadFile(target)
@@ -39,10 +39,10 @@ func TestEnsureHostInstallsReusesAndInspectsTypedRuntime(t *testing.T) {
 	}
 
 	reused, err := runtime.EnsureHost(t.Context(), box.Connection{Destination: "trusted-host", BatchMode: true}, request)
-	if err != nil || reused.Version != installed.Version || resolver.calls != 1 {
+	if err != nil || reused.Runtime.Version != installed.Runtime.Version || reused.Action != box.HostReused || resolver.calls != 1 {
 		t.Fatalf("reused=%+v err=%v resolver calls=%d", reused, err, resolver.calls)
 	}
-	capabilities, err := runtime.InspectHost(t.Context(), box.Connection{Destination: "trusted-host", BatchMode: true}, reused, "~/schooner", hostTestIdentity)
+	capabilities, err := runtime.InspectHost(t.Context(), box.Connection{Destination: "trusted-host", BatchMode: true}, reused.Runtime, "~/schooner", hostTestIdentity)
 	if err != nil || capabilities.RemoteIdentity != hostTestIdentity || capabilities.Host.Version != "v1.2.3" || !capabilities.Git.Available {
 		t.Fatalf("InspectHost() = %+v, %v", capabilities, err)
 	}
@@ -58,8 +58,127 @@ func TestEnsureHostInstallsArm64Artifact(t *testing.T) {
 	request := box.HostInstallRequest{Path: target, OS: "linux", Architecture: "arm64", ExpectedIdentity: hostTestIdentity}
 
 	installed, err := runtime.EnsureHost(t.Context(), box.Connection{Destination: "trusted-host"}, request)
-	if err != nil || installed.Version != "v1.2.3" || resolver.calls != 1 {
+	if err != nil || installed.Runtime.Version != "v1.2.3" || resolver.calls != 1 {
 		t.Fatalf("installed=%+v err=%v calls=%d", installed, err, resolver.calls)
+	}
+}
+
+func TestEnsureHostUpdateReplacesCompatibleOlderRuntimeAndThenNoOps(t *testing.T) {
+	testRemoteShell(t)
+	root := t.TempDir()
+	target := filepath.Join(root, "home", ".local", "bin", "schooner")
+	writeHostArtifactAt(t, target, "v1.0.0", "1", "amd64")
+	want := writeHostArtifact(t, root, "v2.0.0", "1", "amd64")
+	resolver := &staticArtifactResolver{result: want}
+	runtime := NewHost(testSSHExecutable(t), nil, "v2.0.0", resolver)
+	runtime.randomSuffix = func() (string, error) { return "999999999999999999999999", nil }
+	request := box.HostInstallRequest{Path: target, OS: "linux", Architecture: "amd64", ExpectedIdentity: hostTestIdentity, Mode: box.HostUpdate}
+
+	updated, err := runtime.EnsureHost(t.Context(), box.Connection{Destination: "trusted-host"}, request)
+	if err != nil || updated.Action != box.HostReplaced || updated.PreviousVersion != "v1.0.0" || updated.Runtime.Version != "v2.0.0" || resolver.calls != 1 {
+		t.Fatalf("updated=%+v err=%v calls=%d", updated, err, resolver.calls)
+	}
+	current, err := runtime.EnsureHost(t.Context(), box.Connection{Destination: "trusted-host"}, request)
+	if err != nil || current.Action != box.HostReused || current.Runtime.Version != "v2.0.0" || resolver.calls != 1 {
+		t.Fatalf("current=%+v err=%v calls=%d", current, err, resolver.calls)
+	}
+}
+
+func TestEnsureHostRepairReplacesUnidentifiableRuntime(t *testing.T) {
+	testRemoteShell(t)
+	root := t.TempDir()
+	target := filepath.Join(root, "home", ".local", "bin", "schooner")
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte("#!/bin/sh\nexit 64\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	want := writeHostArtifact(t, root, "v2.0.0", "1", "amd64")
+	resolver := &staticArtifactResolver{result: want}
+	runtime := NewHost(testSSHExecutable(t), nil, "v2.0.0", resolver)
+	runtime.randomSuffix = func() (string, error) { return "666666666666666666666666", nil }
+	request := box.HostInstallRequest{Path: target, OS: "linux", Architecture: "amd64", ExpectedIdentity: hostTestIdentity, Mode: box.HostRepair}
+
+	result, err := runtime.EnsureHost(t.Context(), box.Connection{Destination: "trusted-host"}, request)
+	if err != nil || result.Action != box.HostReplaced || result.PreviousVersion != "" || resolver.calls != 1 {
+		t.Fatalf("result=%+v err=%v calls=%d", result, err, resolver.calls)
+	}
+	contents, err := os.ReadFile(target)
+	if err != nil || string(contents) != want.contents {
+		t.Fatalf("installed repaired runtime: err=%v", err)
+	}
+}
+
+func TestEnsureHostUpdateReplacesDifferentBuildMetadata(t *testing.T) {
+	testRemoteShell(t)
+	root := t.TempDir()
+	target := filepath.Join(root, "home", ".local", "bin", "schooner")
+	writeHostArtifactAt(t, target, "v1.2.3+build.1", "1", "amd64")
+	want := writeHostArtifact(t, root, "v1.2.3+build.2", "1", "amd64")
+	resolver := &staticArtifactResolver{result: want}
+	runtime := NewHost(testSSHExecutable(t), nil, "v1.2.3+build.2", resolver)
+	runtime.randomSuffix = func() (string, error) { return "888888888888888888888888", nil }
+	request := box.HostInstallRequest{Path: target, OS: "linux", Architecture: "amd64", ExpectedIdentity: hostTestIdentity, Mode: box.HostUpdate}
+
+	result, err := runtime.EnsureHost(t.Context(), box.Connection{Destination: "trusted-host"}, request)
+	if err != nil || result.Action != box.HostReplaced || result.PreviousVersion != "v1.2.3+build.1" || result.Runtime.Version != "v1.2.3+build.2" || resolver.calls != 1 {
+		t.Fatalf("result=%+v err=%v calls=%d", result, err, resolver.calls)
+	}
+}
+
+func TestEnsureHostUpdateRetainsCompatibleNewerRuntime(t *testing.T) {
+	testRemoteShell(t)
+	root := t.TempDir()
+	target := filepath.Join(root, "home", ".local", "bin", "schooner")
+	writeHostArtifactAt(t, target, "v9.0.0", "1", "amd64")
+	resolver := &staticArtifactResolver{result: writeHostArtifact(t, root, "v2.0.0", "1", "amd64")}
+	runtime := NewHost(testSSHExecutable(t), nil, "v2.0.0", resolver)
+	request := box.HostInstallRequest{Path: target, OS: "linux", Architecture: "amd64", ExpectedIdentity: hostTestIdentity, Mode: box.HostUpdate}
+
+	result, err := runtime.EnsureHost(t.Context(), box.Connection{Destination: "trusted-host"}, request)
+	if err != nil || result.Action != box.HostNewerRetained || result.Runtime.Version != "v9.0.0" || resolver.calls != 0 {
+		t.Fatalf("result=%+v err=%v calls=%d", result, err, resolver.calls)
+	}
+}
+
+func TestEnsureHostUpdateRefreshesDevelopmentRuntime(t *testing.T) {
+	testRemoteShell(t)
+	root := t.TempDir()
+	target := filepath.Join(root, "home", ".local", "bin", "schooner")
+	writeHostArtifactAt(t, target, "dev", "1", "amd64")
+	want := writeHostArtifact(t, root, "dev", "1", "amd64")
+	want.contents = strings.ReplaceAll(want.contents, "abc123", "def456")
+	if err := os.WriteFile(want.result.Path, []byte(want.contents), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	want.result.SHA256 = fmt.Sprintf("%x", sha256.Sum256([]byte(want.contents)))
+	resolver := &staticArtifactResolver{result: want}
+	runtime := NewHost(testSSHExecutable(t), nil, "dev", resolver)
+	runtime.randomSuffix = func() (string, error) { return "777777777777777777777777", nil }
+	request := box.HostInstallRequest{Path: target, OS: "linux", Architecture: "amd64", ExpectedIdentity: hostTestIdentity, Mode: box.HostUpdate}
+
+	result, err := runtime.EnsureHost(t.Context(), box.Connection{Destination: "trusted-host"}, request)
+	if err != nil || result.Action != box.HostReplaced || result.PreviousVersion != "dev" || resolver.calls != 1 {
+		t.Fatalf("result=%+v err=%v calls=%d", result, err, resolver.calls)
+	}
+	contents, err := os.ReadFile(target)
+	if err != nil || string(contents) != want.contents {
+		t.Fatalf("installed rebuilt development artifact: err=%v", err)
+	}
+}
+
+func TestEnsureHostUpdateDirectsMissingRuntimeToSetup(t *testing.T) {
+	testRemoteShell(t)
+	root := t.TempDir()
+	target := filepath.Join(root, "home", ".local", "bin", "schooner")
+	resolver := &staticArtifactResolver{result: writeHostArtifact(t, root, "v2.0.0", "1", "amd64")}
+	runtime := NewHost(testSSHExecutable(t), nil, "v2.0.0", resolver)
+	request := box.HostInstallRequest{Path: target, OS: "linux", Architecture: "amd64", ExpectedIdentity: hostTestIdentity, Mode: box.HostUpdate}
+
+	_, err := runtime.EnsureHost(t.Context(), box.Connection{Destination: "trusted-host"}, request)
+	if box.ErrorCode(err) != "host_runtime_missing" || !strings.Contains(err.Error(), "box setup") || resolver.calls != 0 {
+		t.Fatalf("error=%v calls=%d", err, resolver.calls)
 	}
 }
 
@@ -73,7 +192,7 @@ func TestEnsureHostNeverDowngradesAndToleratesCompatibleSkew(t *testing.T) {
 	request := box.HostInstallRequest{Path: target, OS: "linux", Architecture: "amd64", ExpectedIdentity: hostTestIdentity}
 
 	installed, err := runtime.EnsureHost(t.Context(), box.Connection{Destination: "trusted-host"}, request)
-	if err != nil || installed.Version != "v9.0.0" || resolver.calls != 0 {
+	if err != nil || installed.Runtime.Version != "v9.0.0" || resolver.calls != 0 {
 		t.Fatalf("compatible newer host = %+v, err=%v, resolver calls=%d", installed, err, resolver.calls)
 	}
 	contents, _ := os.ReadFile(target)
@@ -88,7 +207,7 @@ func TestEnsureHostNeverDowngradesAndToleratesCompatibleSkew(t *testing.T) {
 	}
 }
 
-func TestEnsureHostDoesNotReplaceUnidentifiableExistingFile(t *testing.T) {
+func TestEnsureHostUpdateDoesNotReplaceUnidentifiableExistingFile(t *testing.T) {
 	testRemoteShell(t)
 	root := t.TempDir()
 	target := filepath.Join(root, "home", ".local", "bin", "schooner")
@@ -98,7 +217,7 @@ func TestEnsureHostDoesNotReplaceUnidentifiableExistingFile(t *testing.T) {
 	}
 	resolver := &staticArtifactResolver{result: writeHostArtifact(t, root, "v2.0.0", "1", "amd64")}
 	runtime := NewHost(testSSHExecutable(t), nil, "v2.0.0", resolver)
-	request := box.HostInstallRequest{Path: target, OS: "linux", Architecture: "amd64", ExpectedIdentity: hostTestIdentity}
+	request := box.HostInstallRequest{Path: target, OS: "linux", Architecture: "amd64", ExpectedIdentity: hostTestIdentity, Mode: box.HostUpdate}
 
 	_, err := runtime.EnsureHost(t.Context(), box.Connection{Destination: "trusted-host"}, request)
 	if box.ErrorCode(err) != "host_runtime_incompatible" || resolver.calls != 0 {
@@ -148,7 +267,7 @@ func TestEnsureHostReinstallsAnOlderIncompatibleRuntime(t *testing.T) {
 	request := box.HostInstallRequest{Path: target, OS: "linux", Architecture: "amd64", ExpectedIdentity: hostTestIdentity}
 
 	installed, err := runtime.EnsureHost(t.Context(), box.Connection{Destination: "trusted-host"}, request)
-	if err != nil || installed.Version != "v2.0.0" || resolver.calls != 1 {
+	if err != nil || installed.Runtime.Version != "v2.0.0" || installed.Action != box.HostReplaced || resolver.calls != 1 {
 		t.Fatalf("installed=%+v err=%v calls=%d", installed, err, resolver.calls)
 	}
 	contents, _ := os.ReadFile(target)
@@ -193,7 +312,7 @@ func TestEnsureHostUsesFixedPOSIXShell(t *testing.T) {
 	request := box.HostInstallRequest{Path: target, OS: "linux", Architecture: "amd64", ExpectedIdentity: hostTestIdentity}
 
 	installed, err := runtime.EnsureHost(t.Context(), box.Connection{Destination: "non-posix-login-shell"}, request)
-	if err != nil || installed.Version != "v1.2.3" {
+	if err != nil || installed.Runtime.Version != "v1.2.3" {
 		t.Fatalf("installed=%+v err=%v", installed, err)
 	}
 }
@@ -222,11 +341,11 @@ func TestEnsureHostKeepsOldRuntimeWhenPromotionIsInterrupted(t *testing.T) {
 	t.Setenv("SCHOONER_TEST_FAIL_PROMOTE", "1")
 	root := t.TempDir()
 	target := filepath.Join(root, "home", ".local", "bin", "schooner")
-	old := writeHostArtifactAt(t, target, "v1.0.0", "0", "amd64")
+	old := writeHostArtifactAt(t, target, "v1.0.0", "1", "amd64")
 	resolver := &staticArtifactResolver{result: writeHostArtifact(t, root, "v2.0.0", "1", "amd64")}
 	runtime := NewHost(testSSHExecutable(t), nil, "v2.0.0", resolver)
 	runtime.randomSuffix = func() (string, error) { return "222222222222222222222222", nil }
-	request := box.HostInstallRequest{Path: target, OS: "linux", Architecture: "amd64", ExpectedIdentity: hostTestIdentity}
+	request := box.HostInstallRequest{Path: target, OS: "linux", Architecture: "amd64", ExpectedIdentity: hostTestIdentity, Mode: box.HostUpdate}
 
 	_, err := runtime.EnsureHost(t.Context(), box.Connection{Destination: "trusted-host"}, request)
 	if box.ErrorCode(err) != "host_runtime_install_failed" {

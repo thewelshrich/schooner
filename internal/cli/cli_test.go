@@ -49,6 +49,18 @@ func TestHelp(t *testing.T) {
 	}
 }
 
+func TestBoxHelpListsSelectionAndMaintenanceCommands(t *testing.T) {
+	code, stdout, stderr := run(t.Context(), []string{"box", "--help"}, testBuild(), nil)
+	if code != 0 || stderr != "" {
+		t.Fatalf("code=%d stderr=%q", code, stderr)
+	}
+	for _, command := range []string{"setup", "update", "use"} {
+		if !strings.Contains(stdout, command) {
+			t.Fatalf("box help missing %q: %s", command, stdout)
+		}
+	}
+}
+
 func TestShortVersion(t *testing.T) {
 	t.Parallel()
 
@@ -177,6 +189,21 @@ func TestUsageErrors(t *testing.T) {
 			args:    []string{"version", "extra"},
 			message: "unknown command",
 		},
+		{
+			name:    "default box requires name",
+			args:    []string{"box", "use"},
+			message: "accepts 1 arg(s), received 0",
+		},
+		{
+			name:    "setup accepts one box",
+			args:    []string{"box", "setup", "one", "two"},
+			message: "accepts at most 1 arg",
+		},
+		{
+			name:    "update accepts one box",
+			args:    []string{"box", "update", "one", "two"},
+			message: "accepts at most 1 arg",
+		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
@@ -297,6 +324,16 @@ func TestBoxLifecycleJSONThroughRun(t *testing.T) {
 		t.Fatalf("add JSON mismatch\nwant: %s\ngot:  %s", want, add)
 	}
 
+	code, stdout, stderr = run(t.Context(), []string{"box", "setup", "work", "--output", "json"}, testBuild(), nil)
+	if code != 0 || stderr != "" || !strings.Contains(stdout, `"action":"reused"`) || !strings.Contains(stdout, `"installed":[]`) {
+		t.Fatalf("setup: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+
+	code, stdout, stderr = run(t.Context(), []string{"box", "update", "work", "--output", "json"}, testBuild(), nil)
+	if code != 0 || stderr != "" || !strings.Contains(stdout, `"action":"reused"`) || !strings.Contains(stdout, `"target_version":"v0.1.0-test"`) {
+		t.Fatalf("update: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+
 	code, stdout, stderr = run(t.Context(), []string{"box", "status", "work", "--output", "json"}, testBuild(), nil)
 	if code != 0 || stderr != "" {
 		t.Fatalf("status: code=%d stderr=%q", code, stderr)
@@ -386,7 +423,7 @@ func TestBoxSSHGlobalInteractionPolicy(t *testing.T) {
 	}
 
 	code, stdout, stderr = runTerminal(t.Context(), []string{"box", "ssh", "--no-input"}, "")
-	if code != 2 || stdout != "" || !strings.Contains(stderr, "box name is required") {
+	if code != 0 || stdout != "args=-o BatchMode=yes work-alias\n" || stderr != "" {
 		t.Fatalf("unnamed batch: code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 
@@ -449,10 +486,45 @@ func TestBoxSSHPicksABoxWhenNameIsOmitted(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", filepath.Join(home, "state"))
 	installTestSSH(t, home, "#!/bin/sh\nexit 0\n")
 	saveTestBox(t, box.Record{Name: "work", Acquisition: "adopted", SSHDestination: "work-alias"})
+	saveTestBox(t, box.Record{Name: "other", Acquisition: "adopted", SSHDestination: "other-alias"})
 
 	code, stdout, stderr := runTerminal(t.Context(), []string{"box", "ssh", "--accessible"}, "1\n")
 	if code != 0 || stdout != "" || !strings.Contains(stderr, "Choose a box to connect to") || !strings.Contains(stderr, "work") {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+}
+
+func TestBoxUseMarksListAndResolvesDefault(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_STATE_HOME", filepath.Join(home, "state"))
+	installTestSSH(t, home, "#!/bin/sh\nprintf 'args=%s\\n' \"$*\"\n")
+	saveTestBox(t, box.Record{Name: "alpha", Acquisition: "adopted", SSHDestination: "alpha-host"})
+	saveTestBox(t, box.Record{Name: "beta", Acquisition: "adopted", SSHDestination: "beta-host"})
+	code, stdout, stderr := run(t.Context(), []string{"box", "status", "--output", "json"}, testBuild(), nil)
+	if code != 1 || stdout != "" || !strings.Contains(stderr, `"code":"box_selection_ambiguous"`) || !strings.Contains(stderr, `"candidates":"alpha,beta"`) {
+		t.Fatalf("ambiguity: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+
+	code, stdout, stderr = run(t.Context(), []string{"box", "use", "alpha", "--output", "json"}, testBuild(), nil)
+	if code != 0 || stdout != "{\"schema_version\":\"1\",\"default_box\":\"alpha\"}\n" || stderr != "" {
+		t.Fatalf("use json: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	code, stdout, stderr = run(t.Context(), []string{"box", "use", "beta"}, testBuild(), nil)
+	if code != 0 || stdout != "Default box: beta\n" || stderr != "" {
+		t.Fatalf("use: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	code, stdout, stderr = run(t.Context(), []string{"box", "list", "--output", "json"}, testBuild(), nil)
+	if code != 0 || stderr != "" || !strings.Contains(stdout, `"name":"beta"`) || !strings.Contains(stdout, `"default":true`) {
+		t.Fatalf("list: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	code, stdout, stderr = runTerminal(t.Context(), []string{"box", "ssh", "--no-input"}, "")
+	if code != 0 || stdout != "args=-o BatchMode=yes beta-host\n" || stderr != "" {
+		t.Fatalf("ssh: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	code, stdout, stderr = run(t.Context(), []string{"box", "remove", "--yes", "--no-input"}, testBuild(), nil)
+	if code != 2 || stdout != "" || !strings.Contains(stderr, "box name is required") {
+		t.Fatalf("remove: code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 }
 

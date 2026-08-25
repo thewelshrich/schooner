@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -77,6 +78,7 @@ func TestStatusVerifiesIdentityAndCachesObservation(t *testing.T) {
 	store := newMemoryInventory()
 	store.records["work"] = Record{ID: "box-1", Name: "work", SSHDestination: "work", RemoteIdentity: "remote-1", RuntimePath: "/home/alice/.local/bin/schooner", WorkspaceRoot: "/home/alice/schooner"}
 	runtime := &fakeRuntime{capabilities: readyCapabilities()}
+	runtime.capabilities.Home = "/srv/alice"
 	runtime.capabilities.RemoteIdentity = "remote-1"
 	service := testService(runtime, store)
 	result, err := service.Status(t.Context(), StatusRequest{Name: "work"})
@@ -94,37 +96,86 @@ func TestStatusVerifiesIdentityAndCachesObservation(t *testing.T) {
 	}
 }
 
-func TestStatusRepairsMissingRuntimeAndPersistsItsPath(t *testing.T) {
+func TestStatusReportsMissingRuntimeWithoutRepair(t *testing.T) {
 	store := newMemoryInventory()
 	store.records["work"] = Record{ID: "box-1", Name: "work", SSHDestination: "work", RemoteIdentity: "remote-1", WorkspaceRoot: "/home/alice/schooner"}
 	runtime := &fakeRuntime{capabilities: readyCapabilities()}
 	runtime.capabilities.RemoteIdentity = "remote-1"
 	service := testService(runtime, store)
-	result, err := service.Status(t.Context(), StatusRequest{Name: "work"})
-	if err != nil {
-		t.Fatal(err)
+	_, err := service.Status(t.Context(), StatusRequest{Name: "work"})
+	if ErrorCode(err) != "host_runtime_missing" || !strings.Contains(err.Error(), "box setup work") {
+		t.Fatalf("error=%v", err)
 	}
-	want := "/home/alice/.local/bin/schooner"
-	if result.Box.RuntimePath != want || store.records["work"].RuntimePath != want || runtime.inspectCalls != 1 || runtime.ensureHostCalls != 1 {
-		t.Fatalf("result=%+v stored=%+v inspect=%d ensure=%d", result.Box, store.records["work"], runtime.inspectCalls, runtime.ensureHostCalls)
+	if runtime.inspectCalls != 0 || runtime.ensureHostCalls != 0 {
+		t.Fatalf("status mutated through bootstrap: inspect=%d ensure=%d", runtime.inspectCalls, runtime.ensureHostCalls)
 	}
 }
 
-func TestStatusRepairsMissingRuntimeAfterHomeMove(t *testing.T) {
+func TestStatusReportsUnavailableRuntimeWithoutRepair(t *testing.T) {
 	store := newMemoryInventory()
 	store.records["work"] = Record{ID: "box-1", Name: "work", SSHDestination: "work", RemoteIdentity: "remote-1", RuntimePath: "/home/alice/.local/bin/schooner", WorkspaceRoot: "/home/alice/schooner"}
-	runtime := &fakeRuntime{capabilities: readyCapabilities(), inspectHostErrors: []error{NewError("host_runtime_missing", "missing", nil), nil}}
-	runtime.capabilities.Home = "/srv/alice"
+	runtime := &fakeRuntime{capabilities: readyCapabilities(), inspectHostErr: NewError("host_runtime_missing", "missing", nil)}
 	runtime.capabilities.RemoteIdentity = "remote-1"
 	service := testService(runtime, store)
+	_, err := service.Status(t.Context(), StatusRequest{Name: "work"})
+	if ErrorCode(err) != "host_runtime_missing" || !strings.Contains(err.Error(), "box setup work") {
+		t.Fatalf("error=%v", err)
+	}
+	if runtime.inspectCalls != 0 || runtime.ensureHostCalls != 0 {
+		t.Fatalf("status repaired runtime: inspect=%d ensure=%d", runtime.inspectCalls, runtime.ensureHostCalls)
+	}
+}
 
-	result, err := service.Status(t.Context(), StatusRequest{Name: "work"})
+func TestSetupRepairsRuntimePrerequisitesAndMovedHome(t *testing.T) {
+	store := newMemoryInventory()
+	store.records["work"] = Record{ID: "box-1", Name: "work", SSHDestination: "work", RemoteIdentity: "remote-1", RuntimePath: "/home/alice/.local/bin/schooner", WorkspaceRoot: "/home/alice/schooner"}
+	runtime := &fakeRuntime{capabilities: readyCapabilities()}
+	runtime.capabilities.Home = "/srv/alice"
+	runtime.capabilities.RemoteIdentity = "remote-1"
+	runtime.capabilities.Git = Tool{}
+	service := testService(runtime, store)
+
+	result, err := service.Setup(t.Context(), SetupRequest{Name: "work", BatchMode: true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := "/srv/alice/.local/bin/schooner"
-	if result.Box.RuntimePath != want || store.records["work"].RuntimePath != want || runtime.ensured.Path != want {
+	if result.Box.RuntimePath != want || store.records["work"].RuntimePath != want || runtime.ensured.Path != want || runtime.ensured.Mode != HostRepair {
 		t.Fatalf("result=%+v stored=%+v ensured=%+v", result.Box, store.records["work"], runtime.ensured)
+	}
+	if !runtime.installCalled || !slices.Equal(result.Installed, []string{"git"}) || store.observations["box-1"].Capabilities.Host.Path != want {
+		t.Fatalf("installed=%v called=%t observation=%+v", result.Installed, runtime.installCalled, store.observations["box-1"])
+	}
+}
+
+func TestSetupFailsIdentityMismatchBeforeMutation(t *testing.T) {
+	store := newMemoryInventory()
+	store.records["work"] = Record{ID: "box-1", Name: "work", SSHDestination: "work", RemoteIdentity: "remote-1", WorkspaceRoot: "/home/alice/schooner"}
+	runtime := &fakeRuntime{capabilities: readyCapabilities()}
+	runtime.capabilities.RemoteIdentity = "remote-other"
+	service := testService(runtime, store)
+
+	_, err := service.Setup(t.Context(), SetupRequest{Name: "work"})
+	if ErrorCode(err) != "conflict" || runtime.ensureHostCalls != 0 || runtime.installCalled {
+		t.Fatalf("error=%v ensure=%d install=%t", err, runtime.ensureHostCalls, runtime.installCalled)
+	}
+}
+
+func TestUpdateUsesUpdateModeWithoutPrerequisiteMutation(t *testing.T) {
+	store := newMemoryInventory()
+	store.records["work"] = Record{ID: "box-1", Name: "work", SSHDestination: "work", RemoteIdentity: "remote-1", RuntimePath: "/home/alice/.local/bin/schooner", WorkspaceRoot: "/home/alice/schooner"}
+	runtime := &fakeRuntime{capabilities: readyCapabilities()}
+	runtime.capabilities.Home = "/srv/alice"
+	runtime.capabilities.RemoteIdentity = "remote-1"
+	runtime.capabilities.Git = Tool{}
+	service := testService(runtime, store)
+
+	result, err := service.Update(t.Context(), UpdateRequest{Name: "work", BatchMode: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.ensured.Mode != HostUpdate || runtime.ensured.Path != "/home/alice/.local/bin/schooner" || runtime.installCalled || result.Host.Action != HostReused {
+		t.Fatalf("ensured=%+v install=%t result=%+v", runtime.ensured, runtime.installCalled, result)
 	}
 }
 
@@ -261,12 +312,12 @@ func (f *fakeRuntime) EnsureIdentity(_ context.Context, _ Connection, candidate 
 	f.capabilities.RemoteIdentity = candidate
 	return candidate, nil
 }
-func (f *fakeRuntime) EnsureHost(_ context.Context, _ Connection, request HostInstallRequest) (HostRuntime, error) {
+func (f *fakeRuntime) EnsureHost(_ context.Context, _ Connection, request HostInstallRequest) (HostInstallResult, error) {
 	f.calls++
 	f.ensureHostCalls++
 	f.ensured = request
 	f.capabilities.Host = HostRuntime{Path: request.Path, Version: "v1.2.3", ProtocolVersion: "1", Capabilities: []string{"host.doctor.v1", "host.hello.v1", "host.inspect.v1"}}
-	return f.capabilities.Host, nil
+	return HostInstallResult{Runtime: f.capabilities.Host, TargetVersion: "v1.2.3", Action: HostReused}, nil
 }
 func (f *fakeRuntime) InspectHost(_ context.Context, _ Connection, installed HostRuntime, _ string, _ string) (Capabilities, error) {
 	f.calls++
@@ -323,6 +374,14 @@ func (m *memoryInventory) FindByName(_ context.Context, name string) (Record, er
 	}
 	return value, nil
 }
+func (m *memoryInventory) FindByID(_ context.Context, id string) (Record, error) {
+	for _, value := range m.records {
+		if value.ID == id {
+			return value, nil
+		}
+	}
+	return Record{}, NotFound(id)
+}
 func (m *memoryInventory) FindByRemoteIdentity(_ context.Context, identity string) (Record, error) {
 	for _, value := range m.records {
 		if value.RemoteIdentity == identity {
@@ -337,6 +396,18 @@ func (m *memoryInventory) List(context.Context) ([]Record, error) {
 		result = append(result, value)
 	}
 	return result, nil
+}
+func (m *memoryInventory) SetDefault(_ context.Context, name string) (Record, error) {
+	selected, ok := m.records[name]
+	if !ok {
+		return Record{}, NotFound(name)
+	}
+	for key, value := range m.records {
+		value.Default = key == name
+		m.records[key] = value
+	}
+	selected.Default = true
+	return selected, nil
 }
 func (m *memoryInventory) BeginAdd(_ context.Context, op AddOperation) error {
 	if m.operation.Name != "" && (m.operation.Name != op.Name || m.operation.SSHDestination != op.SSHDestination) {

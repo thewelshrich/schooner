@@ -66,6 +66,30 @@ type HostInstallRequest struct {
 	OS               string
 	Architecture     string
 	ExpectedIdentity string
+	Mode             HostInstallMode
+}
+
+type HostInstallMode string
+
+const (
+	HostRepair HostInstallMode = "repair"
+	HostUpdate HostInstallMode = "update"
+)
+
+type HostInstallAction string
+
+const (
+	HostInstalled     HostInstallAction = "installed"
+	HostReused        HostInstallAction = "reused"
+	HostReplaced      HostInstallAction = "replaced"
+	HostNewerRetained HostInstallAction = "newer_retained"
+)
+
+type HostInstallResult struct {
+	Runtime         HostRuntime
+	PreviousVersion string
+	TargetVersion   string
+	Action          HostInstallAction
 }
 
 type Capabilities struct {
@@ -96,6 +120,7 @@ type Record struct {
 	ProviderCorrelationID string
 	CredentialProfile     string
 	ProviderRegion        string
+	Default               bool
 	CreatedAt             time.Time
 	UpdatedAt             time.Time
 }
@@ -159,6 +184,31 @@ type StatusRequest struct {
 	Progress  Progress
 }
 
+type SetupRequest struct {
+	Name      string
+	BatchMode bool
+	Progress  Progress
+}
+
+type SetupResult struct {
+	Box          Record
+	Capabilities Capabilities
+	Host         HostInstallResult
+	Installed    []string
+}
+
+type UpdateRequest struct {
+	Name      string
+	BatchMode bool
+	Progress  Progress
+}
+
+type UpdateResult struct {
+	Box          Record
+	Capabilities Capabilities
+	Host         HostInstallResult
+}
+
 // SSHRequest identifies a recorded box for an interactive OpenSSH handoff.
 type SSHRequest struct {
 	Name      string
@@ -182,7 +232,7 @@ type Runtime interface {
 	Resolve(context.Context, Connection) error
 	Inspect(context.Context, Connection, string) (Capabilities, error)
 	EnsureIdentity(context.Context, Connection, string) (string, error)
-	EnsureHost(context.Context, Connection, HostInstallRequest) (HostRuntime, error)
+	EnsureHost(context.Context, Connection, HostInstallRequest) (HostInstallResult, error)
 	InspectHost(context.Context, Connection, HostRuntime, string, string) (Capabilities, error)
 	InstallTools(context.Context, Connection, []string) error
 	EnsureWorkspaceRoot(context.Context, Connection, string) (string, error)

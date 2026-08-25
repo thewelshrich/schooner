@@ -25,7 +25,7 @@ import (
 
 func newBoxCommand(streams Streams, global *globalOptions) *cobra.Command {
 	cmd := &cobra.Command{Use: "box", Short: "Add and operate development boxes", Args: cobra.NoArgs, RunE: helpRun}
-	cmd.AddCommand(newBoxAddCommand(streams, global), newBoxListCommand(streams, global), newBoxStatusCommand(streams, global), newBoxSSHCommand(streams, global), newBoxRemoveCommand(streams, global), newBoxDestroyCommand(streams, global))
+	cmd.AddCommand(newBoxAddCommand(streams, global), newBoxListCommand(streams, global), newBoxUseCommand(streams, global), newBoxStatusCommand(streams, global), newBoxSetupCommand(streams, global), newBoxUpdateCommand(streams, global), newBoxSSHCommand(streams, global), newBoxRemoveCommand(streams, global), newBoxDestroyCommand(streams, global))
 	return cmd
 }
 
@@ -527,40 +527,45 @@ func newBoxListCommand(streams Streams, global *globalOptions) *cobra.Command {
 	}
 }
 
+func newBoxUseCommand(streams Streams, global *globalOptions) *cobra.Command {
+	return &cobra.Command{
+		Use:   "use <name>",
+		Short: "Set the default box",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			services, closeServices, err := openApplication(cmd.Context(), streams, global.build)
+			if err != nil {
+				return executionError{cause: err}
+			}
+			defer closeServices()
+			record, err := services.boxResolver.Use(cmd.Context(), args[0])
+			if err != nil {
+				if box.ErrorCode(err) == "invalid_input" {
+					return usageError{cause: err}
+				}
+				return executionError{cause: err}
+			}
+			return writeUseResult(streams.Out, global.output, record)
+		},
+	}
+}
+
 func newBoxStatusCommand(streams Streams, global *globalOptions) *cobra.Command {
 	return &cobra.Command{
 		Use: "status [name]", Short: "Show live box status", Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			service, closeService, err := openBoxService(cmd.Context(), streams, global.build)
+			services, closeServices, err := openApplication(cmd.Context(), streams, global.build)
 			if err != nil {
 				return executionError{cause: err}
 			}
-			defer closeService()
-			name := ""
+			defer closeServices()
+			explicit := ""
 			if len(args) == 1 {
-				name = args[0]
+				explicit = args[0]
 			}
-			if name == "" {
-				if !interactionAllowed(streams, global) {
-					return usageError{cause: fmt.Errorf("box name is required when prompts are unavailable")}
-				}
-				records, listErr := service.List(cmd.Context())
-				if listErr != nil {
-					return executionError{cause: listErr}
-				}
-				if err := showInteractiveIntro(cmd.Context(), streams, global); err != nil {
-					return err
-				}
-				name, err = prompts.PickBox(cmd.Context(), promptOptions(streams, global), "Choose a box", records)
-				if errors.Is(err, prompts.ErrAborted) {
-					return abortError{cause: err}
-				}
-				if err != nil {
-					return executionError{cause: err}
-				}
-			}
-			if err := box.ValidateName(name); err != nil {
-				return usageError{cause: err}
+			record, err := resolveCommandBox(cmd.Context(), services.boxResolver, streams, global, explicit, "Choose a box")
+			if err != nil {
+				return err
 			}
 			var progress box.Progress
 			if global.output == "human" {
@@ -568,7 +573,7 @@ func newBoxStatusCommand(streams Streams, global *globalOptions) *cobra.Command 
 				defer renderer.Close()
 				progress = renderer.Event
 			}
-			result, err := service.Status(cmd.Context(), box.StatusRequest{Name: name, BatchMode: !interactionAllowed(streams, global), Progress: progress})
+			result, err := services.boxes.Status(cmd.Context(), box.StatusRequest{Name: record.Name, BatchMode: !interactionAllowed(streams, global), Progress: progress})
 			if err != nil {
 				return executionError{cause: err}
 			}
@@ -576,6 +581,53 @@ func newBoxStatusCommand(streams Streams, global *globalOptions) *cobra.Command 
 				return executionError{cause: err}
 			}
 			return nil
+		},
+	}
+}
+
+func newBoxSetupCommand(streams Streams, global *globalOptions) *cobra.Command {
+	return newBoxMaintenanceCommand(streams, global, "setup [name]", "Install or repair box prerequisites and host runtime", "Choose a box to set up", true)
+}
+
+func newBoxUpdateCommand(streams Streams, global *globalOptions) *cobra.Command {
+	return newBoxMaintenanceCommand(streams, global, "update [name]", "Update the box host runtime", "Choose a box to update", false)
+}
+
+func newBoxMaintenanceCommand(streams Streams, global *globalOptions, use, short, prompt string, setup bool) *cobra.Command {
+	return &cobra.Command{
+		Use: use, Short: short, Args: cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			services, closeServices, err := openApplication(cmd.Context(), streams, global.build)
+			if err != nil {
+				return executionError{cause: err}
+			}
+			defer closeServices()
+			explicit := ""
+			if len(args) == 1 {
+				explicit = args[0]
+			}
+			record, err := resolveCommandBox(cmd.Context(), services.boxResolver, streams, global, explicit, prompt)
+			if err != nil {
+				return err
+			}
+			var progress box.Progress
+			if global.output == "human" {
+				renderer := newProgressRenderer(cmd.Context(), streams.Err, streams.ErrIsTerminal && !global.accessible, terminalTheme(global, streams))
+				defer renderer.Close()
+				progress = renderer.Event
+			}
+			if setup {
+				result, setupErr := services.boxes.Setup(cmd.Context(), box.SetupRequest{Name: record.Name, BatchMode: !interactionAllowed(streams, global), Progress: progress})
+				if setupErr != nil {
+					return executionError{cause: setupErr}
+				}
+				return writeSetupResult(streams.Out, global.output, result, terminalTheme(global, streams))
+			}
+			result, updateErr := services.boxes.Update(cmd.Context(), box.UpdateRequest{Name: record.Name, BatchMode: !interactionAllowed(streams, global), Progress: progress})
+			if updateErr != nil {
+				return executionError{cause: updateErr}
+			}
+			return writeUpdateResult(streams.Out, global.output, result)
 		},
 	}
 }
@@ -604,36 +656,16 @@ func newBoxSSHCommand(streams Streams, global *globalOptions) *cobra.Command {
 				}
 			}()
 
-			name := ""
+			explicit := ""
 			if len(args) == 1 {
-				name = args[0]
+				explicit = args[0]
 			}
-			if name != "" {
-				if err = box.ValidateName(name); err != nil {
-					return usageError{cause: err}
-				}
-			}
-			if name == "" {
-				if !interactionAllowed(streams, global) {
-					return usageError{cause: fmt.Errorf("box name is required when prompts are unavailable")}
-				}
-				records, listErr := services.boxes.List(cmd.Context())
-				if listErr != nil {
-					return executionError{cause: listErr}
-				}
-				if err = showInteractiveIntro(cmd.Context(), streams, global); err != nil {
-					return err
-				}
-				name, err = prompts.PickBox(cmd.Context(), promptOptions(streams, global), "Choose a box to connect to", records)
-				if errors.Is(err, prompts.ErrAborted) {
-					return abortError{cause: err}
-				}
-				if err != nil {
-					return executionError{cause: err}
-				}
+			record, err := resolveCommandBox(cmd.Context(), services.boxResolver, streams, global, explicit, "Choose a box to connect to")
+			if err != nil {
+				return err
 			}
 
-			launch, err := services.boxes.PrepareSSH(cmd.Context(), box.SSHRequest{Name: name, BatchMode: global.noInput})
+			launch, err := services.boxes.PrepareSSH(cmd.Context(), box.SSHRequest{Name: record.Name, BatchMode: global.noInput})
 			if err != nil {
 				return executionError{cause: err}
 			}
@@ -804,6 +836,34 @@ func newBoxDestroyCommand(streams Streams, global *globalOptions) *cobra.Command
 func interactionAllowed(streams Streams, options *globalOptions) bool {
 	return streams.InIsTerminal && streams.ErrIsTerminal && !options.noInput && options.output == "human"
 }
+
+type promptBoxSelector struct {
+	options prompts.Options
+	title   string
+}
+
+func (s promptBoxSelector) Select(ctx context.Context, records []box.Record) (string, error) {
+	return prompts.PickBox(ctx, s.options, s.title, records)
+}
+
+func resolveCommandBox(ctx context.Context, resolver *box.Resolver, streams Streams, options *globalOptions, explicit, title string) (box.Record, error) {
+	var selector box.Selector
+	if interactionAllowed(streams, options) {
+		selector = promptBoxSelector{options: promptOptions(streams, options), title: title}
+	}
+	record, err := resolver.Resolve(ctx, box.SelectionRequest{ExplicitName: explicit, Selector: selector})
+	if errors.Is(err, prompts.ErrAborted) {
+		return box.Record{}, abortError{cause: err}
+	}
+	if err != nil {
+		if box.ErrorCode(err) == "invalid_input" {
+			return box.Record{}, usageError{cause: err}
+		}
+		return box.Record{}, executionError{cause: err}
+	}
+	return record, nil
+}
+
 func clearBoxAddScreen(streams Streams, options *globalOptions) {
 	if options.accessible {
 		return
@@ -857,12 +917,31 @@ type capabilitiesDocument struct {
 		ID      string `json:"id"`
 		Version string `json:"version"`
 	} `json:"os"`
-	Architecture        string          `json:"architecture"`
-	WorkspaceRoot       string          `json:"workspace_root"`
-	WorkspaceRootExists bool            `json:"workspace_root_exists"`
-	Git                 box.Tool        `json:"git"`
-	Tmux                box.Tool        `json:"tmux"`
-	HostRuntime         box.HostRuntime `json:"host_runtime"`
+	Architecture        string              `json:"architecture"`
+	WorkspaceRoot       string              `json:"workspace_root"`
+	WorkspaceRootExists bool                `json:"workspace_root_exists"`
+	Git                 toolDocument        `json:"git"`
+	Tmux                toolDocument        `json:"tmux"`
+	HostRuntime         hostRuntimeDocument `json:"host_runtime"`
+}
+
+type toolDocument struct {
+	Available bool   `json:"available"`
+	Version   string `json:"version,omitempty"`
+}
+
+type hostRuntimeDocument struct {
+	Path            string   `json:"path"`
+	Version         string   `json:"version"`
+	ProtocolVersion string   `json:"protocol_version"`
+	Capabilities    []string `json:"capabilities"`
+}
+
+type hostMaintenanceDocument struct {
+	Action          string              `json:"action"`
+	PreviousVersion string              `json:"previous_version,omitempty"`
+	TargetVersion   string              `json:"target_version"`
+	Runtime         hostRuntimeDocument `json:"runtime"`
 }
 
 func documentBox(record box.Record) boxDocument {
@@ -873,9 +952,32 @@ func documentBox(record box.Record) boxDocument {
 	return doc
 }
 func documentCapabilities(value box.Capabilities) capabilitiesDocument {
-	result := capabilitiesDocument{Architecture: value.Architecture, WorkspaceRoot: value.WorkspaceRoot, WorkspaceRootExists: value.WorkspaceRootExists, Git: value.Git, Tmux: value.Tmux, HostRuntime: value.Host}
+	result := capabilitiesDocument{Architecture: value.Architecture, WorkspaceRoot: value.WorkspaceRoot, WorkspaceRootExists: value.WorkspaceRootExists, Git: toolDocument{Available: value.Git.Available, Version: value.Git.Version}, Tmux: toolDocument{Available: value.Tmux.Available, Version: value.Tmux.Version}, HostRuntime: documentHostRuntime(value.Host)}
 	result.OS.ID, result.OS.Version = value.OSID, value.OSVersion
 	return result
+}
+
+func documentHostRuntime(value box.HostRuntime) hostRuntimeDocument {
+	capabilities := append([]string(nil), value.Capabilities...)
+	if capabilities == nil {
+		capabilities = []string{}
+	}
+	return hostRuntimeDocument{Path: value.Path, Version: value.Version, ProtocolVersion: value.ProtocolVersion, Capabilities: capabilities}
+}
+
+func documentHostMaintenance(value box.HostInstallResult) hostMaintenanceDocument {
+	return hostMaintenanceDocument{Action: string(value.Action), PreviousVersion: value.PreviousVersion, TargetVersion: value.TargetVersion, Runtime: documentHostRuntime(value.Runtime)}
+}
+
+func writeUseResult(w io.Writer, output string, record box.Record) error {
+	if output == "json" {
+		return json.NewEncoder(w).Encode(struct {
+			SchemaVersion string `json:"schema_version"`
+			DefaultBox    string `json:"default_box"`
+		}{SchemaVersion: "1", DefaultBox: record.Name})
+	}
+	_, err := fmt.Fprintf(w, "Default box: %s\n", record.Name)
+	return err
 }
 
 func writeListResult(w io.Writer, output string, entries []box.ListEntry, theme *uitheme.Theme) error {
@@ -888,6 +990,7 @@ func writeListResult(w io.Writer, output string, entries []box.ListEntry, theme 
 			Region         string            `json:"region,omitempty"`
 			Reachable      bool              `json:"reachable"`
 			LastObservedAt *string           `json:"last_observed_at"`
+			Default        bool              `json:"default"`
 		}
 		doc := struct {
 			SchemaVersion string     `json:"schema_version"`
@@ -900,6 +1003,7 @@ func writeListResult(w io.Writer, output string, entries []box.ListEntry, theme 
 				SSHDestination: entry.Box.SSHDestination,
 				Region:         entry.Box.ProviderRegion,
 				Reachable:      entry.Reachable,
+				Default:        entry.Box.Default,
 			}
 			if entry.Box.Provider != "" {
 				item.Provider = &providerDocument{ID: entry.Box.Provider, ResourceID: entry.Box.ProviderResourceID, CredentialProfile: entry.Box.CredentialProfile, Region: entry.Box.ProviderRegion}
@@ -926,8 +1030,13 @@ func writeListResult(w io.Writer, output string, entries []box.ListEntry, theme 
 		if entry.HasObservation {
 			observed = entry.LastObservedAt.UTC().Format(time.RFC3339)
 		}
+		defaultMarker := ""
+		if entry.Box.Default {
+			defaultMarker = "yes"
+		}
 		rows = append(rows, []string{
 			entry.Box.Name,
+			defaultMarker,
 			listProviderLabel(entry.Box),
 			firstNonEmpty(entry.Box.ProviderRegion, "—"),
 			reachable,
@@ -935,7 +1044,7 @@ func writeListResult(w io.Writer, output string, entries []box.ListEntry, theme 
 			entry.Box.SSHDestination,
 		})
 	}
-	return writeTable(w, theme, []string{"NAME", "PROVIDER", "REGION", "REACHABLE", "LAST OBSERVED", "SSH"}, rows)
+	return writeTable(w, theme, []string{"NAME", "DEFAULT", "PROVIDER", "REGION", "REACHABLE", "LAST OBSERVED", "SSH"}, rows)
 }
 
 func listProviderLabel(record box.Record) string {
@@ -1026,6 +1135,57 @@ func writeAddResult(w io.Writer, output string, result box.AddResult, theme *uit
 		rows = append(rows, summaryRow{Label: "Installed", Value: strings.Join(result.Installed, ", ")})
 	}
 	return writeReadySummary(w, theme, result.Box.Name+" is ready", rows)
+}
+
+func writeSetupResult(w io.Writer, output string, result box.SetupResult, theme *uitheme.Theme) error {
+	if output == "json" {
+		installed := append([]string(nil), result.Installed...)
+		if installed == nil {
+			installed = []string{}
+		}
+		return json.NewEncoder(w).Encode(struct {
+			SchemaVersion string                  `json:"schema_version"`
+			Box           boxDocument             `json:"box"`
+			Capabilities  capabilitiesDocument    `json:"capabilities"`
+			Host          hostMaintenanceDocument `json:"host"`
+			Installed     []string                `json:"installed"`
+		}{"1", documentBox(result.Box), documentCapabilities(result.Capabilities), documentHostMaintenance(result.Host), installed})
+	}
+	rows := []summaryRow{
+		{Label: "SSH", Value: result.Box.SSHDestination},
+		{Label: "Workspace root", Value: result.Box.WorkspaceRoot},
+		{Label: "OS", Value: formatOS(result.Capabilities)},
+		{Label: "Schooner", Value: formatHostRuntime(result.Capabilities.Host)},
+		{Label: "Host action", Value: string(result.Host.Action)},
+		{Label: "Git", Value: result.Capabilities.Git.Version},
+		{Label: "tmux", Value: result.Capabilities.Tmux.Version},
+	}
+	if len(result.Installed) > 0 {
+		rows = append(rows, summaryRow{Label: "Installed", Value: strings.Join(result.Installed, ", ")})
+	}
+	return writeReadySummary(w, theme, result.Box.Name+" is ready", rows)
+}
+
+func writeUpdateResult(w io.Writer, output string, result box.UpdateResult) error {
+	if output == "json" {
+		return json.NewEncoder(w).Encode(struct {
+			SchemaVersion string                  `json:"schema_version"`
+			Box           boxDocument             `json:"box"`
+			Capabilities  capabilitiesDocument    `json:"capabilities"`
+			Host          hostMaintenanceDocument `json:"host"`
+		}{"1", documentBox(result.Box), documentCapabilities(result.Capabilities), documentHostMaintenance(result.Host)})
+	}
+	switch result.Host.Action {
+	case box.HostReplaced:
+		_, err := fmt.Fprintf(w, "Updated host runtime on %s: %s -> %s\n", result.Box.Name, result.Host.PreviousVersion, result.Host.Runtime.Version)
+		return err
+	case box.HostNewerRetained:
+		_, err := fmt.Fprintf(w, "Host runtime on %s is newer and compatible: %s (local %s); no changes made.\n", result.Box.Name, result.Host.Runtime.Version, result.Host.TargetVersion)
+		return err
+	default:
+		_, err := fmt.Fprintf(w, "Host runtime on %s is current: %s\n", result.Box.Name, result.Host.Runtime.Version)
+		return err
+	}
 }
 
 type summaryRow struct {

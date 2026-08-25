@@ -144,6 +144,10 @@ func (s *Store) FindByName(ctx context.Context, name string) (box.Record, error)
 	return scanRecord(s.db.QueryRowContext(ctx, selectRecord+` WHERE name = ?`, name), name)
 }
 
+func (s *Store) FindByID(ctx context.Context, id string) (box.Record, error) {
+	return scanRecord(s.db.QueryRowContext(ctx, selectRecord+` WHERE id = ?`, id), id)
+}
+
 func (s *Store) FindByRemoteIdentity(ctx context.Context, identity string) (box.Record, error) {
 	return scanRecord(s.db.QueryRowContext(ctx, selectRecord+` WHERE remote_identity = ?`, identity), identity)
 }
@@ -163,6 +167,29 @@ func (s *Store) List(ctx context.Context) ([]box.Record, error) {
 		records = append(records, record)
 	}
 	return records, rows.Err()
+}
+
+func (s *Store) SetDefault(ctx context.Context, name string) (box.Record, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return box.Record{}, err
+	}
+	defer tx.Rollback()
+	record, err := scanRecord(tx.QueryRowContext(ctx, selectRecord+` WHERE name = ?`, name), name)
+	if err != nil {
+		return box.Record{}, err
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE boxes SET is_default = 0 WHERE is_default = 1`); err != nil {
+		return box.Record{}, fmt.Errorf("clear default box: %w", err)
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE boxes SET is_default = 1 WHERE name = ?`, name); err != nil {
+		return box.Record{}, fmt.Errorf("set default box: %w", err)
+	}
+	if err = tx.Commit(); err != nil {
+		return box.Record{}, err
+	}
+	record.Default = true
+	return record, nil
 }
 
 func (s *Store) BeginAdd(ctx context.Context, op box.AddOperation) error {
@@ -278,14 +305,14 @@ func (s *Store) Remove(ctx context.Context, name string) (box.Record, error) {
 	return record, nil
 }
 
-const selectRecord = `SELECT id,name,acquisition,ssh_destination,identity_file,remote_identity,runtime_path,workspace_root,COALESCE(provider,''),COALESCE(provider_resource_id,''),COALESCE(provider_correlation_id,''),COALESCE(credential_profile,''),COALESCE(provider_region,''),created_at,updated_at FROM boxes`
+const selectRecord = `SELECT id,name,acquisition,ssh_destination,identity_file,remote_identity,runtime_path,workspace_root,COALESCE(provider,''),COALESCE(provider_resource_id,''),COALESCE(provider_correlation_id,''),COALESCE(credential_profile,''),COALESCE(provider_region,''),is_default,created_at,updated_at FROM boxes`
 
 type scanner interface{ Scan(...any) error }
 
 func scanRecord(row scanner, key string) (box.Record, error) {
 	var result box.Record
 	var created, updated string
-	err := row.Scan(&result.ID, &result.Name, &result.Acquisition, &result.SSHDestination, &result.IdentityFile, &result.RemoteIdentity, &result.RuntimePath, &result.WorkspaceRoot, &result.Provider, &result.ProviderResourceID, &result.ProviderCorrelationID, &result.CredentialProfile, &result.ProviderRegion, &created, &updated)
+	err := row.Scan(&result.ID, &result.Name, &result.Acquisition, &result.SSHDestination, &result.IdentityFile, &result.RemoteIdentity, &result.RuntimePath, &result.WorkspaceRoot, &result.Provider, &result.ProviderResourceID, &result.ProviderCorrelationID, &result.CredentialProfile, &result.ProviderRegion, &result.Default, &created, &updated)
 	if errors.Is(err, sql.ErrNoRows) {
 		return box.Record{}, box.NotFound(key)
 	}
