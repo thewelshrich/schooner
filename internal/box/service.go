@@ -240,9 +240,14 @@ func (s *Service) maintain(ctx context.Context, req maintenanceRequest) (mainten
 	}); err != nil {
 		return maintenanceResult{}, err
 	}
+	runtimePath := ""
+	if req.Mode == HostUpdate {
+		runtimePath = record.RuntimePath
+	}
 	prepared, err := s.prepareHost(ctx, hostPreparationRequest{
 		Connection:      connection,
 		Identity:        record.RemoteIdentity,
+		RuntimePath:     runtimePath,
 		WorkspaceRoot:   record.WorkspaceRoot,
 		Capabilities:    capabilities,
 		Mode:            req.Mode,
@@ -269,6 +274,7 @@ func (s *Service) maintain(ctx context.Context, req maintenanceRequest) (mainten
 type hostPreparationRequest struct {
 	Connection      Connection
 	Identity        string
+	RuntimePath     string
 	WorkspaceRoot   string
 	Capabilities    Capabilities
 	Mode            HostInstallMode
@@ -289,9 +295,13 @@ type hostPreparationResult struct {
 // adoption and explicit maintenance. Callers must inspect and authenticate the
 // remote identity before entering this method.
 func (s *Service) prepareHost(ctx context.Context, req hostPreparationRequest) (hostPreparationResult, error) {
-	runtimePath, err := hostprotocol.InstallPath(req.Capabilities.Home)
-	if err != nil {
-		return hostPreparationResult{}, NewError("unsupported", err.Error(), err)
+	runtimePath := req.RuntimePath
+	var err error
+	if runtimePath == "" {
+		runtimePath, err = hostprotocol.InstallPath(req.Capabilities.Home)
+		if err != nil {
+			return hostPreparationResult{}, NewError("unsupported", err.Error(), err)
+		}
 	}
 
 	var host HostInstallResult

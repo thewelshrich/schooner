@@ -78,6 +78,7 @@ func TestStatusVerifiesIdentityAndCachesObservation(t *testing.T) {
 	store := newMemoryInventory()
 	store.records["work"] = Record{ID: "box-1", Name: "work", SSHDestination: "work", RemoteIdentity: "remote-1", RuntimePath: "/home/alice/.local/bin/schooner", WorkspaceRoot: "/home/alice/schooner"}
 	runtime := &fakeRuntime{capabilities: readyCapabilities()}
+	runtime.capabilities.Home = "/srv/alice"
 	runtime.capabilities.RemoteIdentity = "remote-1"
 	service := testService(runtime, store)
 	result, err := service.Status(t.Context(), StatusRequest{Name: "work"})
@@ -164,6 +165,7 @@ func TestUpdateUsesUpdateModeWithoutPrerequisiteMutation(t *testing.T) {
 	store := newMemoryInventory()
 	store.records["work"] = Record{ID: "box-1", Name: "work", SSHDestination: "work", RemoteIdentity: "remote-1", RuntimePath: "/home/alice/.local/bin/schooner", WorkspaceRoot: "/home/alice/schooner"}
 	runtime := &fakeRuntime{capabilities: readyCapabilities()}
+	runtime.capabilities.Home = "/srv/alice"
 	runtime.capabilities.RemoteIdentity = "remote-1"
 	runtime.capabilities.Git = Tool{}
 	service := testService(runtime, store)
@@ -172,7 +174,7 @@ func TestUpdateUsesUpdateModeWithoutPrerequisiteMutation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if runtime.ensured.Mode != HostUpdate || runtime.installCalled || result.Host.Action != HostReused {
+	if runtime.ensured.Mode != HostUpdate || runtime.ensured.Path != "/home/alice/.local/bin/schooner" || runtime.installCalled || result.Host.Action != HostReused {
 		t.Fatalf("ensured=%+v install=%t result=%+v", runtime.ensured, runtime.installCalled, result)
 	}
 }
