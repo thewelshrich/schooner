@@ -23,7 +23,7 @@ func TestCloneRepositoryUsesTypedHostLifecycleOperation(t *testing.T) {
 	target := filepath.Join(t.TempDir(), "host-runtime")
 	hello := fmt.Sprintf(`{"schema_version":"1","protocol_version":"1","schooner_version":"v1.2.3","commit":"abc123","box_identity":%q,"os":"linux","architecture":"amd64","capabilities":["repository.clone.v1"]}`, hostTestIdentity)
 	result := fmt.Sprintf(`{"schema_version":"1","protocol_version":"1","box_identity":%q,"action":"clone","recovered":false,"worktree_root":"/home/alice/schooner","inspection":{"worktree_root":"/home/alice/schooner","repository":{"common_directory":"/home/alice/schooner/repo/.git","linked":[]},"worktree":{"path":"/home/alice/schooner/repo","relative_path":"repo","git_directory":"/home/alice/schooner/repo/.git","kind":"primary","detached":false,"status":{"staged":0,"unstaged":0,"untracked":0,"conflicted":0}},"warnings":[]},"path":"/home/alice/schooner/repo"}`, hostTestIdentity)
-	contents := fmt.Sprintf("#!/bin/sh\ncase \"$1 $2 $3\" in\n  'host hello '*) printf '%%s\\n' '%s' ;;\n  'host repository clone') cat >/dev/null; printf '%%s\\n' '%s' ;;\n  *) exit 64 ;;\nesac\n", hello, result)
+	contents := fmt.Sprintf("#!/bin/sh\ncase \"$1 $2 $3 $4\" in\n  'host hello  '*) printf '%%s\\n' '%s' ;;\n  'host repository clone ') cat >/dev/null; printf '%%s\\n' '%s' ;;\n  '--no-input host repository clone') cat >/dev/null; printf '%%s\\n' '%s' ;;\n  *) exit 64 ;;\nesac\n", hello, result, result)
 	if err := os.WriteFile(target, []byte(contents), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -31,6 +31,9 @@ func TestCloneRepositoryUsesTypedHostLifecycleOperation(t *testing.T) {
 	got, err := runtime.CloneRepository(t.Context(), box.Connection{Destination: "trusted-host"}, box.HostRuntime{Path: target}, hostTestIdentity, "git@example.com:owner/repo.git", "main")
 	if err != nil || got.Action != "clone" || got.Path != "/home/alice/schooner/repo" || got.Inspection == nil {
 		t.Fatalf("clone = %+v, %v", got, err)
+	}
+	if _, err = runtime.CloneRepository(t.Context(), box.Connection{Destination: "trusted-host", BatchMode: true}, box.HostRuntime{Path: target}, hostTestIdentity, "git@example.com:owner/repo.git", "main"); err != nil {
+		t.Fatalf("noninteractive clone = %v", err)
 	}
 }
 

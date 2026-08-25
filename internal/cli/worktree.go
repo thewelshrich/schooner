@@ -245,7 +245,9 @@ func runClone(ctx context.Context, streams Streams, global *globalOptions, expli
 	}
 	var result repository.MutationResult
 	if target.direct != nil {
-		response, callErr := target.direct.CloneRepository(ctx, hostruntime.NewCloneRequest(source, branch, target.identity))
+		request := hostruntime.NewCloneRequest(source, branch, target.identity)
+		request.NonInteractive = !interactionAllowed(streams, global)
+		response, callErr := target.direct.CloneRepository(ctx, request)
 		result, err = response.MutationResult, callErr
 	} else {
 		connection := worktreeConnection(target.record, streams, global)
@@ -271,13 +273,20 @@ func runWorktreeMutation(ctx context.Context, streams Streams, global *globalOpt
 	var result repository.MutationResult
 	if target.direct != nil {
 		var response hostruntime.LifecycleResult
+		nonInteractive := !interactionAllowed(streams, global)
 		switch operation {
 		case "add":
-			response, err = target.direct.AddWorktree(ctx, hostruntime.NewWorktreeMutationRequest(args[0], args[1], branch, target.identity))
+			request := hostruntime.NewWorktreeMutationRequest(args[0], args[1], branch, target.identity)
+			request.NonInteractive = nonInteractive
+			response, err = target.direct.AddWorktree(ctx, request)
 		case "remove":
-			response, err = target.direct.RemoveWorktree(ctx, hostruntime.NewWorktreeMutationRequest("", args[0], "", target.identity))
+			request := hostruntime.NewWorktreeMutationRequest("", args[0], "", target.identity)
+			request.NonInteractive = nonInteractive
+			response, err = target.direct.RemoveWorktree(ctx, request)
 		case "prune":
-			response, err = target.direct.PruneWorktrees(ctx, hostruntime.NewWorktreeMutationRequest("", "", "", target.identity))
+			request := hostruntime.NewWorktreeMutationRequest("", "", "", target.identity)
+			request.NonInteractive = nonInteractive
+			response, err = target.direct.PruneWorktrees(ctx, request)
 		}
 		result = response.MutationResult
 	} else {

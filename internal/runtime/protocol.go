@@ -118,6 +118,7 @@ type CloneRequest struct {
 	BoxIdentity     string `json:"box_identity"`
 	Source          string `json:"source"`
 	Branch          string `json:"branch,omitempty"`
+	NonInteractive  bool   `json:"-"`
 }
 
 type WorktreeMutationRequest struct {
@@ -127,6 +128,7 @@ type WorktreeMutationRequest struct {
 	RepositoryPath  string `json:"repository_path,omitempty"`
 	Path            string `json:"path,omitempty"`
 	Branch          string `json:"branch,omitempty"`
+	NonInteractive  bool   `json:"-"`
 }
 
 type ConfigureResult struct {

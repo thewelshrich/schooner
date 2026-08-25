@@ -132,6 +132,7 @@ func newHostCommand(streams Streams, options *globalOptions) *cobra.Command {
 			if err := readRequiredHostRequest(streams, &request); err != nil {
 				return executionError{cause: err}
 			}
+			request.NonInteractive = options.noInput
 			result, err := runtime.CloneRepository(cmd.Context(), request)
 			if err != nil {
 				return encodeLifecycleError(cmd.OutOrStdout(), request.BoxIdentity, err)
@@ -148,6 +149,7 @@ func newHostCommand(streams Streams, options *globalOptions) *cobra.Command {
 				if err := readRequiredHostRequest(streams, &request); err != nil {
 					return executionError{cause: err}
 				}
+				request.NonInteractive = options.noInput
 				result, err := runtime.AddWorktree(cmd.Context(), request)
 				if err != nil {
 					return encodeLifecycleError(cmd.OutOrStdout(), request.BoxIdentity, err)
@@ -162,6 +164,7 @@ func newHostCommand(streams Streams, options *globalOptions) *cobra.Command {
 				if err := readRequiredHostRequest(streams, &request); err != nil {
 					return executionError{cause: err}
 				}
+				request.NonInteractive = options.noInput
 				result, err := runtime.RemoveWorktree(cmd.Context(), request)
 				if err != nil {
 					return encodeLifecycleError(cmd.OutOrStdout(), request.BoxIdentity, err)
@@ -176,6 +179,7 @@ func newHostCommand(streams Streams, options *globalOptions) *cobra.Command {
 				if err := readRequiredHostRequest(streams, &request); err != nil {
 					return executionError{cause: err}
 				}
+				request.NonInteractive = options.noInput
 				result, err := runtime.PruneWorktrees(cmd.Context(), request)
 				if err != nil {
 					return encodeLifecycleError(cmd.OutOrStdout(), request.BoxIdentity, err)

@@ -354,7 +354,11 @@ func (r *Runtime) invokeHostJSON(ctx context.Context, connection box.Connection,
 	if err != nil {
 		return box.NewError("internal", "encode host operation request", err)
 	}
-	command := fixedShellCommand(`runtime_path=$(printf %s "$1" | base64 -d) || exit 64; exec "$runtime_path" `+operation, installed.Path)
+	hostOperation := operation
+	if connection.BatchMode {
+		hostOperation = "--no-input " + operation
+	}
+	command := fixedShellCommand(`runtime_path=$(printf %s "$1" | base64 -d) || exit 64; exec "$runtime_path" `+hostOperation, installed.Path)
 	result, err := r.runRemote(ctx, connection, command, strings.NewReader(string(payload)))
 	if err != nil {
 		return err

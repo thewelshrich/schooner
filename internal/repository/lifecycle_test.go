@@ -529,7 +529,7 @@ func TestLifecycleAddRecoversWhenSourceWorktreeWasRemoved(t *testing.T) {
 	}
 }
 
-func TestLifecycleRemoveDoesNotDeleteReplacementWorktree(t *testing.T) {
+func TestLifecycleCanRemoveReplacementWorktree(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "root")
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		t.Fatal(err)
@@ -554,11 +554,128 @@ func TestLifecycleRemoveDoesNotDeleteReplacementWorktree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = lifecycle.Remove(t.Context(), original.Path); ErrorCode(err) != CodeConflict {
+	if _, err = lifecycle.Remove(t.Context(), original.Path); err != nil {
 		t.Fatalf("replacement removal error = %v", err)
 	}
-	if inspected, inspectErr := Inspect(t.Context(), root, replacement.Path); inspectErr != nil || inspected.Worktree.Branch != "original" {
-		t.Fatalf("replacement Worktree changed: %+v, %v", inspected, inspectErr)
+	if _, inspectErr := Inspect(t.Context(), root, replacement.Path); ErrorCode(inspectErr) != CodeNotFound {
+		t.Fatalf("replacement Worktree remains after intentional removal: %v", inspectErr)
+	}
+}
+
+func TestRenameThroughVerifiedParentDoesNotFollowReplacementSymlink(t *testing.T) {
+	root := t.TempDir()
+	parent := filepath.Join(root, "parent")
+	if err := os.Mkdir(parent, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	destination, err := openDestinationParent(root, parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer destination.Close()
+	stageParent := filepath.Join(root, "stage")
+	if err = os.Mkdir(stageParent, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.Mkdir(filepath.Join(stageParent, "target"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	source, err := os.Open(stageParent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer source.Close()
+	originalParent := filepath.Join(root, "original-parent")
+	if err = os.Rename(parent, originalParent); err != nil {
+		t.Fatal(err)
+	}
+	external := t.TempDir()
+	if err = os.Symlink(external, parent); err != nil {
+		t.Fatal(err)
+	}
+	if err = renameNoReplaceAt(source, "target", destination, "target"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = os.Stat(filepath.Join(originalParent, "target")); err != nil {
+		t.Fatalf("verified destination did not receive Worktree: %v", err)
+	}
+	if _, err = os.Lstat(filepath.Join(external, "target")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("replacement symlink received Worktree: %v", err)
+	}
+}
+
+func TestWorktreeIdentityAllowsUnbornHead(t *testing.T) {
+	gitDirectory := t.TempDir()
+	if err := os.WriteFile(filepath.Join(gitDirectory, worktreeIncarnationFile), []byte("incarnation\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	inspection := Inspection{Repository: Repository{CommonDirectory: "/repo/.git"}, Worktree: Worktree{Path: "/root/unborn", GitDirectory: gitDirectory, Branch: "unborn"}}
+	record := operationRecord{CommonDirectory: "/repo/.git", GitDirectory: gitDirectory, Branch: "unborn", IncarnationSHA256: fingerprint("incarnation\n")}
+	matched, err := worktreeIdentityMatchesRecord(inspection, &record, "/root/unborn")
+	if err != nil || !matched {
+		t.Fatalf("unborn Worktree identity = %t, %v", matched, err)
+	}
+}
+
+func TestInitializedSubmodulesAreDetectedBeforeMove(t *testing.T) {
+	root := t.TempDir()
+	lifecycle, err := NewLifecycle(root, filepath.Join(t.TempDir(), "state"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, output := range map[string]string{"none": "-abc module\n", "initialized": " abc module\n"} {
+		t.Run(name, func(t *testing.T) {
+			lifecycle.commands = lifecycleRunnerFunc(func(context.Context, string, ...string) (process.Result, error) {
+				return process.Result{Stdout: []byte(output)}, nil
+			})
+			initialized, detectErr := lifecycle.hasInitializedSubmodules(t.Context(), root)
+			if detectErr != nil || initialized != (name == "initialized") {
+				t.Fatalf("initialized = %t, %v", initialized, detectErr)
+			}
+		})
+	}
+}
+
+func TestLifecycleAddRecoversAfterRenameBeforeGitRepair(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "root")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	lifecycle, err := NewLifecycle(root, filepath.Join(t.TempDir(), "state"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cloned, err := lifecycle.Clone(t.Context(), CloneRequest{Source: createLifecycleSource(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runLifecycleGit(t, cloned.Path, "branch", "repairable")
+	failedRepair := false
+	lifecycle.commands = lifecycleRunnerFunc(func(ctx context.Context, name string, args ...string) (process.Result, error) {
+		if slices.Contains(args, "repair") && !failedRepair {
+			failedRepair = true
+			return process.Result{}, errors.New("injected repair failure")
+		}
+		return (osMutationRunner{}).Run(ctx, name, args...)
+	})
+	if _, err = lifecycle.Add(t.Context(), AddRequest{RepositoryPath: cloned.Path, Path: "repairable", Branch: "repairable"}); ErrorCode(err) != CodeOutcomeUnknown {
+		t.Fatalf("post-rename repair error = %v", err)
+	}
+	lifecycle.commands = osMutationRunner{}
+	recovered, err := lifecycle.Add(t.Context(), AddRequest{RepositoryPath: cloned.Path, Path: "repairable", Branch: "repairable"})
+	if err != nil || !recovered.Recovered || recovered.Inspection == nil {
+		t.Fatalf("post-rename recovery = %+v, %v", recovered, err)
+	}
+}
+
+func TestCatalogDiscoveryTruncationBlocksPrune(t *testing.T) {
+	for _, message := range []string{"filesystem entry limit of 10000 reached", "checkout candidate limit of 500 reached", "catalog output limit of 786432 bytes reached"} {
+		if !catalogDiscoveryTruncated(Catalog{Warnings: []Warning{{Message: message}}}) {
+			t.Fatalf("truncation warning was not detected: %s", message)
+		}
+	}
+	if catalogDiscoveryTruncated(Catalog{Warnings: []Warning{{Message: "ordinary inspection warning"}}}) {
+		t.Fatal("ordinary warning was treated as truncation")
 	}
 }
 
@@ -598,9 +715,12 @@ func TestUnlockStagedWorktreeRecoversWithoutLocalizedDiagnostics(t *testing.T) {
 
 func TestGitMutationsUseNonInteractiveSSH(t *testing.T) {
 	for _, expected := range []string{"GIT_SSH_COMMAND=ssh -o BatchMode=yes", "GIT_SSH_VARIANT=ssh"} {
-		if !slices.Contains(gitMutationEnvironment, expected) {
-			t.Fatalf("Git mutation environment does not contain %q: %v", expected, gitMutationEnvironment)
+		if !slices.Contains(gitMutationEnvironment(true), expected) {
+			t.Fatalf("noninteractive Git mutation environment does not contain %q: %v", expected, gitMutationEnvironment(true))
 		}
+	}
+	if environment := gitMutationEnvironment(false); len(environment) != 0 {
+		t.Fatalf("interactive Git mutation environment disables prompts: %v", environment)
 	}
 }
 
