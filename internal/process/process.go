@@ -60,6 +60,7 @@ func RunCapturedWithoutEnvironment(ctx context.Context, maximum int, excluded []
 	}
 	environment = append(environment, extra...)
 	command := exec.CommandContext(ctx, name, arguments...)
+	configureCommandCancellation(command)
 	command.Env = environment
 	stdout := &boundedWriter{maximum: maximum}
 	stderr := &boundedWriter{maximum: maximum}
@@ -76,6 +77,7 @@ func run(ctx context.Context, maximum int, environment []string, name string, ar
 	commandContext, cancel := context.WithCancel(ctx)
 	defer cancel()
 	command := exec.CommandContext(commandContext, name, arguments...)
+	configureCommandCancellation(command)
 	if environment != nil {
 		command.Env = environment
 	}

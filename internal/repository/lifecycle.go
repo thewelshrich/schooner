@@ -213,10 +213,17 @@ func (l *Lifecycle) Clone(ctx context.Context, request CloneRequest) (MutationRe
 			if _, err = l.runGit(ctx, args...); err != nil {
 				return MutationResult{}, err
 			}
+			record.Checkpoint = "clone_finished"
+			if err = l.save(record); err != nil {
+				return MutationResult{}, err
+			}
 		}
 		staged, err := Inspect(ctx, l.root, record.StagingPath)
 		if err != nil {
 			return MutationResult{}, &Error{Code: CodeOutcomeUnknown, Message: "Git clone finished but its staged Worktree could not be verified", Cause: err}
+		}
+		if record.Checkpoint == "clone_pending" {
+			return MutationResult{}, &Error{Code: CodeOutcomeUnknown, Message: "staged clone exists but successful Git completion was not checkpointed"}
 		}
 		recordSnapshot(record, staged)
 		record.Checkpoint = "promote_pending"
@@ -258,9 +265,10 @@ func (l *Lifecycle) Add(ctx context.Context, request AddRequest) (MutationResult
 	intent := fingerprint("worktree_add", target, repositoryInspection.Repository.CommonDirectory, request.Branch)
 	return l.withOperation(ctx, "worktree_add", target, intent, func(record *operationRecord, recovered bool) (MutationResult, error) {
 		if existing, inspectErr := Inspect(ctx, l.root, target); inspectErr == nil {
-			if (record.Checkpoint == "complete" || record.Checkpoint == "move_pending") && existing.Repository.CommonDirectory == repositoryInspection.Repository.CommonDirectory && (request.Branch == "" || existing.Worktree.Branch == request.Branch) {
+			if (record.Checkpoint == "complete" || record.Checkpoint == "move_pending") && worktreeMatchesRecord(existing, record, target, repositoryInspection.Repository.CommonDirectory) {
 				_, _ = l.runGit(ctx, "-C", repositoryInspection.Worktree.Path, "worktree", "unlock", existing.Worktree.Path)
-				record.CommonDirectory, record.Branch, record.Checkpoint = existing.Repository.CommonDirectory, existing.Worktree.Branch, "complete"
+				recordSnapshot(record, existing)
+				record.Checkpoint = "complete"
 				if err = l.save(record); err != nil {
 					return MutationResult{}, err
 				}
@@ -306,7 +314,8 @@ func (l *Lifecycle) Add(ctx context.Context, request AddRequest) (MutationResult
 		if err != nil || staged.Repository.CommonDirectory != repositoryInspection.Repository.CommonDirectory {
 			return MutationResult{}, &Error{Code: CodeOutcomeUnknown, Message: "staged linked Worktree could not be verified", Cause: err}
 		}
-		record.CommonDirectory, record.Branch, record.Checkpoint = staged.Repository.CommonDirectory, staged.Worktree.Branch, "move_pending"
+		recordSnapshot(record, staged)
+		record.Checkpoint = "move_pending"
 		if err = l.save(record); err != nil {
 			return MutationResult{}, err
 		}
@@ -324,7 +333,8 @@ func (l *Lifecycle) Add(ctx context.Context, request AddRequest) (MutationResult
 		if err != nil {
 			return MutationResult{}, &Error{Code: CodeOutcomeUnknown, Message: "linked Worktree could not be verified", Cause: err}
 		}
-		record.CommonDirectory, record.Branch, record.Checkpoint = inspected.Repository.CommonDirectory, inspected.Worktree.Branch, "complete"
+		recordSnapshot(record, inspected)
+		record.Checkpoint = "complete"
 		if err = l.save(record); err != nil {
 			return MutationResult{}, err
 		}
@@ -620,6 +630,14 @@ func cloneMatchesRecord(inspected Inspection, record *operationRecord, target st
 		inspected.Repository.Origin == record.Origin
 }
 
+func worktreeMatchesRecord(inspected Inspection, record *operationRecord, target, commonDirectory string) bool {
+	return inspected.Worktree.Path == target &&
+		inspected.Repository.CommonDirectory == commonDirectory &&
+		inspected.Worktree.Branch == record.Branch &&
+		inspected.Worktree.HEAD == record.HEAD &&
+		inspected.Worktree.Detached == record.Detached
+}
+
 func (l *Lifecycle) reconcileRemoved(ctx context.Context, target string, record *operationRecord, recovered bool) (MutationResult, error) {
 	if record.CommonDirectory == "" {
 		return MutationResult{}, &Error{Code: CodeOutcomeUnknown, Message: "Worktree removal checkpoint has no repository relationship"}
@@ -819,6 +837,18 @@ func (l *Lifecycle) save(record *operationRecord) error {
 	}
 	if err = os.Rename(path, l.recordPath(record.IntentSHA256)); err != nil {
 		return fmt.Errorf("replace Git operation checkpoint: %w", err)
+	}
+	directory, err := os.Open(l.state)
+	if err != nil {
+		return fmt.Errorf("open Git operation checkpoint directory: %w", err)
+	}
+	syncErr := directory.Sync()
+	closeDirectoryErr := directory.Close()
+	if syncErr != nil {
+		return fmt.Errorf("sync Git operation checkpoint directory: %w", syncErr)
+	}
+	if closeDirectoryErr != nil {
+		return fmt.Errorf("close Git operation checkpoint directory: %w", closeDirectoryErr)
 	}
 	return nil
 }

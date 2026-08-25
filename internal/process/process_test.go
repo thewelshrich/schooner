@@ -3,6 +3,8 @@ package process
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -52,5 +54,23 @@ func TestRunCapturedBoundsWithoutCancellingCommand(t *testing.T) {
 	overridden, err := RunCapturedWithoutEnvironment(t.Context(), 16, nil, []string{"SCHOONER_PROCESS_OVERRIDE=new"}, "/bin/sh", "-c", `printf %s "$SCHOONER_PROCESS_OVERRIDE"`)
 	if err != nil || string(overridden.Stdout) != "new" {
 		t.Fatalf("override = %+v, %v", overridden, err)
+	}
+}
+
+func TestRunCapturedCancellationTerminatesDescendants(t *testing.T) {
+	output := filepath.Join(t.TempDir(), "descendant-output")
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	_, err := RunCapturedWithoutEnvironment(ctx, 64, nil, nil, "/bin/sh", "-c", `(sleep 0.3; printf leaked > "$1") & wait`, "sh", output)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("cancellation error = %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > 250*time.Millisecond {
+		t.Fatalf("cancellation waited for descendant: %v", elapsed)
+	}
+	time.Sleep(350 * time.Millisecond)
+	if _, err = os.Stat(output); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("descendant survived cancellation: %v", err)
 	}
 }

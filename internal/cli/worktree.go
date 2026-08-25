@@ -477,17 +477,20 @@ func writeLifecycleResult(writer io.Writer, output string, result repository.Mut
 	}
 	switch result.Action {
 	case "clone":
-		_, _ = fmt.Fprintf(writer, "Cloned %s\n", humanSafe(result.Path))
+		_, err := fmt.Fprintf(writer, "Cloned %s\n", humanSafe(result.Path))
+		return err
 	case "worktree_add":
-		_, _ = fmt.Fprintf(writer, "Added Worktree %s\n", humanSafe(result.Path))
+		_, err := fmt.Fprintf(writer, "Added Worktree %s\n", humanSafe(result.Path))
+		return err
 	case "worktree_remove":
-		_, _ = fmt.Fprintf(writer, "Removed Worktree %s\n", humanSafe(result.Path))
+		_, err := fmt.Fprintf(writer, "Removed Worktree %s\n", humanSafe(result.Path))
+		return err
 	case "worktree_prune":
-		_, _ = fmt.Fprintf(writer, "Pruned Worktree registrations for %d repositories\n", result.RepositoriesChecked)
+		_, err := fmt.Fprintf(writer, "Pruned Worktree registrations for %d repositories\n", result.RepositoriesChecked)
+		return err
 	default:
 		return fmt.Errorf("unsupported lifecycle action %q", result.Action)
 	}
-	return nil
 }
 
 func flattenWorktrees(repositories []repository.Repository) []repository.Worktree {

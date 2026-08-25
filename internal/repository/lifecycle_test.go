@@ -219,6 +219,45 @@ func TestLifecycleCloneRecoveryRejectsDestinationCreatedBeforePromotion(t *testi
 	}
 }
 
+func TestLifecycleCloneRecoveryRejectsUnconfirmedStagedClone(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "root")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	source := createLifecycleSource(t)
+	lifecycle, err := NewLifecycle(root, filepath.Join(t.TempDir(), "state"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root = lifecycle.root
+	target := filepath.Join(root, "source")
+	intent := fingerprint("clone", target, source, "")
+	record := operationRecord{
+		SchemaVersion:  operationSchemaVersion,
+		ID:             intent[:24],
+		Kind:           "clone",
+		IntentSHA256:   intent,
+		TargetPath:     target,
+		StagingPath:    filepath.Join(root, ".schooner-stage-"+intent[:24], "source"),
+		Checkpoint:     "clone_pending",
+		OwnershipToken: strings.Repeat("c", 64),
+	}
+	if err = lifecycle.createOwnedStage(&record); err != nil {
+		t.Fatal(err)
+	}
+	runLifecycleGit(t, root, "clone", "--", source, record.StagingPath)
+	if err = lifecycle.save(&record); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err = lifecycle.Clone(t.Context(), CloneRequest{Source: source}); ErrorCode(err) != CodeOutcomeUnknown {
+		t.Fatalf("unconfirmed staged clone recovery error = %v", err)
+	}
+	if _, err = os.Stat(record.StagingPath); err != nil {
+		t.Fatalf("unconfirmed staged clone was changed: %v", err)
+	}
+}
+
 func TestLifecycleRemovalRecoveryRejectsStaleGitRegistration(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "root")
 	if err := os.MkdirAll(root, 0o755); err != nil {
@@ -289,6 +328,31 @@ func TestLifecycleCloneAcceptsTagSelector(t *testing.T) {
 	result, err := lifecycle.Clone(t.Context(), CloneRequest{Source: source, Branch: "v1.0.0"})
 	if err != nil || result.Inspection == nil || !result.Inspection.Worktree.Detached {
 		t.Fatalf("tag clone = %+v, %v", result, err)
+	}
+}
+
+func TestLifecycleAddRecoversDetachedTag(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "root")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	source := createLifecycleSource(t)
+	runLifecycleGit(t, source, "tag", "v1.0.0", "main")
+	lifecycle, err := NewLifecycle(root, filepath.Join(t.TempDir(), "state"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cloned, err := lifecycle.Clone(t.Context(), CloneRequest{Source: source})
+	if err != nil {
+		t.Fatal(err)
+	}
+	added, err := lifecycle.Add(t.Context(), AddRequest{RepositoryPath: cloned.Path, Path: "tagged", Branch: "v1.0.0"})
+	if err != nil || added.Inspection == nil || !added.Inspection.Worktree.Detached {
+		t.Fatalf("detached add = %+v, %v", added, err)
+	}
+	recovered, err := lifecycle.Add(t.Context(), AddRequest{RepositoryPath: cloned.Path, Path: "tagged", Branch: "v1.0.0"})
+	if err != nil || !recovered.Recovered || recovered.Path != added.Path {
+		t.Fatalf("detached add recovery = %+v, %v", recovered, err)
 	}
 }
 
