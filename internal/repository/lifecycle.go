@@ -160,17 +160,10 @@ func DefaultOperationStateDirectory() (string, error) {
 }
 
 func OperationStateDirectory(home string) (string, error) {
-	base := os.Getenv("XDG_STATE_HOME")
-	if base == "" {
-		if home == "" || !filepath.IsAbs(home) {
-			return "", fmt.Errorf("resolve operation state directory: current user home is invalid")
-		}
-		base = filepath.Join(home, ".local", "state")
+	if home == "" || !filepath.IsAbs(home) {
+		return "", fmt.Errorf("resolve operation state directory: current user home is invalid")
 	}
-	if !filepath.IsAbs(base) {
-		return "", fmt.Errorf("XDG_STATE_HOME must be an absolute path")
-	}
-	return filepath.Join(filepath.Clean(base), "schooner", "operations", "git"), nil
+	return filepath.Join(filepath.Clean(home), ".local", "state", "schooner", "operations", "git"), nil
 }
 
 func (l *Lifecycle) Clone(ctx context.Context, request CloneRequest) (MutationResult, error) {

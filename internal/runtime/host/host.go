@@ -384,7 +384,8 @@ func (r *Runtime) ResumeSession(ctx context.Context, request hostruntime.Session
 	if err != nil {
 		return InteractiveResult{}, err
 	}
-	return runInteractive(ctx, "", attachment.Path, attachment.Args, terminal)
+	exitCode, err := process.RunInteractiveWithoutEnvironment(ctx, "", attachment.Path, attachment.Args, attachment.ExcludedEnvironment, terminal.In, terminal.Out, terminal.Err)
+	return InteractiveResult{ExitCode: exitCode}, err
 }
 
 func (r *Runtime) OpenWorktreeShell(ctx context.Context, request hostruntime.WorktreeShellRequest, terminal TerminalIO) (InteractiveResult, error) {

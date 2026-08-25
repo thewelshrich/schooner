@@ -27,6 +27,19 @@ func TestRunInteractiveAttachesStreamsDirectoryAndExitStatus(t *testing.T) {
 	}
 }
 
+func TestRunInteractiveWithoutEnvironmentRemovesSelectedVariables(t *testing.T) {
+	t.Setenv("SCHOONER_TEST_REMOVE", "secret")
+	t.Setenv("SCHOONER_TEST_KEEP", "visible")
+	var stdout bytes.Buffer
+	exitCode, err := RunInteractiveWithoutEnvironment(t.Context(), "", "/bin/sh", []string{"-c", `printf '%s:%s' "${SCHOONER_TEST_REMOVE-unset}" "$SCHOONER_TEST_KEEP"`}, []string{"SCHOONER_TEST_REMOVE"}, nil, &stdout, io.Discard)
+	if err != nil || exitCode != 0 {
+		t.Fatalf("exit code = %d, error = %v", exitCode, err)
+	}
+	if stdout.String() != "unset:visible" {
+		t.Fatalf("environment = %q", stdout.String())
+	}
+}
+
 func TestInteractiveTerminalRejectsNonTTYStreams(t *testing.T) {
 	if interactiveTerminal(strings.NewReader("not a terminal")) {
 		t.Fatal("ordinary reader was treated as an interactive terminal")

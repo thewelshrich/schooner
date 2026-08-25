@@ -3,6 +3,7 @@
 package session
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -35,6 +36,8 @@ const (
 	MaxLogBytes         = 64 << 10
 	maxMetadataBytes    = 1 << 20
 	maxSessions         = 256
+	maxPanes            = 4096
+	tmuxSocketName      = "default"
 
 	managedActionGranted = "schooner-managed-action-v1"
 	managedActionRefused = "schooner-managed-action-refused-v1"
@@ -97,9 +100,10 @@ type StopResult struct {
 }
 
 type Attachment struct {
-	Session Session
-	Path    string
-	Args    []string
+	Session             Session
+	Path                string
+	Args                []string
+	ExcludedEnvironment []string
 }
 
 type commandRunner interface {
@@ -109,7 +113,10 @@ type commandRunner interface {
 type osCommandRunner struct{}
 
 func (osCommandRunner) Run(ctx context.Context, maximum int, name string, args ...string) (process.Result, error) {
-	return process.RunCapturedWithoutEnvironment(ctx, maximum, nil, []string{"LC_ALL=C", "LANG=C"}, name, args...)
+	if name == "tmux" {
+		args = append([]string{"-L", tmuxSocketName}, args...)
+	}
+	return process.RunCapturedWithoutEnvironment(ctx, maximum, []string{"TMUX", "TMUX_TMPDIR"}, []string{"LC_ALL=C", "LANG=C"}, name, args...)
 }
 
 type Service struct {
@@ -319,13 +326,17 @@ func (s *Service) Attachment(ctx context.Context, selector string, insideTmux bo
 	if insideTmux {
 		command = "switch-client"
 	}
-	args := []string{command, "-t", value.TmuxID}
+	args := []string{"-L", tmuxSocketName, command, "-t", value.TmuxID}
 	if value.Ownership == Managed {
 		action := fmt.Sprintf("%s -t %s", command, value.TmuxID)
 		refusal := "display-message -p 'Schooner refused attachment because Session ownership changed.' ; run-shell \"exit 76\""
-		args = managedActionArguments(value, action, refusal)
+		args = append([]string{"-L", tmuxSocketName}, managedActionArguments(value, action, refusal)...)
 	}
-	return Attachment{Session: value, Path: "tmux", Args: args}, nil
+	excluded := []string(nil)
+	if !insideTmux {
+		excluded = []string{"TMUX", "TMUX_TMPDIR"}
+	}
+	return Attachment{Session: value, Path: "tmux", Args: args, ExcludedEnvironment: excluded}, nil
 }
 
 func (s *Service) Logs(ctx context.Context, id string, lines int) (LogsResult, error) {
@@ -530,7 +541,7 @@ func classifyRow(row tmuxRow) Session {
 }
 
 func listPanes(ctx context.Context, commands commandRunner) (map[string][]string, error) {
-	result, err := commands.Run(ctx, maxMetadataBytes, "tmux", "list-panes", "-a", "-F", "#{session_id}\t#{pane_current_path}")
+	result, err := commands.Run(ctx, maxMetadataBytes, "tmux", "list-panes", "-a", "-F", "#{session_id}\t#{n:pane_current_path}\t#{pane_current_path}")
 	if err != nil {
 		message := strings.ToLower(string(result.Stderr))
 		if process.ExitCode(err) == 1 && (strings.Contains(message, "no server running") || strings.Contains(message, "no sessions") || strings.Contains(message, "no such file or directory")) {
@@ -541,17 +552,36 @@ func listPanes(ctx context.Context, commands commandRunner) (map[string][]string
 	if result.Truncated {
 		return nil, &repository.Error{Code: repository.CodeOutcomeUnknown, Message: "tmux pane metadata exceeded 1 MiB"}
 	}
+	return parsePanes(result.Stdout)
+}
+
+func parsePanes(output []byte) (map[string][]string, error) {
 	grouped := map[string][]string{}
-	text := strings.TrimSuffix(strings.ReplaceAll(string(result.Stdout), "\r\n", "\n"), "\n")
-	if text == "" {
-		return grouped, nil
-	}
-	for _, line := range strings.Split(text, "\n") {
-		fields := strings.SplitN(line, "\t", 2)
-		if len(fields) != 2 || !validTmuxID(fields[0]) || !canonicalAbsolute(fields[1]) {
+	for count := 0; len(output) > 0; count++ {
+		if count >= maxPanes {
+			return nil, &repository.Error{Code: repository.CodeOutcomeUnknown, Message: "tmux pane count exceeded 4096"}
+		}
+		first := bytes.IndexByte(output, '\t')
+		if first < 0 {
 			return nil, errors.New("tmux returned malformed pane metadata")
 		}
-		grouped[fields[0]] = append(grouped[fields[0]], fields[1])
+		secondRelative := bytes.IndexByte(output[first+1:], '\t')
+		if secondRelative < 0 {
+			return nil, errors.New("tmux returned malformed pane metadata")
+		}
+		second := first + 1 + secondRelative
+		tmuxID := string(output[:first])
+		length, err := strconv.Atoi(string(output[first+1 : second]))
+		pathStart := second + 1
+		if err != nil || length < 0 || length > 4096 || pathStart+length >= len(output) || output[pathStart+length] != '\n' {
+			return nil, errors.New("tmux returned malformed pane metadata")
+		}
+		path := string(output[pathStart : pathStart+length])
+		if !validTmuxID(tmuxID) || !canonicalPanePath(path) {
+			return nil, errors.New("tmux returned malformed pane metadata")
+		}
+		grouped[tmuxID] = append(grouped[tmuxID], path)
+		output = output[pathStart+length+1:]
 	}
 	return grouped, nil
 }
@@ -689,6 +719,10 @@ func canonicalAbsolute(value string) bool {
 	return value != "" && filepath.IsAbs(value) && filepath.Clean(value) == value && len(value) <= 4096 && !hasControl(value)
 }
 
+func canonicalPanePath(value string) bool {
+	return value != "" && filepath.IsAbs(value) && filepath.Clean(value) == value && len(value) <= 4096
+}
+
 func safeLabel(value string, maximum int) bool {
 	return value != "" && len(value) <= maximum && utf8.ValidString(value) && !hasControl(value)
 }
@@ -705,4 +739,7 @@ func hasControl(value string) bool {
 	return false
 }
 
-func InsideTmux() bool { return os.Getenv("TMUX") != "" }
+func InsideTmux() bool {
+	socket, _, found := strings.Cut(os.Getenv("TMUX"), ",")
+	return found && filepath.Base(socket) == tmuxSocketName && filepath.Dir(filepath.Dir(socket)) == "/tmp"
+}

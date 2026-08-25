@@ -4,6 +4,7 @@ import (
 	"context"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -66,6 +67,30 @@ func TestAssociateUnmanagedRequiresEveryPaneToMapToOneWorktree(t *testing.T) {
 	}
 }
 
+func TestParsePanesUsesByteLengthsForControlCharacters(t *testing.T) {
+	first := "/work/repo/tab\tdirectory"
+	second := "/work/repo/new\nline"
+	output := []byte("$1\t" + strconv.Itoa(len(first)) + "\t" + first + "\n$2\t" + strconv.Itoa(len(second)) + "\t" + second + "\n")
+	got, err := parsePanes(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got["$1"]) != 1 || got["$1"][0] != first || len(got["$2"]) != 1 || got["$2"][0] != second {
+		t.Fatalf("panes = %#v", got)
+	}
+}
+
+func TestInsideTmuxRecognizesOnlyPinnedDefaultSocket(t *testing.T) {
+	t.Setenv("TMUX", "/tmp/tmux-501/work,123,0")
+	if InsideTmux() {
+		t.Fatal("named tmux server was treated as Schooner's pinned server")
+	}
+	t.Setenv("TMUX", "/tmp/tmux-501/default,123,0")
+	if !InsideTmux() {
+		t.Fatal("default tmux server was not recognized")
+	}
+}
+
 func TestSessionIdentifiersAreUUIDv4(t *testing.T) {
 	value, err := randomID()
 	if err != nil || !validID(value) || len(compactID(value)) != 32 {
@@ -100,7 +125,7 @@ func (f *fakeTmux) Run(_ context.Context, _ int, name string, args ...string) (p
 		if f.row == "" {
 			return process.Result{}, nil
 		}
-		return process.Result{Stdout: []byte("$4\t" + f.path + "\n")}, nil
+		return process.Result{Stdout: []byte("$4\t" + strconv.Itoa(len(f.path)) + "\t" + f.path + "\n")}, nil
 	case "new-session":
 		f.row = "$4\tschooner-111111111111\t1720000000\t1720000000\t0\t" + SchemaVersion + "\t" + testSessionID + "\tshell\t2024-07-03T09:46:40Z\t" + f.path + "\n"
 		return process.Result{Stdout: []byte("$4\n")}, nil
@@ -203,7 +228,7 @@ func TestServiceStartsReusesCapturesAndStopsManagedSession(t *testing.T) {
 		t.Fatalf("reuse = %+v, %v", reused, err)
 	}
 	attachment, err := manager.Attachment(t.Context(), testSessionID, false)
-	if err != nil || attachment.Path != "tmux" || len(attachment.Args) != 7 || attachment.Args[0] != "if-shell" || !strings.Contains(attachment.Args[4], testSessionID) || attachment.Args[5] != "attach-session -t $4" {
+	if err != nil || attachment.Path != "tmux" || len(attachment.Args) != 9 || attachment.Args[0] != "-L" || attachment.Args[1] != tmuxSocketName || attachment.Args[2] != "if-shell" || !strings.Contains(attachment.Args[6], testSessionID) || attachment.Args[7] != "attach-session -t $4" || len(attachment.ExcludedEnvironment) != 2 {
 		t.Fatalf("attachment = %+v, %v", attachment, err)
 	}
 	logs, err := manager.Logs(t.Context(), testSessionID, 2)

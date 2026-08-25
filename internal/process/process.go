@@ -119,11 +119,35 @@ func ExitCode(err error) int {
 // a real terminal must remain in Schooner's foreground process group; non-TTY
 // operations retain descendant-aware process-group cancellation.
 func RunInteractive(ctx context.Context, directory, name string, arguments []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
+	return runInteractive(ctx, directory, name, arguments, nil, stdin, stdout, stderr)
+}
+
+// RunInteractiveWithoutEnvironment runs an interactive command after removing
+// environment variables that would otherwise change the selected external
+// resource (for example, tmux's current server socket).
+func RunInteractiveWithoutEnvironment(ctx context.Context, directory, name string, arguments, excluded []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
+	return runInteractive(ctx, directory, name, arguments, excluded, stdin, stdout, stderr)
+}
+
+func runInteractive(ctx context.Context, directory, name string, arguments, excluded []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
 	command := exec.CommandContext(ctx, name, arguments...)
 	if !interactiveTerminal(stdin) {
 		configureCommandCancellation(command)
 	}
 	command.Dir = directory
+	if len(excluded) > 0 {
+		blocked := make(map[string]struct{}, len(excluded))
+		for _, key := range excluded {
+			blocked[key] = struct{}{}
+		}
+		for _, entry := range os.Environ() {
+			key, _, found := strings.Cut(entry, "=")
+			if _, remove := blocked[key]; found && remove {
+				continue
+			}
+			command.Env = append(command.Env, entry)
+		}
+	}
 	command.Stdin, command.Stdout, command.Stderr = stdin, stdout, stderr
 	if err := command.Run(); err != nil {
 		if ctx.Err() != nil {

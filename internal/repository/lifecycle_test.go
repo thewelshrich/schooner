@@ -21,6 +21,18 @@ type lifecycleWorktreeUse struct {
 	err      error
 }
 
+func TestOperationStateDirectoryIgnoresInvocationXDGState(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", "/custom/state")
+	got, err := OperationStateDirectory("/home/alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "/home/alice/.local/state/schooner/operations/git"
+	if got != want {
+		t.Fatalf("state directory = %q, want %q", got, want)
+	}
+}
+
 type lifecycleRunnerFunc func(context.Context, string, ...string) (process.Result, error)
 
 type lifecycleWorktreeUseFunc func(context.Context, string) ([]string, error)
