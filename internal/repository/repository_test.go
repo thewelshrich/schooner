@@ -229,6 +229,15 @@ func TestInspectReturnsTypedNotFoundForExistingNonWorktree(t *testing.T) {
 	}
 }
 
+func TestInspectReturnsTypedNotFoundForRegularFile(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "file"), "not a worktree\n")
+	_, err := Inspect(t.Context(), root, "file")
+	if ErrorCode(err) != CodeNotFound {
+		t.Fatalf("error = %v, code = %q", err, ErrorCode(err))
+	}
+}
+
 func TestInspectAcceptsDotForWorktreeAtConfiguredRoot(t *testing.T) {
 	root := t.TempDir()
 	mustGit(t, "init", root)

@@ -96,6 +96,22 @@ func TestStatusVerifiesIdentityAndCachesObservation(t *testing.T) {
 	}
 }
 
+func TestStatusRejectsPersistedWorktreeRootDrift(t *testing.T) {
+	store := newMemoryInventory()
+	store.records["work"] = Record{ID: "box-1", Name: "work", SSHDestination: "work", RemoteIdentity: "remote-1", RuntimePath: "/home/alice/.local/bin/schooner", WorktreeRoot: "/home/alice/schooner"}
+	runtime := &fakeRuntime{capabilities: readyCapabilities()}
+	runtime.capabilities.RemoteIdentity = "remote-1"
+	runtime.capabilities.WorktreeRoot = "/home/alice/other"
+	service := testService(runtime, store)
+	_, err := service.Status(t.Context(), StatusRequest{Name: "work"})
+	if ErrorCode(err) != "conflict" || !strings.Contains(err.Error(), "box setup work") {
+		t.Fatalf("error = %v, code = %s", err, ErrorCode(err))
+	}
+	if len(store.observations) != 0 {
+		t.Fatal("drifted host status was cached")
+	}
+}
+
 func TestStatusReportsMissingRuntimeWithoutRepair(t *testing.T) {
 	store := newMemoryInventory()
 	store.records["work"] = Record{ID: "box-1", Name: "work", SSHDestination: "work", RemoteIdentity: "remote-1", WorktreeRoot: "/home/alice/schooner"}

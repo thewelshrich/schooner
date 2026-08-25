@@ -592,7 +592,7 @@ func resolveSelector(root, selector string) (string, error) {
 	}
 	canonical, err := canonicalDirectory(target)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
+		if errors.Is(err, os.ErrNotExist) || pathIsNotDirectory(target) {
 			return "", worktreeNotFound(selector, err)
 		}
 		return "", err
@@ -613,6 +613,11 @@ func worktreeNotFound(selector string, cause error) error {
 func pathMissing(path string) bool {
 	_, err := os.Stat(path)
 	return errors.Is(err, os.ErrNotExist)
+}
+
+func pathIsNotDirectory(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
 }
 
 func canonicalDirectory(path string) (string, error) {

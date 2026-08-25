@@ -112,6 +112,19 @@ func (r *Runtime) Inspect(ctx context.Context, request hostruntime.InspectReques
 	if err != nil {
 		return hostruntime.Inspection{}, err
 	}
+	configurationPath, err := config.Path()
+	if err != nil {
+		return hostruntime.Inspection{}, err
+	}
+	configured, configurationErr := config.Read(configurationPath)
+	if configurationErr == nil {
+		worktreeRoot, worktreeRootExists, err = r.worktreeRoot(home, configured.WorktreeRoot)
+		if err != nil {
+			return hostruntime.Inspection{}, err
+		}
+	} else if !errors.Is(configurationErr, os.ErrNotExist) {
+		return hostruntime.Inspection{}, configurationErr
+	}
 	git, err := r.tool(ctx, "git", "--version")
 	if err != nil {
 		return hostruntime.Inspection{}, err

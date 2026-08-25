@@ -8,11 +8,14 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/thewelshrich/schooner/internal/config"
 	hostruntime "github.com/thewelshrich/schooner/internal/runtime"
 )
 
 func TestRuntimeHelloInspectAndDoctor(t *testing.T) {
 	home := t.TempDir()
+	configurationPath := filepath.Join(home, "config.toml")
+	t.Setenv("SCHOONER_CONFIG", configurationPath)
 	identity := "11111111-1111-4111-8111-111111111111"
 	identityPath := filepath.Join(home, ".local", "state", "schooner")
 	if err := os.MkdirAll(identityPath, 0o700); err != nil {
@@ -65,6 +68,21 @@ func TestRuntimeHelloInspectAndDoctor(t *testing.T) {
 	inspection, err := runtime.Inspect(t.Context(), hostruntime.NewInspectRequest("~/schooner"))
 	if err != nil || inspection.OSID != "ubuntu" || inspection.WorktreeRoot != expectedWorktree || !inspection.Git.Available || !inspection.PasswordlessSudo {
 		t.Fatalf("Inspect() = %+v, %v", inspection, err)
+	}
+	configuredRoot := filepath.Join(home, "configured-worktrees")
+	if err = os.Mkdir(configuredRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err = config.Write(configurationPath, config.Host{WorktreeRoot: configuredRoot}); err != nil {
+		t.Fatal(err)
+	}
+	configuredRoot, err = filepath.EvalSymlinks(configuredRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inspection, err = runtime.Inspect(t.Context(), hostruntime.NewInspectRequest(expectedWorktree))
+	if err != nil || inspection.WorktreeRoot != configuredRoot || !inspection.WorktreeRootExists {
+		t.Fatalf("configured Inspect() = %+v, %v", inspection, err)
 	}
 	report, err := runtime.Doctor(t.Context(), hostruntime.NewInspectRequest("~/schooner"))
 	if err != nil || !report.Healthy || len(report.Checks) != 6 {

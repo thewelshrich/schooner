@@ -170,6 +170,9 @@ func (s *Service) Status(ctx context.Context, req StatusRequest) (StatusResult, 
 	if capabilities.RemoteIdentity != record.RemoteIdentity {
 		return StatusResult{}, &Error{Code: "conflict", Message: "the connected machine does not match the recorded box identity"}
 	}
+	if capabilities.WorktreeRoot != record.WorktreeRoot {
+		return StatusResult{}, NewError("conflict", fmt.Sprintf("host worktree root differs from local inventory; run \"schooner box setup %s\"", record.Name), nil)
+	}
 	if err := certify(capabilities); err != nil {
 		return StatusResult{}, err
 	}
