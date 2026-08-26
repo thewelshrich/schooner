@@ -64,11 +64,30 @@ func runInteractiveTerminal(command *exec.Cmd, terminal *os.File) (err error) {
 			err = fmt.Errorf("restore terminal foreground process group: %w", restoreErr)
 		}
 	}()
+	// The child may have attempted a terminal read after Start and received
+	// SIGTTIN before the foreground handoff completed. Resume its group after
+	// ownership changes; SIGCONT is harmless when it never stopped.
+	if err := continueProcessGroup(command.Process.Pid); err != nil {
+		if errors.Is(err, os.ErrProcessDone) {
+			return command.Wait()
+		}
+		_ = command.Cancel()
+		_ = command.Wait()
+		return fmt.Errorf("resume interactive command after terminal handoff: %w", err)
+	}
 	return command.Wait()
 }
 
 func killProcessGroup(group int) error {
 	err := syscall.Kill(-group, syscall.SIGKILL)
+	if errors.Is(err, syscall.ESRCH) {
+		return os.ErrProcessDone
+	}
+	return err
+}
+
+func continueProcessGroup(group int) error {
+	err := syscall.Kill(-group, syscall.SIGCONT)
 	if errors.Is(err, syscall.ESRCH) {
 		return os.ErrProcessDone
 	}

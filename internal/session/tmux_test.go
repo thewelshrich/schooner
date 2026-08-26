@@ -383,4 +383,19 @@ func TestMovedManagedSessionStillBlocksCurrentWorktreePath(t *testing.T) {
 	if value.Association != AssociationLive || value.WorktreePath != "/work/repo-moved" || value.MetadataWorktreePath != "/work/repo-old" || !strings.Contains(managedSessionCondition(value), "/work/repo-old") {
 		t.Fatalf("moved Session = %+v", value)
 	}
+	if stale, err := (TmuxUse{commands: fake}).ManagedSessions(t.Context(), "/work/repo-old"); err != nil || len(stale) != 0 {
+		t.Fatalf("stale metadata path sessions = %v, error = %v", stale, err)
+	}
+}
+
+func TestManagedAssociationPrefersPaneLocationWhenMetadataPathIsReused(t *testing.T) {
+	value := classifyRow(tmuxRow{tmuxID: "$4", name: "managed", created: "1720000000", activity: "1720000000", attached: "0", schema: SchemaVersion, id: testSessionID, kind: KindShell, managedCreated: "2024-07-03T09:46:40Z", worktree: "/work/reused"})
+	worktrees := []liveWorktree{
+		{path: "/work/reused", relative: "reused", common: "/work/reused/.git"},
+		{path: "/work/moved", relative: "moved", common: "/work/repo/.git"},
+	}
+	associateManaged(&value, []string{"/work/moved"}, worktrees)
+	if value.Association != AssociationLive || value.WorktreePath != "/work/moved" || value.WorktreeRelativePath != "moved" || value.MetadataWorktreePath != "/work/reused" {
+		t.Fatalf("reused metadata path association = %+v", value)
+	}
 }

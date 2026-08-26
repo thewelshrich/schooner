@@ -171,7 +171,7 @@ func (use TmuxUse) ManagedSessions(ctx context.Context, worktreePath string) ([]
 		if parsed.Ownership == Invalid && row.hasSchoonerMetadata() {
 			return nil, fmt.Errorf("tmux contains invalid Schooner Session metadata")
 		}
-		if parsed.Ownership == Managed && (parsed.WorktreePath == worktreePath || panesUsePath(panes[parsed.TmuxID], worktreePath)) {
+		if parsed.Ownership == Managed && managedUsesPath(parsed, panes[parsed.TmuxID], worktreePath) {
 			result = append(result, parsed.ID)
 		}
 	}
@@ -666,6 +666,19 @@ func flattenWorktrees(catalog repository.Catalog) []liveWorktree {
 }
 
 func associateManaged(value *Session, panes []string, worktrees []liveWorktree) {
+	if len(panes) != 0 {
+		observed := Session{Ownership: Managed}
+		associateUnmanaged(&observed, panes, worktrees)
+		if observed.Association == AssociationLive {
+			value.WorktreePath = observed.WorktreePath
+			value.WorktreeRelativePath = observed.WorktreeRelativePath
+			value.RepositoryCommonDirectory = observed.RepositoryCommonDirectory
+			value.Association = AssociationLive
+			return
+		}
+		value.Association = observed.Association
+		return
+	}
 	for _, worktree := range worktrees {
 		if value.WorktreePath == worktree.path {
 			value.WorktreeRelativePath = worktree.relative
@@ -674,18 +687,14 @@ func associateManaged(value *Session, panes []string, worktrees []liveWorktree) 
 			return
 		}
 	}
-	if len(panes) != 0 {
-		moved := Session{Ownership: Managed}
-		associateUnmanaged(&moved, panes, worktrees)
-		if moved.Association == AssociationLive {
-			value.WorktreePath = moved.WorktreePath
-			value.WorktreeRelativePath = moved.WorktreeRelativePath
-			value.RepositoryCommonDirectory = moved.RepositoryCommonDirectory
-			value.Association = AssociationLive
-			return
-		}
-	}
 	value.Association = AssociationMissing
+}
+
+func managedUsesPath(value Session, panes []string, worktreePath string) bool {
+	if len(panes) != 0 {
+		return panesUsePath(panes, worktreePath)
+	}
+	return value.WorktreePath == worktreePath
 }
 
 func panesUsePath(panes []string, worktreePath string) bool {

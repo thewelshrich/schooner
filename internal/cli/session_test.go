@@ -68,3 +68,14 @@ func TestSessionOutputDistinguishesOwnershipAndAssociation(t *testing.T) {
 		t.Fatalf("JSON output = %s", jsonOutput.String())
 	}
 }
+
+func TestSessionOutputQuotesInvalidNames(t *testing.T) {
+	catalog := session.Catalog{Sessions: []session.Session{{TmuxID: "$2", Name: "forged\tcolumn\n\x1b[31m", Ownership: session.Invalid, Association: session.AssociationUnassociated}}}
+	var output bytes.Buffer
+	if err := writeSessions(&output, "human", catalog); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(output.String(), "forged\tcolumn") || strings.Contains(output.String(), "\x1b[31m") || !strings.Contains(output.String(), `"forged\tcolumn\n\x1b[31m"`) {
+		t.Fatalf("invalid name was not safely quoted: %q", output.String())
+	}
+}

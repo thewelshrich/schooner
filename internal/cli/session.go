@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
@@ -379,7 +380,11 @@ func writeSessions(writer io.Writer, output string, catalog session.Catalog) err
 		if worktree == "" {
 			worktree = "-"
 		}
-		_, _ = fmt.Fprintf(table, "%s\t%s\t%s\t%s\t%s\t%d\n", identifier, value.Name, value.Ownership, value.Association, worktree, value.AttachedClients)
+		name := value.Name
+		if value.Ownership == session.Invalid {
+			name = strconv.QuoteToASCII(name)
+		}
+		_, _ = fmt.Fprintf(table, "%s\t%s\t%s\t%s\t%s\t%d\n", identifier, name, value.Ownership, value.Association, worktree, value.AttachedClients)
 	}
 	return table.Flush()
 }
