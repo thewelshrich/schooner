@@ -5,7 +5,6 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
-	"syscall"
 
 	"github.com/thewelshrich/schooner/internal/cli"
 	"golang.org/x/term"
@@ -18,7 +17,7 @@ var (
 )
 
 func main() {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := signal.NotifyContext(context.Background(), terminationSignals()...)
 	defer stop()
 
 	code := cli.Run(ctx, os.Args[1:], cli.Streams{

@@ -338,6 +338,10 @@ func TestStartReusesExactWorktreeOmittedFromBoundedDiscovery(t *testing.T) {
 	}
 	manager.commands = fake
 
+	resolved, err := manager.Resolve(t.Context(), canonicalWorktree)
+	if err != nil || resolved.ID != testSessionID || resolved.WorktreePath != canonicalWorktree {
+		t.Fatalf("resolve = %+v, error = %v", resolved, err)
+	}
 	result, err := manager.Start(t.Context(), canonicalWorktree)
 	if err != nil || result.Created || result.Session.ID != testSessionID || result.Session.WorktreePath != canonicalWorktree {
 		t.Fatalf("start = %+v, error = %v", result, err)

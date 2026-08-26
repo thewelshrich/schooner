@@ -31,7 +31,7 @@ func TestInteractiveHostRequestUsesStandardPaddedBase64(t *testing.T) {
 	testRemoteShell(t)
 	target := filepath.Join(t.TempDir(), "host-runtime")
 	hello := fmt.Sprintf(`{"schema_version":"1","protocol_version":"1","schooner_version":"v1.2.3","commit":"abc123","box_identity":%q,"os":"linux","architecture":"amd64","capabilities":["worktree.shell.v1"]}`, hostTestIdentity)
-	contents := fmt.Sprintf("#!/bin/sh\ncase \"$1 $2 $3\" in\n  'host hello '*) printf '%%s\\n' '%s' ;;\n  'host worktree shell') printf '%%s\\n' \"$4\" ;;\n  *) exit 64 ;;\nesac\n", hello)
+	contents := fmt.Sprintf("#!/bin/sh\ncase \"$1 $2 $3\" in\n  'host hello '*) printf '%%s\\n' '%s' ;;\n  'host worktree shell') printf '%%s' \"$4\" | base64 -d ;;\n  *) exit 64 ;;\nesac\n", hello)
 	if err := os.WriteFile(target, []byte(contents), 0o755); err != nil {
 		t.Fatal(err)
 	}

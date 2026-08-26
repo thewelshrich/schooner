@@ -343,6 +343,14 @@ func (s *Service) Resolve(ctx context.Context, selector string) (Session, error)
 		if inspectErr != nil {
 			return Session{}, inspectErr
 		}
+		catalog, err = s.list(ctx, &liveWorktree{
+			path:     inspection.Worktree.Path,
+			relative: inspection.Worktree.RelativePath,
+			common:   inspection.Repository.CommonDirectory,
+		})
+		if err != nil {
+			return Session{}, err
+		}
 		for _, value := range catalog.Sessions {
 			if value.Ownership == Managed && value.Association == AssociationLive && value.WorktreePath == inspection.Worktree.Path {
 				matches = append(matches, value)

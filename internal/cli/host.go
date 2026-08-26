@@ -277,7 +277,7 @@ func decodeInteractiveHostRequest(value string, target any) error {
 	if value == "" || len(value) > 16<<10 {
 		return fmt.Errorf("interactive host request is invalid")
 	}
-	decoded, err := base64.RawURLEncoding.DecodeString(value)
+	decoded, err := base64.StdEncoding.DecodeString(value)
 	if err != nil {
 		return fmt.Errorf("decode interactive host request: %w", err)
 	}
