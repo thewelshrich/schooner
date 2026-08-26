@@ -24,11 +24,13 @@ its branch. When no match exists and the local origin is safely cloneable,
 Schooner reviews local-only state and offers to clone the origin's default
 branch before starting a managed Session.
 
-Without a selector, `resume` first chooses the newest managed live Session
-associated with the matching Repository, ordered by tmux activity, creation
-time, and tmux ID. If none matches, it chooses the newest managed live Session
-on the selected Box. Unmanaged or uncertain Sessions always require an
-explicit selection.
+Without a selector, `resume` treats a detected local Repository as binding
+context. It chooses only a managed live Session associated with a matching
+Repository, ordered by tmux activity, creation time, and tmux ID. If none
+matches, it stops and suggests `schooner start`; it never falls back to an
+unrelated Repository. Outside a local Repository, it chooses the newest
+managed live Session on the selected Box. Unmanaged or uncertain Sessions
+require an explicit selection.
 
 These decisions use live observations only. They do not create a Local Link,
 copy local files, synchronize commits, or imply `push` or `pull` behavior.
@@ -43,5 +45,7 @@ copy local files, synchronize commits, or imply `push` or `pull` behavior.
   are warnings before cloning because the clone contains only origin state.
 - Repository and Session ambiguity remains visible rather than being resolved
   through hidden persistent preferences.
+- Repository context is trustworthy: bare `resume` cannot navigate from one
+  local Repository to work for another Repository.
 - Synchronization remains a separate future capability with explicit commands
   and semantics.

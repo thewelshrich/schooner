@@ -109,12 +109,12 @@ func TestPlanResumePrefersNewestManagedLiveSessionForMatchingRepository(t *testi
 		{ID: "matching-new", TmuxID: "$2", Ownership: session.Managed, Association: session.AssociationLive, RepositoryCommonDirectory: "/repo/.git", ActivityAt: now.Add(time.Minute)},
 	}}
 	plan := PlanResume(local, repositories, sessions)
-	if plan.Mode != ResumeUse || plan.Preferred.ID != "matching-new" || plan.Fallback {
+	if plan.Mode != ResumeUse || plan.Preferred.ID != "matching-new" {
 		t.Fatalf("plan = %+v", plan)
 	}
 }
 
-func TestPlanResumeUsesDeterministicActivityFallback(t *testing.T) {
+func TestPlanResumeDoesNotFallBackFromLocalRepository(t *testing.T) {
 	now := time.Date(2026, 8, 26, 12, 0, 0, 0, time.UTC)
 	local := &repository.LocalCheckout{OriginKey: "example.com/missing/repo"}
 	sessions := session.Catalog{Sessions: []session.Session{
@@ -122,12 +122,12 @@ func TestPlanResumeUsesDeterministicActivityFallback(t *testing.T) {
 		{ID: "first", TmuxID: "$1", Ownership: session.Managed, Association: session.AssociationLive, ActivityAt: now, CreatedAt: now},
 	}}
 	plan := PlanResume(local, repository.Catalog{}, sessions)
-	if plan.Mode != ResumeUse || plan.Preferred.ID != "first" || !plan.Fallback {
+	if plan.Mode != ResumeUnavailable || plan.Preferred.ID != "" || len(plan.Choices) != 0 {
 		t.Fatalf("plan = %+v", plan)
 	}
 }
 
-func TestPlanResumeRequiresPickerWhenDiscoveryIsPartial(t *testing.T) {
+func TestPlanResumeDoesNotFallBackWhenRepositoryDiscoveryIsPartial(t *testing.T) {
 	local := &repository.LocalCheckout{OriginKey: "example.com/owner/repo"}
 	repositories := repository.Catalog{Warnings: []repository.Warning{{Message: "catalog output limit reached"}}}
 	sessions := session.Catalog{Sessions: []session.Session{
@@ -135,19 +135,48 @@ func TestPlanResumeRequiresPickerWhenDiscoveryIsPartial(t *testing.T) {
 		{ID: "possibly-matching", TmuxID: "$2", Ownership: session.Managed, Association: session.AssociationMissing},
 	}}
 	plan := PlanResume(local, repositories, sessions)
-	if plan.Mode != ResumeChoose || len(plan.Choices) != 2 || !plan.Fallback || !plan.Incomplete {
+	if plan.Mode != ResumeUnavailable || len(plan.Choices) != 0 || !plan.Incomplete {
 		t.Fatalf("plan = %+v", plan)
 	}
 }
 
-func TestPlanResumeRequiresPickerOutsideRepositoryWhenDiscoveryIsPartial(t *testing.T) {
+func TestPlanResumeUsesNewestManagedSessionOutsideRepository(t *testing.T) {
+	now := time.Date(2026, 8, 26, 12, 0, 0, 0, time.UTC)
 	repositories := repository.Catalog{Warnings: []repository.Warning{{Message: "catalog output limit reached"}}}
 	sessions := session.Catalog{Sessions: []session.Session{
-		{ID: "older-known", TmuxID: "$1", Ownership: session.Managed, Association: session.AssociationLive},
-		{ID: "newer-uncertain", TmuxID: "$2", Ownership: session.Managed, Association: session.AssociationMissing},
+		{ID: "older-known", TmuxID: "$1", Ownership: session.Managed, Association: session.AssociationLive, ActivityAt: now},
+		{ID: "newer-known", TmuxID: "$2", Ownership: session.Managed, Association: session.AssociationLive, ActivityAt: now.Add(time.Minute)},
+		{ID: "newest-uncertain", TmuxID: "$3", Ownership: session.Managed, Association: session.AssociationMissing, ActivityAt: now.Add(time.Hour)},
 	}}
 	plan := PlanResume(nil, repositories, sessions)
-	if plan.Mode != ResumeChoose || len(plan.Choices) != 2 || plan.Fallback || !plan.Incomplete {
+	if plan.Mode != ResumeUse || plan.Preferred.ID != "newer-known" || plan.Incomplete {
+		t.Fatalf("plan = %+v", plan)
+	}
+}
+
+func TestPlanResumeTreatsRepositoryWithoutNetworkOriginAsContext(t *testing.T) {
+	local := &repository.LocalCheckout{TopLevel: "/local/repo"}
+	sessions := session.Catalog{Sessions: []session.Session{{
+		ID: "unrelated", TmuxID: "$1", Ownership: session.Managed, Association: session.AssociationLive,
+	}}}
+	plan := PlanResume(local, repository.Catalog{}, sessions)
+	if plan.Mode != ResumeUnavailable {
+		t.Fatalf("plan = %+v", plan)
+	}
+}
+
+func TestPlanResumeRequiresExplicitChoiceForKnownMatchWhenDiscoveryIsPartial(t *testing.T) {
+	local := &repository.LocalCheckout{OriginKey: "example.com/owner/repo"}
+	repositories := repository.Catalog{
+		Repositories: []repository.Repository{{Origin: "https://example.com/owner/repo", CommonDirectory: "/repo/.git"}},
+		Warnings:     []repository.Warning{{Message: "catalog output limit reached"}},
+	}
+	sessions := session.Catalog{Sessions: []session.Session{
+		{ID: "matching", TmuxID: "$1", Ownership: session.Managed, Association: session.AssociationLive, RepositoryCommonDirectory: "/repo/.git"},
+		{ID: "unrelated", TmuxID: "$2", Ownership: session.Managed, Association: session.AssociationLive, RepositoryCommonDirectory: "/other/.git"},
+	}}
+	plan := PlanResume(local, repositories, sessions)
+	if plan.Mode != ResumeChoose || len(plan.Choices) != 1 || plan.Choices[0].ID != "matching" || !plan.Incomplete {
 		t.Fatalf("plan = %+v", plan)
 	}
 }
@@ -163,12 +192,12 @@ func TestPlanResumeRequiresPickerAcrossDuplicateMatchingRepositories(t *testing.
 		{ID: "second", TmuxID: "$2", Ownership: session.Managed, Association: session.AssociationLive, RepositoryCommonDirectory: "/second/.git"},
 	}}
 	plan := PlanResume(local, repositories, sessions)
-	if plan.Mode != ResumeChoose || len(plan.Choices) != 2 || plan.Fallback {
+	if plan.Mode != ResumeChoose || len(plan.Choices) != 2 {
 		t.Fatalf("plan = %+v", plan)
 	}
 }
 
-func TestPlanResumeRequiresPickerForUnmanagedOrUncertainSession(t *testing.T) {
+func TestPlanResumeRequiresExplicitSelectionForUnmanagedOrUncertainSession(t *testing.T) {
 	sessions := session.Catalog{Sessions: []session.Session{
 		{TmuxID: "$1", Ownership: session.Unmanaged, Association: session.AssociationUnassociated},
 		{ID: "missing", TmuxID: "$2", Ownership: session.Managed, Association: session.AssociationMissing},

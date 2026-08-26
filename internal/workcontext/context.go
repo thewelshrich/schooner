@@ -89,54 +89,56 @@ type ResumePlan struct {
 	Mode       ResumeMode
 	Preferred  session.Session
 	Choices    []session.Session
-	Fallback   bool
 	Incomplete bool
 }
 
-// PlanResume auto-selects only a live, unambiguously associated managed
-// Session. Unmanaged and uncertain Sessions remain explicit picker choices.
+// PlanResume treats a detected local Repository as binding context and never
+// falls back from it to an unrelated Session. Outside a local Repository, it
+// selects the newest live, unambiguously associated managed Session.
 func PlanResume(local *repository.LocalCheckout, catalog repository.Catalog, sessions session.Catalog) ResumePlan {
 	managed := automaticSessions(sessions.Sessions)
-	localContext := local != nil && local.OriginKey != ""
-	if len(catalog.Warnings) != 0 {
-		plan := chooseResume(sessions.Sessions, localContext)
-		plan.Incomplete = true
-		return plan
-	}
-	if localContext {
-		matching := matchingRepositories(local.OriginKey, catalog.Repositories)
-		common := make(map[string]struct{}, len(matching))
-		for _, value := range matching {
-			common[value.CommonDirectory] = struct{}{}
+	if local == nil {
+		if len(managed) == 0 {
+			return chooseResume(sessions.Sessions)
 		}
-		matched := make([]session.Session, 0)
-		for _, value := range managed {
-			if _, ok := common[value.RepositoryCommonDirectory]; ok {
-				matched = append(matched, value)
-			}
-		}
-		if len(matched) != 0 {
-			sortSessions(matched)
-			if sessionsSpanRepositories(matched) {
-				return ResumePlan{Mode: ResumeChoose, Choices: matched}
-			}
-			return ResumePlan{Mode: ResumeUse, Preferred: matched[0]}
-		}
-	}
-	if len(managed) != 0 {
 		sortSessions(managed)
-		return ResumePlan{Mode: ResumeUse, Preferred: managed[0], Fallback: localContext}
+		return ResumePlan{Mode: ResumeUse, Preferred: managed[0]}
 	}
-	return chooseResume(sessions.Sessions, localContext)
+	if local.OriginKey == "" {
+		return ResumePlan{Mode: ResumeUnavailable}
+	}
+
+	matching := matchingRepositories(local.OriginKey, catalog.Repositories)
+	common := make(map[string]struct{}, len(matching))
+	for _, value := range matching {
+		common[value.CommonDirectory] = struct{}{}
+	}
+	matched := make([]session.Session, 0)
+	for _, value := range managed {
+		if _, ok := common[value.RepositoryCommonDirectory]; ok {
+			matched = append(matched, value)
+		}
+	}
+	if len(matched) == 0 {
+		return ResumePlan{Mode: ResumeUnavailable, Incomplete: len(catalog.Warnings) != 0}
+	}
+	sortSessions(matched)
+	if len(catalog.Warnings) != 0 {
+		return ResumePlan{Mode: ResumeChoose, Choices: matched, Incomplete: true}
+	}
+	if sessionsSpanRepositories(matched) {
+		return ResumePlan{Mode: ResumeChoose, Choices: matched}
+	}
+	return ResumePlan{Mode: ResumeUse, Preferred: matched[0]}
 }
 
-func chooseResume(values []session.Session, fallback bool) ResumePlan {
+func chooseResume(values []session.Session) ResumePlan {
 	choices := resumableSessions(values)
 	if len(choices) == 0 {
-		return ResumePlan{Mode: ResumeUnavailable, Fallback: fallback}
+		return ResumePlan{Mode: ResumeUnavailable}
 	}
 	sortSessions(choices)
-	return ResumePlan{Mode: ResumeChoose, Choices: choices, Fallback: fallback}
+	return ResumePlan{Mode: ResumeChoose, Choices: choices}
 }
 
 func matchingRepositories(key string, values []repository.Repository) []repository.Repository {

@@ -154,11 +154,13 @@ Schooner can clone the origin's default branch after showing local dirty,
 unpushed, detached-HEAD, or missing-upstream warnings. Local files and
 unpushed commits are never copied by this flow.
 
-Without a selector, `resume` first chooses the most recently active managed
-live session for the matching repository. If none matches, it chooses the most
-recent managed live session on the selected box. Unmanaged or uncertain tmux
-sessions always require an explicit choice. These decisions use live Git and
-tmux state; Schooner does not persist a local-to-remote repository link.
+Without a selector, `resume` chooses the most recently active managed live
+session for the matching repository. If none matches, it suggests `schooner
+start` instead of opening work for an unrelated repository. Outside a local
+repository, it chooses the most recent managed live session on the selected
+box. Unmanaged or uncertain tmux sessions require an explicit choice. These
+decisions use live Git and tmux state; Schooner does not persist a
+local-to-remote repository link.
 
 ### Provision with DigitalOcean
 
