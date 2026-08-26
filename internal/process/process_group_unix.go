@@ -32,33 +32,18 @@ func runInteractiveTerminal(command *exec.Cmd, terminal *os.File) (err error) {
 		if command.Process == nil {
 			return os.ErrProcessDone
 		}
-		foregroundGroup, foregroundErr := unix.IoctlGetInt(int(terminal.Fd()), unix.TIOCGPGRP)
 		var cancellationErrors []error
-		cancelled := false
-		if foregroundErr == nil && foregroundGroup != parentGroup {
-			_ = stopProcessGroup(foregroundGroup)
-		} else if foregroundErr != nil {
-			cancellationErrors = append(cancellationErrors, foregroundErr)
+		if stopErr := stopProcessGroup(command.Process.Pid); stopErr != nil && !errors.Is(stopErr, os.ErrProcessDone) {
+			cancellationErrors = append(cancellationErrors, stopErr)
 		}
-		_ = stopProcessGroup(command.Process.Pid)
 		if treeErr := terminateDescendants(command.Process.Pid); treeErr != nil {
 			cancellationErrors = append(cancellationErrors, treeErr)
 		}
-		if foregroundErr == nil && foregroundGroup != parentGroup {
-			if killErr := killProcessGroup(foregroundGroup); killErr == nil {
-				cancelled = true
-			} else {
-				cancellationErrors = append(cancellationErrors, killErr)
-			}
-		}
-		if commandKillErr := killProcessGroup(command.Process.Pid); commandKillErr == nil {
-			cancelled = true
-		} else {
-			cancellationErrors = append(cancellationErrors, commandKillErr)
-		}
-		if cancelled {
+		commandKillErr := killProcessGroup(command.Process.Pid)
+		if commandKillErr == nil {
 			return nil
 		}
+		cancellationErrors = append(cancellationErrors, commandKillErr)
 		return errors.Join(cancellationErrors...)
 	}
 	if err := command.Start(); err != nil {
