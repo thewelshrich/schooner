@@ -121,7 +121,7 @@ func newSessionsCommand(streams Streams, global *globalOptions, targets *boxtarg
 		if err != nil {
 			return executionError{cause: err}
 		}
-		return writeSessions(cmd.OutOrStdout(), global.output, catalog, terminalTheme(global, streams))
+		return writeSessions(cmd.OutOrStdout(), global.output, catalog, outputTheme(global, streams))
 	}}
 	command.Flags().StringVar(&explicitBox, "box", "", "box name (always uses OpenSSH)")
 	return command
@@ -192,7 +192,7 @@ func newStopSessionCommand(streams Streams, global *globalOptions, targets *boxt
 		if err != nil {
 			return executionError{cause: err}
 		}
-		return writeSessionStop(cmd.OutOrStdout(), global.output, result, terminalTheme(global, streams))
+		return writeSessionStop(cmd.OutOrStdout(), global.output, result, outputTheme(global, streams))
 	}}
 	command.Flags().StringVar(&explicitBox, "box", "", "box name (always uses OpenSSH)")
 	return command

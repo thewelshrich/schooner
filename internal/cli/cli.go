@@ -328,5 +328,9 @@ type emptyReader struct{}
 func (emptyReader) Read([]byte) (int, error) { return 0, io.EOF }
 
 func colorDisabled(options *globalOptions, streams Streams) bool {
-	return options.color == "never" || (options.color == "auto" && (!streams.ErrIsTerminal || os.Getenv("NO_COLOR") != "" || os.Getenv("TERM") == "dumb"))
+	return colorDisabledForTerminal(options, streams.ErrIsTerminal)
+}
+
+func colorDisabledForTerminal(options *globalOptions, isTerminal bool) bool {
+	return options.color == "never" || (options.color == "auto" && (!isTerminal || os.Getenv("NO_COLOR") != "" || os.Getenv("TERM") == "dumb"))
 }

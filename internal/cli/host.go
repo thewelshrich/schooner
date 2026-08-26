@@ -325,7 +325,7 @@ func newDoctorCommand(streams Streams, options *globalOptions) *cobra.Command {
 			if err != nil {
 				return executionError{cause: err}
 			}
-			return writeDoctorResult(cmd.OutOrStdout(), options.output, report, terminalTheme(options, streams))
+			return writeDoctorResult(cmd.OutOrStdout(), options.output, report, outputTheme(options, streams))
 		},
 	}
 }

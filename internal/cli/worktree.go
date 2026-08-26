@@ -36,7 +36,7 @@ func newWorktreeCommand(streams Streams, global *globalOptions, targets *boxtarg
 				if err != nil {
 					return executionError{cause: err}
 				}
-				return writeWorktreeList(cmd.OutOrStdout(), global.output, catalog, terminalTheme(global, streams))
+				return writeWorktreeList(cmd.OutOrStdout(), global.output, catalog, outputTheme(global, streams))
 			},
 		},
 		&cobra.Command{
@@ -46,7 +46,7 @@ func newWorktreeCommand(streams Streams, global *globalOptions, targets *boxtarg
 				if err != nil {
 					return executionError{cause: err}
 				}
-				return writeWorktreeInspection(cmd.OutOrStdout(), global.output, inspection, terminalTheme(global, streams))
+				return writeWorktreeInspection(cmd.OutOrStdout(), global.output, inspection, outputTheme(global, streams))
 			},
 		},
 	)
@@ -57,7 +57,7 @@ func newWorktreeCommand(streams Streams, global *globalOptions, targets *boxtarg
 			if err != nil {
 				return executionError{cause: err}
 			}
-			return writeLifecycleResult(cmd.OutOrStdout(), global.output, result, terminalTheme(global, streams))
+			return writeLifecycleResult(cmd.OutOrStdout(), global.output, result, outputTheme(global, streams))
 		},
 	}
 	add.Flags().StringVar(&addBranch, "branch", "", "existing branch or ref to check out")
@@ -70,7 +70,7 @@ func newWorktreeCommand(streams Streams, global *globalOptions, targets *boxtarg
 				if err != nil {
 					return executionError{cause: err}
 				}
-				return writeLifecycleResult(cmd.OutOrStdout(), global.output, result, terminalTheme(global, streams))
+				return writeLifecycleResult(cmd.OutOrStdout(), global.output, result, outputTheme(global, streams))
 			},
 		},
 		&cobra.Command{
@@ -80,7 +80,7 @@ func newWorktreeCommand(streams Streams, global *globalOptions, targets *boxtarg
 				if err != nil {
 					return executionError{cause: err}
 				}
-				return writeLifecycleResult(cmd.OutOrStdout(), global.output, result, terminalTheme(global, streams))
+				return writeLifecycleResult(cmd.OutOrStdout(), global.output, result, outputTheme(global, streams))
 			},
 		},
 	)
@@ -97,7 +97,7 @@ func newCloneCommand(streams Streams, global *globalOptions, targets *boxtarget.
 			if err != nil {
 				return executionError{cause: err}
 			}
-			return writeLifecycleResult(cmd.OutOrStdout(), global.output, result, terminalTheme(global, streams))
+			return writeLifecycleResult(cmd.OutOrStdout(), global.output, result, outputTheme(global, streams))
 		},
 	}
 	command.Flags().StringVar(&explicitBox, "box", "", "box name (always uses OpenSSH)")
