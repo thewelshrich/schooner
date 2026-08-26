@@ -40,15 +40,17 @@ type WorktreeUse interface {
 }
 
 type Lifecycle struct {
-	root     string
-	state    string
-	inUse    WorktreeUse
-	commands mutationRunner
-	now      func() time.Time
+	root          string
+	state         string
+	worktreeLocks string
+	inUse         WorktreeUse
+	commands      mutationRunner
+	now           func() time.Time
 }
 
 type LifecycleOptions struct {
-	NonInteractive bool
+	NonInteractive             bool
+	WorktreeLockStateDirectory string
 }
 
 // MutationLock serializes Worktree removal with future managed Session starts.
@@ -148,7 +150,14 @@ func NewLifecycleWithOptions(worktreeRoot, stateDirectory string, inUse Worktree
 	if stateDirectory == "" || !filepath.IsAbs(stateDirectory) || filepath.Clean(stateDirectory) != stateDirectory {
 		return nil, &Error{Code: CodeInvalidInput, Message: "operation state directory must be a canonical absolute path"}
 	}
-	return &Lifecycle{root: root, state: stateDirectory, inUse: inUse, commands: osMutationRunner{nonInteractive: options.NonInteractive}, now: time.Now}, nil
+	worktreeLocks := options.WorktreeLockStateDirectory
+	if worktreeLocks == "" {
+		worktreeLocks = stateDirectory
+	}
+	if !filepath.IsAbs(worktreeLocks) || filepath.Clean(worktreeLocks) != worktreeLocks {
+		return nil, &Error{Code: CodeInvalidInput, Message: "Worktree lock state directory must be a canonical absolute path"}
+	}
+	return &Lifecycle{root: root, state: stateDirectory, worktreeLocks: worktreeLocks, inUse: inUse, commands: osMutationRunner{nonInteractive: options.NonInteractive}, now: time.Now}, nil
 }
 
 func DefaultOperationStateDirectory() (string, error) {
@@ -171,6 +180,15 @@ func OperationStateDirectory(home string) (string, error) {
 		return "", fmt.Errorf("XDG_STATE_HOME must be an absolute path")
 	}
 	return filepath.Join(filepath.Clean(base), "schooner", "operations", "git"), nil
+}
+
+// WorktreeLockStateDirectory is intentionally independent of per-invocation
+// XDG variables so direct and SSH-driven operations coordinate on one host.
+func WorktreeLockStateDirectory(home string) (string, error) {
+	if home == "" || !filepath.IsAbs(home) {
+		return "", fmt.Errorf("resolve Worktree lock state directory: current user home is invalid")
+	}
+	return filepath.Join(filepath.Clean(home), ".local", "state", "schooner", "operations", "git"), nil
 }
 
 func (l *Lifecycle) Clone(ctx context.Context, request CloneRequest) (MutationResult, error) {
@@ -505,7 +523,7 @@ func (l *Lifecycle) Remove(ctx context.Context, selector string) (MutationResult
 	if err != nil {
 		return MutationResult{}, err
 	}
-	lock, err := acquireMutationLock(l.state, target)
+	lock, err := acquireMutationLock(l.worktreeLocks, target)
 	if err != nil {
 		return MutationResult{}, err
 	}

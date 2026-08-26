@@ -183,7 +183,8 @@ func TestGitLifecycleCommandsRunDirectlyOnIdentifiedBox(t *testing.T) {
 		t.Fatal(err)
 	}
 	tmuxMetadata := filepath.Join(home, "tmux-metadata")
-	tmuxScript := "#!/bin/sh\nif [ -f " + fmt.Sprintf("%q", tmuxMetadata) + " ]; then cat " + fmt.Sprintf("%q", tmuxMetadata) + "; exit 0; fi\nprintf '%s\\n' 'no server running' >&2\nexit 1\n"
+	tmuxPanes := filepath.Join(home, "tmux-panes")
+	tmuxScript := "#!/bin/sh\ncase \"$3\" in\n  list-sessions) metadata=" + fmt.Sprintf("%q", tmuxMetadata) + " ;;\n  list-panes) metadata=" + fmt.Sprintf("%q", tmuxPanes) + " ;;\n  *) exit 2 ;;\nesac\nif [ -f \"$metadata\" ]; then cat \"$metadata\"; exit 0; fi\nprintf '%s\\n' 'no server running' >&2\nexit 1\n"
 	if err = os.WriteFile(filepath.Join(bin, "tmux"), []byte(tmuxScript), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +201,10 @@ func TestGitLifecycleCommandsRunDirectlyOnIdentifiedBox(t *testing.T) {
 		t.Fatalf("add code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 	featurePath := filepath.Join(root, "feature")
-	if err = os.WriteFile(tmuxMetadata, []byte("1\tsession-1\t"+featurePath+"\n"), 0o600); err != nil {
+	if err = os.WriteFile(tmuxMetadata, frameTmuxSessionFields([]string{"$1", "schooner-test", "1720000000", "1720000000", "0", "2", "11111111-1111-4111-8111-111111111111", "shell", "2024-07-03T09:46:40Z", featurePath}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(tmuxPanes, []byte(fmt.Sprintf("$1\t%d\t%s\n", len(featurePath), featurePath)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	code, _, stderr = run(t.Context(), []string{"worktree", "remove", "feature", "--output", "json", "--no-input"}, testBuild(), nil)
@@ -208,6 +212,9 @@ func TestGitLifecycleCommandsRunDirectlyOnIdentifiedBox(t *testing.T) {
 		t.Fatalf("protected remove code=%d stderr=%q", code, stderr)
 	}
 	if err = os.Remove(tmuxMetadata); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.Remove(tmuxPanes); err != nil {
 		t.Fatal(err)
 	}
 	code, stdout, stderr = run(t.Context(), []string{"worktree", "remove", "feature", "--output", "json", "--no-input"}, testBuild(), nil)
@@ -218,6 +225,18 @@ func TestGitLifecycleCommandsRunDirectlyOnIdentifiedBox(t *testing.T) {
 	if code != 0 || stderr != "" || !strings.Contains(stdout, `"action":"worktree_prune"`) || !strings.Contains(stdout, `"repositories_checked":1`) {
 		t.Fatalf("prune code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
+}
+
+func frameTmuxSessionFields(fields []string) []byte {
+	var output strings.Builder
+	for index, field := range fields {
+		if index != 0 {
+			output.WriteByte('\t')
+		}
+		_, _ = fmt.Fprintf(&output, "%d\t%s", len(field), field)
+	}
+	output.WriteByte('\n')
+	return []byte(output.String())
 }
 
 func runGitTestCommand(t *testing.T, directory string, arguments ...string) {

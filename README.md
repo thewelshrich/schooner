@@ -32,6 +32,23 @@ The same commands run directly after SSH without a second SSH hop. Git and the
 filesystem remain authoritative; Schooner creates no Repository or Worktree
 IDs or inventory.
 
+Start and resume persistent tmux Sessions in live Worktrees:
+
+```bash
+schooner start repository --box work-api
+schooner sessions --box work-api
+schooner resume repository --box work-api
+schooner logs <session-id> --lines 200 --box work-api
+schooner stop <session-id> --box work-api
+schooner shell repository --box work-api
+```
+
+Each Worktree has at most one Schooner-managed shell Session. Disconnecting
+leaves it alive; `resume` reaches the same tmux process state. Unmanaged tmux
+sessions remain visible and may be resumed with their displayed `tmux:$N`
+selector, but Schooner never captures or stops them. `shell` is ephemeral and
+holds the Worktree mutation lock until it exits.
+
 ## Authoritative documents
 
 - [Product direction](DIRECTION.md)
@@ -157,7 +174,7 @@ SQLite migration checksums. Developers with an older development database must
 reset it explicitly (for example with `schooner db destroy --yes`) before using
 this build. Schooner never removes an incompatible database automatically.
 
-### Ubuntu SSH worktree smoke
+### Ubuntu SSH Worktree and Session smoke
 
 After `box setup` or `box update`, verify the same live Git state through the
 workstation runtime and directly on the Ubuntu Box:
@@ -168,18 +185,23 @@ schooner clone git@github.com:owner/repository.git --box work-api
 schooner worktree add repository repository-feature --branch feature --box work-api
 schooner worktree list --box work-api
 schooner worktree inspect repository --box work-api
+schooner start repository --box work-api
+schooner sessions --box work-api
 
 # Directly on the Box
 ssh work-api
 ~/.local/bin/schooner worktree list
 ~/.local/bin/schooner worktree inspect repository
+~/.local/bin/schooner sessions
+~/.local/bin/schooner resume repository
 ~/.local/bin/schooner worktree remove repository-feature
 ~/.local/bin/schooner worktree prune
 ```
 
-The two paths must report the same canonical Repository relationship and
-Worktree status. Direct execution fails with setup guidance when host
-configuration is missing or drifts from a matching local Box record.
+The two paths must report the same canonical Repository relationship, Worktree
+status, stable Session ID, and tmux process state. Direct execution fails with
+setup guidance when host configuration is missing or drifts from a matching
+local Box record.
 
 ### Development remote artifacts
 

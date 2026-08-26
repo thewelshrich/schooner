@@ -18,6 +18,38 @@ import (
 
 const hostTestIdentity = "11111111-1111-4111-8111-111111111111"
 
+func TestInteractiveHostHandshakePreservesTransportError(t *testing.T) {
+	ssh := writeExecutable(t, "#!/bin/sh\nprintf 'Permission denied (publickey).\\n' >&2\nexit 255\n")
+	runtime := NewHost(ssh, nil, "v1.2.3", nil)
+	_, err := runtime.OpenWorktreeShell(t.Context(), box.Connection{Destination: "trusted-host"}, box.HostRuntime{Path: "/home/alice/.local/bin/schooner"}, hostTestIdentity, "/worktrees", "repo", TerminalIO{})
+	if box.ErrorCode(err) != "authentication_required" {
+		t.Fatalf("error = %v, code = %s", err, box.ErrorCode(err))
+	}
+}
+
+func TestInteractiveHostRequestUsesStandardPaddedBase64(t *testing.T) {
+	testRemoteShell(t)
+	target := filepath.Join(t.TempDir(), "host-runtime")
+	hello := fmt.Sprintf(`{"schema_version":"1","protocol_version":"1","schooner_version":"v1.2.3","commit":"abc123","box_identity":%q,"os":"linux","architecture":"amd64","capabilities":["worktree.shell.v1"]}`, hostTestIdentity)
+	contents := fmt.Sprintf("#!/bin/sh\ncase \"$1 $2 $3\" in\n  'host hello '*) printf '%%s\\n' '%s' ;;\n  'host worktree shell') printf '%%s' \"$4\" | base64 -d ;;\n  *) exit 64 ;;\nesac\n", hello)
+	if err := os.WriteFile(target, []byte(contents), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runtime := NewHost(testSSHExecutable(t), nil, "v1.2.3", nil)
+	var stdout strings.Builder
+	result, err := runtime.OpenWorktreeShell(t.Context(), box.Connection{Destination: "trusted-host"}, box.HostRuntime{Path: target}, hostTestIdentity, "/home/alice/worktrees", "repo", TerminalIO{Out: &stdout})
+	if err != nil || result.ExitCode != 0 {
+		t.Fatalf("interactive shell = %+v, error = %v", result, err)
+	}
+	var request hostruntime.WorktreeShellRequest
+	if err = json.Unmarshal([]byte(strings.TrimSpace(stdout.String())), &request); err != nil {
+		t.Fatalf("decoded request %q: %v", stdout.String(), err)
+	}
+	if request.WorktreeRoot != "/home/alice/worktrees" || request.Worktree != "repo" {
+		t.Fatalf("request = %+v", request)
+	}
+}
+
 func TestCloneRepositoryUsesTypedHostLifecycleOperation(t *testing.T) {
 	testRemoteShell(t)
 	target := filepath.Join(t.TempDir(), "host-runtime")

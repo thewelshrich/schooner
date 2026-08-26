@@ -15,3 +15,10 @@ func configureCommandCancellation(command *exec.Cmd) {
 		return command.Process.Kill()
 	}
 }
+
+func cleanupInteractiveProcessTree(_ *exec.Cmd) error { return nil }
+
+func runInteractiveTerminal(command *exec.Cmd, _ *os.File) error {
+	configureCommandCancellation(command)
+	return command.Run()
+}

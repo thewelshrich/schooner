@@ -118,6 +118,37 @@ func TestGitLifecycleRequestsAreStrict(t *testing.T) {
 	}
 }
 
+func TestSessionRequestsAreStrict(t *testing.T) {
+	root := "/home/alice/schooner"
+	if err := ValidateSessionListRequest(NewSessionListRequest(root, testIdentity)); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateSessionStartRequest(NewSessionStartRequest(root, testIdentity, "owner/repo")); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateSessionTargetRequest(NewSessionTargetRequest(root, testIdentity, "11111111-1111-4111-8111-111111111111")); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateSessionLogsRequest(NewSessionLogsRequest(root, testIdentity, "11111111-1111-4111-8111-111111111111", 200)); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateWorktreeShellRequest(NewWorktreeShellRequest(root, testIdentity, "owner/repo")); err != nil {
+		t.Fatal(err)
+	}
+	for _, request := range []SessionStartRequest{
+		NewSessionStartRequest(root, "wrong", "owner/repo"),
+		NewSessionStartRequest(root, testIdentity, ""),
+		NewSessionStartRequest(root, testIdentity, "bad\nselector"),
+	} {
+		if err := ValidateSessionStartRequest(request); err == nil {
+			t.Fatalf("accepted request %+v", request)
+		}
+	}
+	if err := ValidateSessionLogsRequest(NewSessionLogsRequest(root, testIdentity, testIdentity, 2001)); ErrorCode(err) != CodeInvalidInput {
+		t.Fatalf("log bound error = %v", err)
+	}
+}
+
 func TestDecodeOperationErrorPreservesTypedNotFound(t *testing.T) {
 	document := NewOperationError(testIdentity, CodeNotFound, `worktree "missing" was not found`)
 	var encoded bytes.Buffer

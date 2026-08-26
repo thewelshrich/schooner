@@ -95,6 +95,42 @@ func (r *Runtime) OpenShell(ctx context.Context, connection box.Connection, term
 	return ShellResult{ExitCode: code, DiagnosticsReported: len(stderr.Bytes()) > 0}, classify(err, stderr.String())
 }
 
+func (r *Runtime) openInteractiveCommand(ctx context.Context, connection box.Connection, command string, terminal TerminalIO) (ShellResult, error) {
+	path, err := r.executable()
+	if err != nil {
+		return ShellResult{}, err
+	}
+	args := r.shellOptions(connection)
+	args = append(args, "-t", connection.Destination, command)
+	cmd := exec.CommandContext(ctx, path, args...)
+	cmd.Stdin = terminal.In
+	cmd.Stdout = terminal.Out
+	var stderr limitedBuffer
+	if terminal.Err != nil {
+		cmd.Stderr = io.MultiWriter(terminal.Err, &stderr)
+	} else {
+		cmd.Stderr = &stderr
+	}
+	if err = cmd.Run(); err == nil {
+		return ShellResult{}, nil
+	}
+	if ctx.Err() != nil {
+		return ShellResult{}, ctx.Err()
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		return ShellResult{}, err
+	}
+	code := exitErr.ExitCode()
+	if code < 0 {
+		return ShellResult{}, box.NewError("connection_failed", "SSH connection terminated without an exit status", err)
+	}
+	if code != 255 {
+		return ShellResult{ExitCode: code, DiagnosticsReported: len(stderr.Bytes()) > 0}, nil
+	}
+	return ShellResult{ExitCode: code, DiagnosticsReported: len(stderr.Bytes()) > 0}, classify(err, stderr.String())
+}
+
 // WaitReady waits for a newly provisioned machine to accept and authenticate
 // an SSH connection. Only transport-level failures are retried; host identity
 // and authentication failures remain immediate and fail closed.

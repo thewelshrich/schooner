@@ -30,6 +30,12 @@ const (
 	CapabilityWorktreeAddV1     = "worktree.add.v1"
 	CapabilityWorktreeRemoveV1  = "worktree.remove.v1"
 	CapabilityWorktreePruneV1   = "worktree.prune.v1"
+	CapabilitySessionListV1     = "session.list.v1"
+	CapabilitySessionStartV1    = "session.start.v1"
+	CapabilitySessionResumeV1   = "session.resume.v1"
+	CapabilitySessionLogsV1     = "session.logs.v1"
+	CapabilitySessionStopV1     = "session.stop.v1"
+	CapabilityWorktreeShellV1   = "worktree.shell.v1"
 )
 
 var (
@@ -203,7 +209,7 @@ type DoctorReport struct {
 }
 
 func Capabilities() []string {
-	result := []string{CapabilityConfigureV1, CapabilityDoctorV1, CapabilityHelloV1, CapabilityInspectV2, CapabilityRepositoryCloneV1, CapabilityWorktreeAddV1, CapabilityWorktreeInspectV1, CapabilityWorktreeListV1, CapabilityWorktreePruneV1, CapabilityWorktreeRemoveV1}
+	result := []string{CapabilityConfigureV1, CapabilityDoctorV1, CapabilityHelloV1, CapabilityInspectV2, CapabilityRepositoryCloneV1, CapabilitySessionListV1, CapabilitySessionLogsV1, CapabilitySessionResumeV1, CapabilitySessionStartV1, CapabilitySessionStopV1, CapabilityWorktreeAddV1, CapabilityWorktreeInspectV1, CapabilityWorktreeListV1, CapabilityWorktreePruneV1, CapabilityWorktreeRemoveV1, CapabilityWorktreeShellV1}
 	slices.Sort(result)
 	return result
 }

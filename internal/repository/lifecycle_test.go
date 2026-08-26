@@ -21,6 +21,24 @@ type lifecycleWorktreeUse struct {
 	err      error
 }
 
+func TestOperationJournalsPreserveXDGWhileWorktreeLocksUseStableHome(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", "/custom/state")
+	journal, err := OperationStateDirectory("/home/alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "/custom/state/schooner/operations/git"; journal != want {
+		t.Fatalf("journal directory = %q, want %q", journal, want)
+	}
+	locks, err := WorktreeLockStateDirectory("/home/alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "/home/alice/.local/state/schooner/operations/git"; locks != want {
+		t.Fatalf("lock directory = %q, want %q", locks, want)
+	}
+}
+
 type lifecycleRunnerFunc func(context.Context, string, ...string) (process.Result, error)
 
 type lifecycleWorktreeUseFunc func(context.Context, string) ([]string, error)

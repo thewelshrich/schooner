@@ -2,12 +2,29 @@ package cli
 
 import (
 	"bytes"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
 
 	hostruntime "github.com/thewelshrich/schooner/internal/runtime"
 )
+
+func TestDecodeInteractiveHostRequestAcceptsStandardPaddedBase64(t *testing.T) {
+	want := hostruntime.NewWorktreeShellRequest("/home/alice/worktrees", "11111111-1111-4111-8111-111111111111", "repo")
+	payload, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got hostruntime.WorktreeShellRequest
+	if err = decodeInteractiveHostRequest(base64.StdEncoding.EncodeToString(payload), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("request = %+v, want %+v", got, want)
+	}
+}
 
 func TestWriteDoctorResultReturnsFailureAfterUnhealthyReport(t *testing.T) {
 	for _, output := range []string{"human", "json"} {
