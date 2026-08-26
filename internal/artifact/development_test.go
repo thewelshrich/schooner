@@ -1,6 +1,7 @@
 package artifact
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -75,7 +76,7 @@ func TestBuildDevelopmentReportsBuildFailureAndCleansTemporaryFiles(t *testing.T
 		t.Fatalf("error = %v", err)
 	}
 	entries, readErr := os.ReadDir(output)
-	if readErr != nil || len(entries) != 0 {
+	if readErr != nil || len(entries) != 1 || entries[0].Name() != developmentLockName {
 		t.Fatalf("output entries = %v, err = %v", entries, readErr)
 	}
 }
@@ -148,5 +149,56 @@ chmod 0755 "$output"
 	resolved, err := resolver.Resolve(t.Context(), "dev", Platform{OS: "linux", Arch: "amd64"})
 	if err != nil || resolved.Path != first.Artifacts[0].Path {
 		t.Fatalf("resolved = %+v, err = %v", resolved, err)
+	}
+}
+
+func TestBuildDevelopmentReclaimsSupersededGenerationsAfterReadersRelease(t *testing.T) {
+	tools := t.TempDir()
+	goBinary := filepath.Join(tools, "fake-go")
+	if err := os.WriteFile(goBinary, []byte(`#!/bin/sh
+output=
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "-o" ]; then output="$2"; shift 2; else shift; fi
+done
+printf '%s/%s\n' "$GOOS" "$GOARCH" > "$output"
+chmod 0755 "$output"
+`), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	output := t.TempDir()
+	first, err := BuildDevelopment(t.Context(), DevelopmentBuildOptions{SourceDir: t.TempDir(), OutputDir: output, GoBinary: goBinary})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolver, err := New(Config{CacheDir: t.TempDir(), DevelopmentDir: output})
+	if err != nil {
+		t.Fatal(err)
+	}
+	leased, err := resolver.Resolve(t.Context(), "dev", Platform{OS: "linux", Arch: "amd64"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := BuildDevelopment(t.Context(), DevelopmentBuildOptions{SourceDir: t.TempDir(), OutputDir: output, GoBinary: goBinary})
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstGeneration := filepath.Dir(first.Artifacts[0].Path)
+	if _, err = os.Stat(firstGeneration); err != nil {
+		t.Fatalf("leased generation was removed: %v", err)
+	}
+	if err = leased.Release(); err != nil {
+		t.Fatal(err)
+	}
+	third, err := BuildDevelopment(t.Context(), DevelopmentBuildOptions{SourceDir: t.TempDir(), OutputDir: output, GoBinary: goBinary})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, superseded := range []string{firstGeneration, filepath.Dir(second.Artifacts[0].Path)} {
+		if _, statErr := os.Stat(superseded); !errors.Is(statErr, os.ErrNotExist) {
+			t.Errorf("superseded generation %s still exists: %v", superseded, statErr)
+		}
+	}
+	if _, err = os.Stat(filepath.Dir(third.Artifacts[0].Path)); err != nil {
+		t.Fatalf("active generation is unavailable: %v", err)
 	}
 }

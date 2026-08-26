@@ -3,12 +3,17 @@ package artifact
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
+	"syscall"
 )
+
+const developmentLockName = ".generation.lock"
 
 type DevelopmentBuildOptions struct {
 	SourceDir string
@@ -42,6 +47,23 @@ func BuildDevelopment(ctx context.Context, options DevelopmentBuildOptions) (Dev
 	}
 	if err = os.MkdirAll(outputDir, 0o700); err != nil {
 		return DevelopmentBuild{}, fmt.Errorf("create development artifact directory: %w", err)
+	}
+	buildLock, err := acquireDevelopmentBuildLock(outputDir)
+	if err != nil {
+		return DevelopmentBuild{}, fmt.Errorf("lock development artifact directory: %w", err)
+	}
+	defer buildLock.Release()
+
+	activeDirectory, publishedGeneration, err := activeDevelopmentDirectory(outputDir)
+	if err != nil {
+		return DevelopmentBuild{}, err
+	}
+	activeGeneration := ""
+	if publishedGeneration {
+		activeGeneration = filepath.Base(activeDirectory)
+	}
+	if err = cleanupDevelopmentGenerations(outputDir, activeGeneration); err != nil {
+		return DevelopmentBuild{}, fmt.Errorf("clean development artifact generations: %w", err)
 	}
 
 	generationDir, err := os.MkdirTemp(outputDir, developmentGenerationPrefix)
@@ -97,6 +119,7 @@ func BuildDevelopment(ctx context.Context, options DevelopmentBuildOptions) (Dev
 		return DevelopmentBuild{}, err
 	}
 	published = true
+	_ = cleanupDevelopmentGenerations(outputDir, filepath.Base(generationDir))
 	return build, nil
 }
 
@@ -121,6 +144,78 @@ func publishDevelopmentGeneration(outputDir, generationDir string) error {
 	}
 	if err = os.Rename(pointerPath, filepath.Join(outputDir, developmentCurrentName)); err != nil {
 		return fmt.Errorf("publish development artifacts: %w", err)
+	}
+	return nil
+}
+
+type developmentLease struct {
+	file *os.File
+	once sync.Once
+	err  error
+}
+
+func (l *developmentLease) Release() error {
+	if l == nil {
+		return nil
+	}
+	l.once.Do(func() {
+		unlockErr := syscall.Flock(int(l.file.Fd()), syscall.LOCK_UN)
+		closeErr := l.file.Close()
+		l.err = errors.Join(unlockErr, closeErr)
+	})
+	return l.err
+}
+
+func acquireDevelopmentBuildLock(outputDir string) (*developmentLease, error) {
+	return acquireDevelopmentLease(filepath.Join(outputDir, developmentLockName), syscall.LOCK_EX)
+}
+
+func acquireDevelopmentGenerationLease(generationDir string, nonBlocking bool) (*developmentLease, error) {
+	operation := syscall.LOCK_SH
+	if nonBlocking {
+		operation = syscall.LOCK_EX | syscall.LOCK_NB
+	}
+	return acquireDevelopmentLease(filepath.Join(generationDir, developmentLockName), operation)
+}
+
+func acquireDevelopmentLease(path string, operation int) (*developmentLease, error) {
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err = syscall.Flock(int(file.Fd()), operation); err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	return &developmentLease{file: file}, nil
+}
+
+func cleanupDevelopmentGenerations(outputDir, activeGeneration string) error {
+	entries, err := os.ReadDir(outputDir)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if !entry.IsDir() || !strings.HasPrefix(name, developmentGenerationPrefix) || name == activeGeneration {
+			continue
+		}
+		generationDir := filepath.Join(outputDir, name)
+		lease, lockErr := acquireDevelopmentGenerationLease(generationDir, true)
+		if errors.Is(lockErr, syscall.EWOULDBLOCK) || errors.Is(lockErr, syscall.EAGAIN) {
+			continue
+		}
+		if errors.Is(lockErr, os.ErrNotExist) {
+			continue
+		}
+		if lockErr != nil {
+			return lockErr
+		}
+		removeErr := os.RemoveAll(generationDir)
+		releaseErr := lease.Release()
+		if removeErr != nil || releaseErr != nil {
+			return errors.Join(removeErr, releaseErr)
+		}
 	}
 	return nil
 }

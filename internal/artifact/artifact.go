@@ -65,6 +65,18 @@ type Result struct {
 	Version  string
 	Platform Platform
 	SHA256   string
+	lease    *developmentLease
+}
+
+// Release relinquishes any lease protecting a resolved artifact generation.
+// Callers should release a result after they finish reading its Path.
+func (r *Result) Release() error {
+	if r == nil || r.lease == nil {
+		return nil
+	}
+	lease := r.lease
+	r.lease = nil
+	return lease.Release()
 }
 
 type Config struct {
@@ -175,19 +187,49 @@ func (r *Resolver) Resolve(ctx context.Context, version string, platform Platfor
 		if directory == "" {
 			return Result{}, &Error{Code: CodeInvalidVersion, Message: "development builds require SCHOONER_ARTIFACT_DIR"}
 		}
-		activeDirectory, published, err := activeDevelopmentDirectory(directory)
-		if err != nil {
-			return Result{}, err
-		}
-		if r.overrideDir == "" && !published {
-			if _, err = os.Stat(filepath.Join(activeDirectory, manifestName)); errors.Is(err, os.ErrNotExist) {
-				return Result{}, &Error{Code: CodeUnavailable, Message: "development host runtimes are unavailable; run `schooner dev artifacts` from the Schooner source directory"}
-			} else if err != nil {
-				return Result{}, &Error{Code: CodeInvalidManifest, Message: fmt.Sprintf("inspect checksum manifest %s", filepath.Join(activeDirectory, manifestName)), Cause: err}
+		for attempt := 0; attempt < 3; attempt++ {
+			activeDirectory, published, err := activeDevelopmentDirectory(directory)
+			if err != nil {
+				return Result{}, err
 			}
+			if !published {
+				if r.overrideDir == "" {
+					if _, err = os.Stat(filepath.Join(activeDirectory, manifestName)); errors.Is(err, os.ErrNotExist) {
+						return Result{}, &Error{Code: CodeUnavailable, Message: "development host runtimes are unavailable; run `schooner dev artifacts` from the Schooner source directory"}
+					} else if err != nil {
+						return Result{}, &Error{Code: CodeInvalidManifest, Message: fmt.Sprintf("inspect checksum manifest %s", filepath.Join(activeDirectory, manifestName)), Cause: err}
+					}
+				}
+				name := fileName(version, platform)
+				return resolveDirectory(activeDirectory, version, platform, name)
+			}
+
+			lease, lockErr := acquireDevelopmentGenerationLease(activeDirectory, false)
+			if errors.Is(lockErr, os.ErrNotExist) {
+				continue
+			}
+			if lockErr != nil {
+				return Result{}, &Error{Code: CodeCacheFailure, Message: "protect the active development artifact generation", Cause: lockErr}
+			}
+			confirmedDirectory, stillPublished, confirmErr := activeDevelopmentDirectory(directory)
+			if confirmErr != nil {
+				_ = lease.Release()
+				return Result{}, confirmErr
+			}
+			if !stillPublished || confirmedDirectory != activeDirectory {
+				_ = lease.Release()
+				continue
+			}
+			name := fileName(version, platform)
+			result, resolveErr := resolveDirectory(activeDirectory, version, platform, name)
+			if resolveErr != nil {
+				_ = lease.Release()
+				return Result{}, resolveErr
+			}
+			result.lease = lease
+			return result, nil
 		}
-		name := fileName(version, platform)
-		return resolveDirectory(activeDirectory, version, platform, name)
+		return Result{}, &Error{Code: CodeUnavailable, Message: "development artifact generation changed repeatedly; retry the operation"}
 	} else if !validVersion(version) {
 		return Result{}, &Error{Code: CodeInvalidVersion, Message: fmt.Sprintf("artifact version %q must be a v-prefixed semantic version", version)}
 	}

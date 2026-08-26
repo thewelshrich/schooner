@@ -102,6 +102,7 @@ func (r *Runtime) EnsureHost(ctx context.Context, connection box.Connection, req
 				return box.HostInstallResult{}, artifactError(resolveErr)
 			}
 			resolved = &result
+			defer resolved.Release()
 		}
 		installedRuntime, installErr := r.installHost(ctx, connection, request, *resolved, baseline)
 		if errors.Is(installErr, errInstallTargetChanged) {
