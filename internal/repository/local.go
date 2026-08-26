@@ -224,6 +224,9 @@ func OriginKey(origin string) string {
 		}
 		host := strings.ToLower(parsed.Hostname())
 		path := cleanOriginPath(parsed.Path)
+		if scheme == "ssh" {
+			path = cleanSCPOriginPath(parsed.Path)
+		}
 		if host == "" || path == "" {
 			return ""
 		}

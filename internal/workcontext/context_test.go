@@ -29,7 +29,7 @@ func TestPlanStartMatchesNonDefaultSSHUsername(t *testing.T) {
 		{Origin: "ssh://bob@example.com/owner/repo", CommonDirectory: "/bob/.git", Primary: &repository.Worktree{Path: "/remote/bob", RelativePath: "bob"}},
 		{Origin: "ssh://alice@example.com/owner/repo", CommonDirectory: "/alice/.git", Primary: &primary},
 	}}
-	local := &repository.LocalCheckout{OriginKey: "alice@example.com/owner/repo"}
+	local := &repository.LocalCheckout{OriginKey: "alice@example.com//owner/repo"}
 
 	plan := PlanStart(local, catalog)
 	if plan.Mode != StartUse || plan.Preferred.Worktree.Path != primary.Path {
@@ -50,6 +50,18 @@ func TestPlanStartFallsBackToLinkedOnlyWhenNoPrimaryExists(t *testing.T) {
 	linked := repository.Worktree{Path: "/remote/feature", RelativePath: "feature"}
 	plan := PlanStart(nil, repository.Catalog{Repositories: []repository.Repository{{Linked: []repository.Worktree{linked}}}})
 	if plan.Mode != StartUse || plan.Preferred.Worktree.Path != linked.Path {
+		t.Fatalf("plan = %+v", plan)
+	}
+}
+
+func TestPlanStartIncludesLinkedOnlyRepositoryAlongsidePrimaryFallback(t *testing.T) {
+	primary := repository.Worktree{Path: "/remote/primary", RelativePath: "primary"}
+	linked := repository.Worktree{Path: "/remote/linked", RelativePath: "linked"}
+	plan := PlanStart(nil, repository.Catalog{Repositories: []repository.Repository{
+		{Primary: &primary},
+		{Linked: []repository.Worktree{linked}},
+	}})
+	if plan.Mode != StartChoose || len(plan.Choices) != 2 {
 		t.Fatalf("plan = %+v", plan)
 	}
 }
@@ -87,6 +99,35 @@ func TestPlanResumeUsesDeterministicActivityFallback(t *testing.T) {
 	}}
 	plan := PlanResume(local, repository.Catalog{}, sessions)
 	if plan.Mode != ResumeUse || plan.Preferred.ID != "first" || !plan.Fallback {
+		t.Fatalf("plan = %+v", plan)
+	}
+}
+
+func TestPlanResumeRequiresPickerWhenDiscoveryIsPartial(t *testing.T) {
+	local := &repository.LocalCheckout{OriginKey: "example.com/owner/repo"}
+	repositories := repository.Catalog{Warnings: []repository.Warning{{Message: "catalog output limit reached"}}}
+	sessions := session.Catalog{Sessions: []session.Session{
+		{ID: "unrelated", TmuxID: "$1", Ownership: session.Managed, Association: session.AssociationLive},
+		{ID: "possibly-matching", TmuxID: "$2", Ownership: session.Managed, Association: session.AssociationMissing},
+	}}
+	plan := PlanResume(local, repositories, sessions)
+	if plan.Mode != ResumeChoose || len(plan.Choices) != 2 || !plan.Fallback {
+		t.Fatalf("plan = %+v", plan)
+	}
+}
+
+func TestPlanResumeRequiresPickerAcrossDuplicateMatchingRepositories(t *testing.T) {
+	local := &repository.LocalCheckout{OriginKey: "example.com/owner/repo"}
+	repositories := repository.Catalog{Repositories: []repository.Repository{
+		{Origin: "https://example.com/owner/repo", CommonDirectory: "/first/.git"},
+		{Origin: "https://example.com/owner/repo", CommonDirectory: "/second/.git"},
+	}}
+	sessions := session.Catalog{Sessions: []session.Session{
+		{ID: "first", TmuxID: "$1", Ownership: session.Managed, Association: session.AssociationLive, RepositoryCommonDirectory: "/first/.git"},
+		{ID: "second", TmuxID: "$2", Ownership: session.Managed, Association: session.AssociationLive, RepositoryCommonDirectory: "/second/.git"},
+	}}
+	plan := PlanResume(local, repositories, sessions)
+	if plan.Mode != ResumeChoose || len(plan.Choices) != 2 || plan.Fallback {
 		t.Fatalf("plan = %+v", plan)
 	}
 }

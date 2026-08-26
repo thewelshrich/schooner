@@ -346,8 +346,12 @@ func resolveContextualResume(ctx context.Context, streams Streams, global *globa
 		return "", executionError{cause: err}
 	}
 	plan := workcontext.PlanResume(local, repositories, sessions)
-	if plan.Fallback {
-		_ = writeMutedNotice(streams.Err, terminalTheme(global, streams), "No managed live Session matches this local Repository; using activity on "+targetBoxLabel(target)+" instead.")
+	if plan.Fallback && plan.Mode != workcontext.ResumeUnavailable {
+		message := "No managed live Session matches this local Repository; using activity on " + targetBoxLabel(target) + " instead."
+		if plan.Mode == workcontext.ResumeChoose {
+			message = "No unambiguous managed live Session matches this local Repository; choose a Session explicitly."
+		}
+		_ = writeMutedNotice(streams.Err, terminalTheme(global, streams), message)
 	}
 	switch plan.Mode {
 	case workcontext.ResumeUse:

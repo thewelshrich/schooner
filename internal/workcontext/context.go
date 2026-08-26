@@ -49,10 +49,7 @@ func PlanStart(local *repository.LocalCheckout, catalog repository.Catalog) Star
 		}
 		return StartPlan{Mode: StartClone, Choices: fallback, CloneSource: local.CloneSource}
 	}
-	choices := primaryChoices(matching)
-	if len(choices) == 0 {
-		choices = linkedChoices(matching)
-	}
+	choices := defaultChoices(matching)
 	return chooseStart(choices)
 }
 
@@ -89,6 +86,9 @@ func PlanResume(local *repository.LocalCheckout, catalog repository.Catalog, ses
 	managed := automaticSessions(sessions.Sessions)
 	localContext := local != nil && local.OriginKey != ""
 	if localContext {
+		if len(catalog.Warnings) != 0 {
+			return chooseResume(sessions.Sessions, true)
+		}
 		matching := matchingRepositories(local.OriginKey, catalog.Repositories)
 		common := make(map[string]struct{}, len(matching))
 		for _, value := range matching {
@@ -102,6 +102,9 @@ func PlanResume(local *repository.LocalCheckout, catalog repository.Catalog, ses
 		}
 		if len(matched) != 0 {
 			sortSessions(matched)
+			if sessionsSpanRepositories(matched) {
+				return ResumePlan{Mode: ResumeChoose, Choices: matched}
+			}
 			return ResumePlan{Mode: ResumeUse, Preferred: matched[0]}
 		}
 	}
@@ -109,12 +112,16 @@ func PlanResume(local *repository.LocalCheckout, catalog repository.Catalog, ses
 		sortSessions(managed)
 		return ResumePlan{Mode: ResumeUse, Preferred: managed[0], Fallback: localContext}
 	}
-	choices := resumableSessions(sessions.Sessions)
+	return chooseResume(sessions.Sessions, localContext)
+}
+
+func chooseResume(values []session.Session, fallback bool) ResumePlan {
+	choices := resumableSessions(values)
 	if len(choices) == 0 {
-		return ResumePlan{Mode: ResumeUnavailable, Fallback: localContext}
+		return ResumePlan{Mode: ResumeUnavailable, Fallback: fallback}
 	}
 	sortSessions(choices)
-	return ResumePlan{Mode: ResumeChoose, Choices: choices, Fallback: localContext}
+	return ResumePlan{Mode: ResumeChoose, Choices: choices, Fallback: fallback}
 }
 
 func matchingRepositories(key string, values []repository.Repository) []repository.Repository {
@@ -128,31 +135,31 @@ func matchingRepositories(key string, values []repository.Repository) []reposito
 }
 
 func defaultChoices(values []repository.Repository) []WorktreeChoice {
-	choices := primaryChoices(values)
-	if len(choices) == 0 {
-		choices = linkedChoices(values)
-	}
-	return choices
-}
-
-func primaryChoices(values []repository.Repository) []WorktreeChoice {
 	result := make([]WorktreeChoice, 0)
 	for _, value := range values {
 		if value.Primary != nil {
 			result = append(result, WorktreeChoice{Origin: value.Origin, CommonDirectory: value.CommonDirectory, Worktree: *value.Primary})
+		} else {
+			for _, worktree := range value.Linked {
+				result = append(result, WorktreeChoice{Origin: value.Origin, CommonDirectory: value.CommonDirectory, Worktree: worktree})
+			}
 		}
 	}
 	return result
 }
 
-func linkedChoices(values []repository.Repository) []WorktreeChoice {
-	result := make([]WorktreeChoice, 0)
+func sessionsSpanRepositories(values []session.Session) bool {
+	first := ""
 	for _, value := range values {
-		for _, worktree := range value.Linked {
-			result = append(result, WorktreeChoice{Origin: value.Origin, CommonDirectory: value.CommonDirectory, Worktree: worktree})
+		if first == "" {
+			first = value.RepositoryCommonDirectory
+			continue
+		}
+		if value.RepositoryCommonDirectory != first {
+			return true
 		}
 	}
-	return result
+	return false
 }
 
 func automaticSessions(values []session.Session) []session.Session {

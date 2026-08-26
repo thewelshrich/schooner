@@ -11,7 +11,6 @@ func TestOriginKeyMatchesCommonNetworkForms(t *testing.T) {
 	for _, value := range []string{
 		"https://github.com/owner/repo.git",
 		"https://user:token@GITHUB.com/owner/repo.git?credential=secret",
-		"ssh://git@github.com:22/owner/repo.git",
 		"git@github.com:owner/repo.git",
 		"git://github.com:9418/owner/repo",
 	} {
@@ -31,8 +30,6 @@ func TestOriginKeyRetainsNonDefaultSSHUsername(t *testing.T) {
 	for _, value := range []string{
 		"alice@example.com:owner/repo.git",
 		"alice@example.com:owner/repo.git/",
-		"ssh://alice@example.com/owner/repo.git",
-		"ssh://alice:secret@example.com:22/owner/repo.git/",
 	} {
 		if got := OriginKey(value); got != alice {
 			t.Errorf("OriginKey(%q) = %q, want %q", value, got, alice)
@@ -40,6 +37,14 @@ func TestOriginKeyRetainsNonDefaultSSHUsername(t *testing.T) {
 	}
 	if got := OriginKey("bob@example.com:owner/repo.git"); got == alice {
 		t.Errorf("OriginKey for a different SSH user = %q, want an independent identity", got)
+	}
+	for _, value := range []string{
+		"ssh://alice@example.com/owner/repo.git",
+		"ssh://alice:secret@example.com:22/owner/repo.git/",
+	} {
+		if got, want := OriginKey(value), "alice@example.com//owner/repo"; got != want {
+			t.Errorf("OriginKey(%q) = %q, want %q", value, got, want)
+		}
 	}
 }
 
@@ -56,9 +61,9 @@ func TestOriginKeyNormalizesGitSuffixBeforeTrailingSlash(t *testing.T) {
 }
 
 func TestOriginKeyMatchesBracketedIPv6SCPAndSSHForms(t *testing.T) {
-	want := "2001:db8::1/owner/repo"
+	want := "2001:db8::1//owner/repo"
 	for _, value := range []string{
-		"git@[2001:db8::1]:owner/repo.git",
+		"git@[2001:db8::1]:/owner/repo.git",
 		"ssh://git@[2001:db8::1]/owner/repo.git",
 	} {
 		if got := OriginKey(value); got != want {
@@ -118,7 +123,7 @@ func TestInspectLocalObservesContainingCheckoutWithoutPersistingState(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if checkout.Origin != "ssh://alice@example.com/owner/repo" || checkout.OriginKey != "alice@example.com/owner/repo" || checkout.CloneSource != "ssh://alice@example.com/owner/repo.git" {
+	if checkout.Origin != "ssh://alice@example.com/owner/repo" || checkout.OriginKey != "alice@example.com//owner/repo" || checkout.CloneSource != "ssh://alice@example.com/owner/repo.git" {
 		t.Fatalf("SSH origin = %q, key = %q, clone source = %q", checkout.Origin, checkout.OriginKey, checkout.CloneSource)
 	}
 }
