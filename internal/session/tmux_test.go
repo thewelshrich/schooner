@@ -117,6 +117,19 @@ type fakeTmux struct {
 }
 
 func (f *fakeTmux) Run(_ context.Context, _ int, name string, args ...string) (process.Result, error) {
+	return f.run(name, args...)
+}
+
+func (f *fakeTmux) RunTail(_ context.Context, maximum int, name string, args ...string) (process.Result, error) {
+	result, err := f.run(name, args...)
+	if len(result.Stdout) > maximum {
+		result.Stdout = result.Stdout[len(result.Stdout)-maximum:]
+		result.Truncated = true
+	}
+	return result, err
+}
+
+func (f *fakeTmux) run(name string, args ...string) (process.Result, error) {
 	f.calls = append(f.calls, append([]string{name}, args...))
 	switch args[0] {
 	case "list-sessions":
@@ -142,7 +155,7 @@ func (f *fakeTmux) Run(_ context.Context, _ int, name string, args ...string) (p
 		switch {
 		case strings.Contains(action, "capture-pane"):
 			f.captured = true
-			return process.Result{Stdout: []byte(managedActionGranted + "\n" + f.content)}, nil
+			return process.Result{Stdout: []byte(f.content + managedActionGranted + "\n")}, nil
 		case strings.Contains(action, "kill-session"):
 			f.killed, f.row = true, ""
 			return process.Result{Stdout: []byte(managedActionGranted + "\n")}, nil
@@ -280,6 +293,27 @@ func TestServiceStartsReusesCapturesAndStopsManagedSession(t *testing.T) {
 	}
 	if _, err = manager.Resolve(t.Context(), testSessionID); err == nil {
 		t.Fatal("stopped Session still resolved")
+	}
+}
+
+func TestLogsRetainNewestOutputWhenByteBoundIsExceeded(t *testing.T) {
+	root, worktree := initializeSessionWorktree(t)
+	fake := &fakeTmux{
+		path:    worktree,
+		row:     "$4\tmanaged\t1720000000\t1720000000\t0\t" + SchemaVersion + "\t" + testSessionID + "\tshell\t2024-07-03T09:46:40Z\t" + worktree + "\n",
+		content: "oldest-output\n" + strings.Repeat("middle-output\n", MaxLogBytes) + "newest-output\n",
+	}
+	manager, err := New(root, filepath.Join(t.TempDir(), "operations", "git"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.commands = fake
+	logs, err := manager.Logs(t.Context(), testSessionID, MaxLogLines)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !logs.Truncated || !strings.HasSuffix(logs.Content, "newest-output\n") || strings.Contains(logs.Content, "oldest-output\n") {
+		t.Fatalf("bounded logs did not retain newest output: truncated=%t prefix=%q suffix=%q", logs.Truncated, logs.Content[:min(16, len(logs.Content))], logs.Content[max(0, len(logs.Content)-24):])
 	}
 }
 

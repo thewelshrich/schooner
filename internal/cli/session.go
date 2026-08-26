@@ -40,7 +40,7 @@ func newStartSessionCommand(streams Streams, global *globalOptions) *cobra.Comma
 			return executionError{cause: err}
 		}
 		selector := firstArgument(args)
-		if selector == "" {
+		if sessionSelectorOmitted(args) {
 			selector, err = chooseWorktree(cmd.Context(), streams, global, target, "Choose a Worktree to start")
 			if err != nil {
 				closeWorktreeTarget(&target)
@@ -83,7 +83,7 @@ func newResumeSessionCommand(streams Streams, global *globalOptions) *cobra.Comm
 			return executionError{cause: err}
 		}
 		selector := firstArgument(args)
-		if selector == "" {
+		if sessionSelectorOmitted(args) {
 			catalog, listErr := listSessionsOnTarget(cmd.Context(), streams, global, target)
 			if listErr != nil {
 				closeWorktreeTarget(&target)
@@ -140,7 +140,7 @@ func newSessionLogsCommand(streams Streams, global *globalOptions) *cobra.Comman
 		}
 		defer closeWorktreeTarget(&target)
 		id := firstArgument(args)
-		if id == "" {
+		if sessionSelectorOmitted(args) {
 			catalog, listErr := listSessionsOnTarget(cmd.Context(), streams, global, target)
 			if listErr != nil {
 				return executionError{cause: publicRepositoryError(listErr)}
@@ -170,7 +170,7 @@ func newStopSessionCommand(streams Streams, global *globalOptions) *cobra.Comman
 		}
 		defer closeWorktreeTarget(&target)
 		id := firstArgument(args)
-		if id == "" {
+		if sessionSelectorOmitted(args) {
 			if !interactionAllowed(streams, global) {
 				return usageError{cause: fmt.Errorf("a managed Session ID is required when prompts are unavailable")}
 			}
@@ -214,7 +214,7 @@ func newWorktreeShellCommand(streams Streams, global *globalOptions) *cobra.Comm
 			return executionError{cause: err}
 		}
 		selector := firstArgument(args)
-		if selector == "" {
+		if sessionSelectorOmitted(args) {
 			selector, err = chooseWorktree(cmd.Context(), streams, global, target, "Choose a Worktree for the shell")
 			if err != nil {
 				closeWorktreeTarget(&target)
@@ -428,4 +428,8 @@ func firstArgument(args []string) string {
 		return ""
 	}
 	return args[0]
+}
+
+func sessionSelectorOmitted(args []string) bool {
+	return len(args) == 0
 }

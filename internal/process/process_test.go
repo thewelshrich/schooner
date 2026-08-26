@@ -41,7 +41,7 @@ func TestRunInteractiveWithoutEnvironmentRemovesSelectedVariables(t *testing.T) 
 }
 
 func TestInteractiveTerminalRejectsNonTTYStreams(t *testing.T) {
-	if interactiveTerminal(strings.NewReader("not a terminal")) {
+	if _, ok := interactiveTerminal(strings.NewReader("not a terminal")); ok {
 		t.Fatal("ordinary reader was treated as an interactive terminal")
 	}
 }
@@ -104,6 +104,16 @@ func TestRunCapturedBoundsWithoutCancellingCommand(t *testing.T) {
 	overridden, err := RunCapturedWithoutEnvironment(t.Context(), 16, nil, []string{"SCHOONER_PROCESS_OVERRIDE=new"}, "/bin/sh", "-c", `printf %s "$SCHOONER_PROCESS_OVERRIDE"`)
 	if err != nil || string(overridden.Stdout) != "new" {
 		t.Fatalf("override = %+v, %v", overridden, err)
+	}
+}
+
+func TestRunCapturedTailRetainsNewestOutput(t *testing.T) {
+	result, err := RunCapturedTailWithoutEnvironment(t.Context(), 4, nil, nil, "/bin/sh", "-c", "printf 123; printf 456")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(result.Stdout) != "3456" || !result.Truncated {
+		t.Fatalf("result = %+v", result)
 	}
 }
 

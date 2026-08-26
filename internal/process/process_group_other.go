@@ -15,3 +15,8 @@ func configureCommandCancellation(command *exec.Cmd) {
 		return command.Process.Kill()
 	}
 }
+
+func runInteractiveTerminal(command *exec.Cmd, _ *os.File) error {
+	configureCommandCancellation(command)
+	return command.Run()
+}

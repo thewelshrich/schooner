@@ -34,6 +34,15 @@ func TestFirstArgumentPreservesExactSelector(t *testing.T) {
 	if got := firstArgument([]string{"  repo  "}); got != "  repo  " {
 		t.Fatalf("selector = %q", got)
 	}
+	if got := firstArgument([]string{""}); got != "" {
+		t.Fatalf("explicit empty selector = %q", got)
+	}
+	if sessionSelectorOmitted([]string{""}) {
+		t.Fatal("explicit empty selector was treated as omitted")
+	}
+	if !sessionSelectorOmitted(nil) {
+		t.Fatal("missing selector was treated as provided")
+	}
 }
 
 func TestSessionOutputDistinguishesOwnershipAndAssociation(t *testing.T) {

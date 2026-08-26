@@ -109,13 +109,25 @@ type Attachment struct {
 
 type commandRunner interface {
 	Run(context.Context, int, string, ...string) (process.Result, error)
+	RunTail(context.Context, int, string, ...string) (process.Result, error)
 }
 
 type osCommandRunner struct{}
 
 func (osCommandRunner) Run(ctx context.Context, maximum int, name string, args ...string) (process.Result, error) {
+	return runOSCommand(ctx, maximum, false, name, args...)
+}
+
+func (osCommandRunner) RunTail(ctx context.Context, maximum int, name string, args ...string) (process.Result, error) {
+	return runOSCommand(ctx, maximum, true, name, args...)
+}
+
+func runOSCommand(ctx context.Context, maximum int, tail bool, name string, args ...string) (process.Result, error) {
 	if name == "tmux" {
 		args = append([]string{"-L", tmuxSocketName}, args...)
+	}
+	if tail {
+		return process.RunCapturedTailWithoutEnvironment(ctx, maximum, []string{"TMUX", "TMUX_TMPDIR"}, []string{"LC_ALL=C", "LANG=C"}, name, args...)
 	}
 	return process.RunCapturedWithoutEnvironment(ctx, maximum, []string{"TMUX", "TMUX_TMPDIR"}, []string{"LC_ALL=C", "LANG=C"}, name, args...)
 }
@@ -361,8 +373,8 @@ func (s *Service) Logs(ctx context.Context, id string, lines int) (LogsResult, e
 	if value.Ownership != Managed {
 		return LogsResult{}, &repository.Error{Code: repository.CodeConflict, Message: "logs are available only for managed Sessions"}
 	}
-	action := fmt.Sprintf("display-message -p %s ; capture-pane -p -J -t %s -S -%d", managedActionGranted, value.TmuxID, lines)
-	result, err := s.runManagedAction(ctx, value, MaxLogBytes, action)
+	action := fmt.Sprintf("capture-pane -p -J -t %s -S -%d", value.TmuxID, lines)
+	result, err := s.runManagedTailAction(ctx, value, MaxLogBytes, action)
 	if err != nil {
 		if repository.ErrorCode(err) == repository.CodeConflict || repository.ErrorCode(err) == repository.CodeOutcomeUnknown {
 			return LogsResult{}, err
@@ -413,6 +425,26 @@ func (s *Service) runManagedAction(ctx context.Context, value Session, maximum i
 		return result, &repository.Error{Code: repository.CodeOutcomeUnknown, Message: "tmux did not confirm managed Session ownership"}
 	}
 	result.Stdout = result.Stdout[len(prefix):]
+	return result, nil
+}
+
+// runManagedTailAction retains the newest action output while keeping the
+// ownership confirmation at the end of the same tmux command queue.
+func (s *Service) runManagedTailAction(ctx context.Context, value Session, maximum int, action string) (process.Result, error) {
+	refusal := "display-message -p " + managedActionRefused
+	suffix := []byte(managedActionGranted + "\n")
+	confirmedAction := action + " ; display-message -p " + managedActionGranted
+	result, err := s.commands.RunTail(ctx, maximum+len(suffix), "tmux", managedActionArguments(value, confirmedAction, refusal)...)
+	if err != nil {
+		return result, err
+	}
+	if string(result.Stdout) == managedActionRefused+"\n" {
+		return result, &repository.Error{Code: repository.CodeConflict, Message: "managed Session ownership changed; operation was not performed"}
+	}
+	if !bytes.HasSuffix(result.Stdout, suffix) {
+		return result, &repository.Error{Code: repository.CodeOutcomeUnknown, Message: "tmux did not confirm managed Session ownership"}
+	}
+	result.Stdout = result.Stdout[:len(result.Stdout)-len(suffix)]
 	return result, nil
 }
 
