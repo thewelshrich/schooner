@@ -86,10 +86,11 @@ const (
 )
 
 type ResumePlan struct {
-	Mode      ResumeMode
-	Preferred session.Session
-	Choices   []session.Session
-	Fallback  bool
+	Mode       ResumeMode
+	Preferred  session.Session
+	Choices    []session.Session
+	Fallback   bool
+	Incomplete bool
 }
 
 // PlanResume auto-selects only a live, unambiguously associated managed
@@ -97,10 +98,12 @@ type ResumePlan struct {
 func PlanResume(local *repository.LocalCheckout, catalog repository.Catalog, sessions session.Catalog) ResumePlan {
 	managed := automaticSessions(sessions.Sessions)
 	localContext := local != nil && local.OriginKey != ""
+	if len(catalog.Warnings) != 0 {
+		plan := chooseResume(sessions.Sessions, localContext)
+		plan.Incomplete = true
+		return plan
+	}
 	if localContext {
-		if len(catalog.Warnings) != 0 {
-			return chooseResume(sessions.Sessions, true)
-		}
 		matching := matchingRepositories(local.OriginKey, catalog.Repositories)
 		common := make(map[string]struct{}, len(matching))
 		for _, value := range matching {

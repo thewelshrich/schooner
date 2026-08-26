@@ -19,9 +19,6 @@ type LocalCheckout struct {
 	TopLevel  string
 	Origin    string
 	OriginKey string
-	// OriginKeyUsesSSHUsername requires a remote runtime that preserves the
-	// non-default SSH account used to form OriginKey.
-	OriginKeyUsesSSHUsername bool
 	// CloneSource is credential-sanitized but preserves an SSH username when
 	// it is required for a usable clone URL.
 	CloneSource string
@@ -98,7 +95,6 @@ func inspectLocal(ctx context.Context, directory string, commands runner) (*Loca
 		raw := strings.TrimSpace(string(rawOrigin))
 		checkout.Origin = sanitizeOrigin(raw)
 		checkout.OriginKey = OriginKey(raw)
-		checkout.OriginKeyUsesSSHUsername = originIdentityUsesSSHUsername(raw)
 		checkout.CloneSource = sanitizeCloneSource(raw)
 	} else if exitCode(originErr) != 2 && exitCode(originErr) != 128 {
 		return nil, fmt.Errorf("read local origin: %w", originErr)
@@ -295,26 +291,6 @@ func originIdentityAuthority(username, host string) string {
 		return host
 	}
 	return username + "@" + host
-}
-
-func originIdentityUsesSSHUsername(origin string) bool {
-	if origin == "" || len(origin) > maxOriginBytes || hasControl(origin) {
-		return false
-	}
-	if !strings.Contains(origin, "://") {
-		if index := strings.IndexAny(origin, "?#"); index >= 0 {
-			origin = origin[:index]
-		}
-		separator := scpPathSeparator(origin)
-		if separator <= 0 {
-			return false
-		}
-		authority := origin[:separator]
-		at := strings.LastIndexByte(authority, '@')
-		return at > 0 && originIdentityUsername(authority[:at]) != ""
-	}
-	parsed, err := url.Parse(origin)
-	return err == nil && strings.EqualFold(parsed.Scheme, "ssh") && parsed.User != nil && originIdentityUsername(parsed.User.Username()) != ""
 }
 
 func scpPathSeparator(value string) int {

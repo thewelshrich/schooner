@@ -239,7 +239,7 @@ func resolveContextualStart(ctx context.Context, streams Streams, global *global
 	var catalog repository.Catalog
 	err = prompts.Wait(ctx, promptOptions(streams, global), "Finding remote work", func(waitCtx context.Context) error {
 		var listErr error
-		catalog, listErr = listWorktreesForContext(waitCtx, target, local)
+		catalog, listErr = listWorktreesForContext(waitCtx, target)
 		return listErr
 	})
 	if errors.Is(err, prompts.ErrAborted) {
@@ -256,6 +256,9 @@ func resolveContextualStart(ctx context.Context, streams Streams, global *global
 	case workcontext.StartUse:
 		return plan.Preferred.Worktree.Path, nil
 	case workcontext.StartChoose:
+		if plan.Incomplete {
+			return pickWorktreeChoices(ctx, streams, global, "Choose a known Worktree to start", plan.Choices)
+		}
 		return chooseWorktreeChoices(ctx, streams, global, "Choose a Worktree to start", plan.Choices)
 	case workcontext.StartClone:
 		return confirmCloneForStart(ctx, streams, global, target, local, plan)
@@ -334,14 +337,11 @@ func resolveContextualResume(ctx context.Context, streams Streams, global *globa
 	var repositories repository.Catalog
 	var sessions session.Catalog
 	err = prompts.Wait(ctx, promptOptions(streams, global), "Finding live Sessions", func(waitCtx context.Context) error {
-		if local != nil && local.OriginKey != "" {
-			var listErr error
-			repositories, listErr = listWorktreesForContext(waitCtx, target, local)
-			if listErr != nil {
-				return listErr
-			}
-		}
 		var listErr error
+		repositories, listErr = listWorktreesForContext(waitCtx, target)
+		if listErr != nil {
+			return listErr
+		}
 		sessions, listErr = target.ListSessions(waitCtx)
 		return listErr
 	})
@@ -352,7 +352,9 @@ func resolveContextualResume(ctx context.Context, streams Streams, global *globa
 		return "", executionError{cause: err}
 	}
 	plan := workcontext.PlanResume(local, repositories, sessions)
-	if plan.Fallback && plan.Mode != workcontext.ResumeUnavailable {
+	if plan.Incomplete && plan.Mode != workcontext.ResumeUnavailable {
+		_ = writeMutedNotice(streams.Err, terminalTheme(global, streams), "Remote Repository discovery was incomplete; choose a known Session explicitly.")
+	} else if plan.Fallback && plan.Mode != workcontext.ResumeUnavailable {
 		message := "No managed live Session matches this local Repository; using activity on " + targetBoxLabel(target) + " instead."
 		if plan.Mode == workcontext.ResumeChoose {
 			message = "No unambiguous managed live Session matches this local Repository; choose a Session explicitly."
@@ -370,11 +372,8 @@ func resolveContextualResume(ctx context.Context, streams Streams, global *globa
 	}
 }
 
-func listWorktreesForContext(ctx context.Context, target boxtarget.Target, local *repository.LocalCheckout) (repository.Catalog, error) {
-	if local != nil && local.OriginKeyUsesSSHUsername {
-		return target.ListContextWorktrees(ctx)
-	}
-	return target.ListWorktrees(ctx)
+func listWorktreesForContext(ctx context.Context, target boxtarget.Target) (repository.Catalog, error) {
+	return target.ListContextWorktrees(ctx)
 }
 
 func contextualUnavailable(message, guidance string) error {
@@ -402,6 +401,28 @@ func chooseWorktreeChoices(ctx context.Context, streams Streams, global *globalO
 		choices = append(choices, prompts.Choice{Label: value.Worktree.RelativePath + "  " + branch, Value: value.Worktree.Path})
 	}
 	return chooseValue(ctx, streams, global, title, choices, "multiple Worktrees are available; specify an exact Worktree path")
+}
+
+func pickWorktreeChoices(ctx context.Context, streams Streams, global *globalOptions, title string, values []workcontext.WorktreeChoice) (string, error) {
+	if !interactionAllowed(streams, global) {
+		return "", usageError{cause: fmt.Errorf("a Worktree selector is required when remote Repository discovery is incomplete")}
+	}
+	choices := make([]prompts.Choice, 0, len(values))
+	for _, value := range values {
+		branch := value.Worktree.Branch
+		if value.Worktree.Detached {
+			branch = "detached"
+		}
+		choices = append(choices, prompts.Choice{Label: value.Worktree.RelativePath + "  " + branch, Value: value.Worktree.Path})
+	}
+	selected, err := prompts.Pick(ctx, promptOptions(streams, global), title, choices)
+	if errors.Is(err, prompts.ErrAborted) {
+		return "", abortError{cause: err}
+	}
+	if err != nil {
+		return "", executionError{cause: err}
+	}
+	return selected, nil
 }
 
 func pickSession(ctx context.Context, streams Streams, global *globalOptions, values []session.Session, title string) (string, error) {

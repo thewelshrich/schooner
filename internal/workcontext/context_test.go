@@ -135,7 +135,19 @@ func TestPlanResumeRequiresPickerWhenDiscoveryIsPartial(t *testing.T) {
 		{ID: "possibly-matching", TmuxID: "$2", Ownership: session.Managed, Association: session.AssociationMissing},
 	}}
 	plan := PlanResume(local, repositories, sessions)
-	if plan.Mode != ResumeChoose || len(plan.Choices) != 2 || !plan.Fallback {
+	if plan.Mode != ResumeChoose || len(plan.Choices) != 2 || !plan.Fallback || !plan.Incomplete {
+		t.Fatalf("plan = %+v", plan)
+	}
+}
+
+func TestPlanResumeRequiresPickerOutsideRepositoryWhenDiscoveryIsPartial(t *testing.T) {
+	repositories := repository.Catalog{Warnings: []repository.Warning{{Message: "catalog output limit reached"}}}
+	sessions := session.Catalog{Sessions: []session.Session{
+		{ID: "older-known", TmuxID: "$1", Ownership: session.Managed, Association: session.AssociationLive},
+		{ID: "newer-uncertain", TmuxID: "$2", Ownership: session.Managed, Association: session.AssociationMissing},
+	}}
+	plan := PlanResume(nil, repositories, sessions)
+	if plan.Mode != ResumeChoose || len(plan.Choices) != 2 || plan.Fallback || !plan.Incomplete {
 		t.Fatalf("plan = %+v", plan)
 	}
 }

@@ -24,6 +24,15 @@ func TestContextualCloneHonorsNoInput(t *testing.T) {
 	}
 }
 
+func TestIncompleteContextualStartForcesChoiceWithSingleWorktree(t *testing.T) {
+	choice := workcontext.WorktreeChoice{Worktree: repository.Worktree{Path: "/remote/repo", RelativePath: "repo", Branch: "main"}}
+	selected, err := pickWorktreeChoices(t.Context(), Streams{}, &globalOptions{output: "human", noInput: true}, "Choose", []workcontext.WorktreeChoice{choice})
+	var usage usageError
+	if selected != "" || !errors.As(err, &usage) {
+		t.Fatalf("selected = %q, error = %v", selected, err)
+	}
+}
+
 func TestContextualUnavailableIsAnExecutionFailureWithGuidance(t *testing.T) {
 	err := contextualUnavailable("nothing available", "start something")
 	var execution executionError
