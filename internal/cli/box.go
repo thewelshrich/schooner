@@ -149,7 +149,7 @@ func newBoxAddCommand(streams Streams, global *globalOptions) *cobra.Command {
 			if err != nil {
 				return executionError{cause: err}
 			}
-			if err = writeAddResult(streams.Out, global.output, result, terminalTheme(global, streams)); err != nil {
+			if err = writeAddResult(streams.Out, global.output, result, outputTheme(global, streams)); err != nil {
 				return executionError{cause: err}
 			}
 			return nil
@@ -412,7 +412,7 @@ func runDigitalOceanAdd(cmd *cobra.Command, streams Streams, global *globalOptio
 	if result.Warning != "" {
 		_ = writeWarningLine(streams.Err, terminalTheme(global, streams), result.Warning)
 	}
-	return writeAddResult(streams.Out, global.output, result.AddResult, terminalTheme(global, streams))
+	return writeAddResult(streams.Out, global.output, result.AddResult, outputTheme(global, streams))
 }
 
 func resumeDigitalOceanAdd(cmd *cobra.Command, streams Streams, global *globalOptions, options digitalOceanAddOptions, services *application) error {
@@ -487,7 +487,7 @@ func resumeDigitalOceanAdd(cmd *cobra.Command, streams Streams, global *globalOp
 	if result.Warning != "" {
 		_ = writeWarningLine(streams.Err, terminalTheme(global, streams), result.Warning)
 	}
-	return writeAddResult(streams.Out, global.output, result.AddResult, terminalTheme(global, streams))
+	return writeAddResult(streams.Out, global.output, result.AddResult, outputTheme(global, streams))
 }
 
 func profileRef(value string) (providerdomain.CredentialProfileRef, error) {
@@ -522,7 +522,7 @@ func newBoxListCommand(streams Streams, global *globalOptions) *cobra.Command {
 			if err != nil {
 				return executionError{cause: err}
 			}
-			return writeListResult(streams.Out, global.output, entries, terminalTheme(global, streams))
+			return writeListResult(streams.Out, global.output, entries, outputTheme(global, streams))
 		},
 	}
 }
@@ -545,7 +545,7 @@ func newBoxUseCommand(streams Streams, global *globalOptions) *cobra.Command {
 				}
 				return executionError{cause: err}
 			}
-			return writeUseResult(streams.Out, global.output, record, terminalTheme(global, streams))
+			return writeUseResult(streams.Out, global.output, record, outputTheme(global, streams))
 		},
 	}
 }
@@ -577,7 +577,7 @@ func newBoxStatusCommand(streams Streams, global *globalOptions) *cobra.Command 
 			if err != nil {
 				return executionError{cause: err}
 			}
-			if err = writeStatusResult(streams.Out, global.output, result, terminalTheme(global, streams)); err != nil {
+			if err = writeStatusResult(streams.Out, global.output, result, outputTheme(global, streams)); err != nil {
 				return executionError{cause: err}
 			}
 			return nil
@@ -621,13 +621,13 @@ func newBoxMaintenanceCommand(streams Streams, global *globalOptions, use, short
 				if setupErr != nil {
 					return executionError{cause: setupErr}
 				}
-				return writeSetupResult(streams.Out, global.output, result, terminalTheme(global, streams))
+				return writeSetupResult(streams.Out, global.output, result, outputTheme(global, streams))
 			}
 			result, updateErr := services.boxes.Update(cmd.Context(), box.UpdateRequest{Name: record.Name, BatchMode: !interactionAllowed(streams, global), Progress: progress})
 			if updateErr != nil {
 				return executionError{cause: updateErr}
 			}
-			return writeUpdateResult(streams.Out, global.output, result, terminalTheme(global, streams))
+			return writeUpdateResult(streams.Out, global.output, result, outputTheme(global, streams))
 		},
 	}
 }
@@ -755,7 +755,7 @@ func newBoxRemoveCommand(streams Streams, global *globalOptions) *cobra.Command 
 			if err != nil {
 				return executionError{cause: err}
 			}
-			if err = writeRemoveResult(streams.Out, global.output, result, terminalTheme(global, streams)); err != nil {
+			if err = writeRemoveResult(streams.Out, global.output, result, outputTheme(global, streams)); err != nil {
 				return executionError{cause: err}
 			}
 			return nil
@@ -827,7 +827,7 @@ func newBoxDestroyCommand(streams Streams, global *globalOptions) *cobra.Command
 		if err != nil {
 			return executionError{cause: err}
 		}
-		return writeDestroyResult(streams.Out, global.output, result, terminalTheme(global, streams))
+		return writeDestroyResult(streams.Out, global.output, result, outputTheme(global, streams))
 	}}
 	cmd.Flags().BoolVar(&yes, "yes", false, "confirm permanent provider destruction")
 	return cmd
@@ -876,6 +876,9 @@ func promptOptions(streams Streams, options *globalOptions) prompts.Options {
 }
 func terminalTheme(options *globalOptions, streams Streams) *uitheme.Theme {
 	return uitheme.New(uitheme.Mode(options.theme), !colorDisabled(options, streams))
+}
+func outputTheme(options *globalOptions, streams Streams) *uitheme.Theme {
+	return uitheme.New(uitheme.Mode(options.theme), !colorDisabledForTerminal(options, streams.OutIsTerminal))
 }
 func showInteractiveIntro(ctx context.Context, streams Streams, options *globalOptions) error {
 	color := !colorDisabled(options, streams)

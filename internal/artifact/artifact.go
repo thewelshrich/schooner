@@ -20,9 +20,11 @@ import (
 )
 
 const (
-	defaultBaseURL = "https://github.com/thewelshrich/schooner/releases/download"
-	manifestName   = "SHA256SUMS"
-	maxManifest    = 1 << 20
+	defaultBaseURL              = "https://github.com/thewelshrich/schooner/releases/download"
+	manifestName                = "SHA256SUMS"
+	developmentCurrentName      = ".current"
+	developmentGenerationPrefix = ".generation-"
+	maxManifest                 = 1 << 20
 )
 
 type Code string
@@ -173,15 +175,19 @@ func (r *Resolver) Resolve(ctx context.Context, version string, platform Platfor
 		if directory == "" {
 			return Result{}, &Error{Code: CodeInvalidVersion, Message: "development builds require SCHOONER_ARTIFACT_DIR"}
 		}
-		if r.overrideDir == "" {
-			if _, err := os.Stat(filepath.Join(directory, manifestName)); errors.Is(err, os.ErrNotExist) {
+		activeDirectory, published, err := activeDevelopmentDirectory(directory)
+		if err != nil {
+			return Result{}, err
+		}
+		if r.overrideDir == "" && !published {
+			if _, err = os.Stat(filepath.Join(activeDirectory, manifestName)); errors.Is(err, os.ErrNotExist) {
 				return Result{}, &Error{Code: CodeUnavailable, Message: "development host runtimes are unavailable; run `schooner dev artifacts` from the Schooner source directory"}
 			} else if err != nil {
-				return Result{}, &Error{Code: CodeInvalidManifest, Message: fmt.Sprintf("inspect checksum manifest %s", filepath.Join(directory, manifestName)), Cause: err}
+				return Result{}, &Error{Code: CodeInvalidManifest, Message: fmt.Sprintf("inspect checksum manifest %s", filepath.Join(activeDirectory, manifestName)), Cause: err}
 			}
 		}
 		name := fileName(version, platform)
-		return resolveDirectory(directory, version, platform, name)
+		return resolveDirectory(activeDirectory, version, platform, name)
 	} else if !validVersion(version) {
 		return Result{}, &Error{Code: CodeInvalidVersion, Message: fmt.Sprintf("artifact version %q must be a v-prefixed semantic version", version)}
 	}
@@ -219,6 +225,29 @@ func DefaultDevelopmentDirectory() (string, error) {
 		return "", cacheError("resolve the local cache directory", err)
 	}
 	return filepath.Join(root, "schooner", "artifacts", "dev"), nil
+}
+
+func effectiveDevelopmentDirectory() (string, error) {
+	if override := os.Getenv("SCHOONER_ARTIFACT_DIR"); override != "" {
+		return override, nil
+	}
+	return DefaultDevelopmentDirectory()
+}
+
+func activeDevelopmentDirectory(directory string) (string, bool, error) {
+	pointer := filepath.Join(directory, developmentCurrentName)
+	contents, err := os.ReadFile(pointer)
+	if errors.Is(err, os.ErrNotExist) {
+		return directory, false, nil
+	}
+	if err != nil {
+		return "", false, &Error{Code: CodeInvalidManifest, Message: fmt.Sprintf("read development artifact pointer %s", pointer), Cause: err}
+	}
+	generation := strings.TrimSpace(string(contents))
+	if generation == "" || filepath.Base(generation) != generation || !strings.HasPrefix(generation, developmentGenerationPrefix) {
+		return "", false, &Error{Code: CodeInvalidManifest, Message: "development artifact pointer is invalid"}
+	}
+	return filepath.Join(directory, generation), true, nil
 }
 
 func validatePlatform(platform Platform) error {

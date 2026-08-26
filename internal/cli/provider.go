@@ -62,7 +62,7 @@ func newProviderConnectCommand(streams Streams, global *globalOptions) *cobra.Co
 			if profile.Warning != "" {
 				_ = writeWarningLine(streams.Err, terminalTheme(global, streams), profile.Warning)
 			}
-			return writeCredentialProfile(streams.Out, global.output, profile, terminalTheme(global, streams))
+			return writeCredentialProfile(streams.Out, global.output, profile, outputTheme(global, streams))
 		},
 	}
 	cmd.Flags().BoolVar(&makeDefault, "default", false, "make this the default DigitalOcean profile")
@@ -93,7 +93,7 @@ func newProviderListCommand(streams Streams, global *globalOptions) *cobra.Comma
 			}
 			return nil
 		}
-		theme := terminalTheme(global, streams)
+		theme := outputTheme(global, streams)
 		if len(profiles) == 0 {
 			return writeMutedNotice(streams.Out, theme, "No provider credential profiles connected.")
 		}
@@ -147,7 +147,7 @@ func newProviderDisconnectCommand(streams Streams, global *globalOptions) *cobra
 		if err != nil {
 			return executionError{cause: err}
 		}
-		return writeCredentialProfile(streams.Out, global.output, profile, terminalTheme(global, streams))
+		return writeCredentialProfile(streams.Out, global.output, profile, outputTheme(global, streams))
 	}}
 	cmd.Flags().BoolVar(&yes, "yes", false, "confirm local credential removal")
 	return cmd

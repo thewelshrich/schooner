@@ -304,6 +304,34 @@ func TestVersionHuman(t *testing.T) {
 	}
 }
 
+func TestVersionAutoColorUsesStdoutTerminalState(t *testing.T) {
+	t.Setenv("NO_COLOR", "")
+	t.Setenv("TERM", "xterm-256color")
+	for _, test := range []struct {
+		name        string
+		outTerminal bool
+		errTerminal bool
+		wantColor   bool
+	}{
+		{name: "redirected stdout", outTerminal: false, errTerminal: true, wantColor: false},
+		{name: "terminal stdout", outTerminal: true, errTerminal: false, wantColor: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			code := cli.RunAtHostHome(t.Context(), []string{"version"}, cli.Streams{
+				In: strings.NewReader(""), Out: &stdout, Err: &stderr,
+				OutIsTerminal: test.outTerminal, ErrIsTerminal: test.errTerminal,
+			}, testBuild(), t.TempDir())
+			if code != 0 || stderr.Len() != 0 {
+				t.Fatalf("code=%d stderr=%q", code, stderr.String())
+			}
+			if hasColor := strings.Contains(stdout.String(), "\x1b["); hasColor != test.wantColor {
+				t.Fatalf("stdout color = %t, want %t: %q", hasColor, test.wantColor, stdout.String())
+			}
+		})
+	}
+}
+
 func TestVersionJSON(t *testing.T) {
 	t.Parallel()
 

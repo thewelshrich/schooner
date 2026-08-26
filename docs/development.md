@@ -63,10 +63,12 @@ build verified development runtimes for both supported Linux architectures:
 go run ./cmd/schooner dev artifacts
 ```
 
-The command writes `schooner_dev_linux_amd64`, `schooner_dev_linux_arm64`, and
-`SHA256SUMS` to Schooner's development artifact cache. Development builds find
-that directory automatically. Re-run the command after changing code that must
-run on a Box.
+The command publishes `schooner_dev_linux_amd64`,
+`schooner_dev_linux_arm64`, and `SHA256SUMS` as one atomic generation in
+Schooner's development artifact cache. When `SCHOONER_ARTIFACT_DIR` is set, it
+publishes to that override instead. Development builds find the active
+directory automatically. Re-run the command after changing code that must run
+on a Box.
 
 `SCHOONER_ARTIFACT_DIR` remains available as an explicit override for a custom
 artifact directory. Overrides support development and release versions but

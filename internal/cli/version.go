@@ -36,7 +36,7 @@ func newVersionCommand(streams Streams, build BuildInfo, options *globalOptions)
 
 			switch options.output {
 			case "human":
-				if err := writeHumanVersion(cmd.OutOrStdout(), document, terminalTheme(options, streams)); err != nil {
+				if err := writeHumanVersion(cmd.OutOrStdout(), document, outputTheme(options, streams)); err != nil {
 					return executionError{cause: err}
 				}
 			case "json":

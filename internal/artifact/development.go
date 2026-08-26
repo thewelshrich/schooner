@@ -27,7 +27,7 @@ func BuildDevelopment(ctx context.Context, options DevelopmentBuildOptions) (Dev
 	outputDir := options.OutputDir
 	if outputDir == "" {
 		var err error
-		outputDir, err = DefaultDevelopmentDirectory()
+		outputDir, err = effectiveDevelopmentDirectory()
 		if err != nil {
 			return DevelopmentBuild{}, err
 		}
@@ -44,18 +44,23 @@ func BuildDevelopment(ctx context.Context, options DevelopmentBuildOptions) (Dev
 		return DevelopmentBuild{}, fmt.Errorf("create development artifact directory: %w", err)
 	}
 
-	temporaryDir, err := os.MkdirTemp(outputDir, ".build-")
+	generationDir, err := os.MkdirTemp(outputDir, developmentGenerationPrefix)
 	if err != nil {
 		return DevelopmentBuild{}, fmt.Errorf("create development build directory: %w", err)
 	}
-	defer os.RemoveAll(temporaryDir)
+	published := false
+	defer func() {
+		if !published {
+			_ = os.RemoveAll(generationDir)
+		}
+	}()
 
 	build := DevelopmentBuild{Directory: outputDir}
 	var manifest strings.Builder
 	for _, arch := range []string{"amd64", "arm64"} {
 		platform := Platform{OS: "linux", Arch: arch}
 		name := fileName("dev", platform)
-		path := filepath.Join(temporaryDir, name)
+		path := filepath.Join(generationDir, name)
 		command := exec.CommandContext(ctx, goBinary, "build", "-trimpath", "-o", path, "./cmd/schooner")
 		command.Dir = sourceDir
 		command.Env = developmentEnvironment(os.Environ(), arch)
@@ -75,29 +80,49 @@ func BuildDevelopment(ctx context.Context, options DevelopmentBuildOptions) (Dev
 		}
 		digest := fmt.Sprintf("%x", sha256.Sum256(contents))
 		fmt.Fprintf(&manifest, "%s  %s\n", digest, name)
-		build.Artifacts = append(build.Artifacts, Result{Path: filepath.Join(outputDir, name), Version: "dev", Platform: platform, SHA256: digest})
+		build.Artifacts = append(build.Artifacts, Result{Path: path, Version: "dev", Platform: platform, SHA256: digest})
 	}
-	if err = os.WriteFile(filepath.Join(temporaryDir, manifestName), []byte(manifest.String()), 0o600); err != nil {
+	if err = os.WriteFile(filepath.Join(generationDir, manifestName), []byte(manifest.String()), 0o600); err != nil {
 		return DevelopmentBuild{}, fmt.Errorf("write development checksum manifest: %w", err)
 	}
-
 	for _, result := range build.Artifacts {
-		if err = os.Rename(filepath.Join(temporaryDir, filepath.Base(result.Path)), result.Path); err != nil {
-			return DevelopmentBuild{}, fmt.Errorf("store %s: %w", filepath.Base(result.Path), err)
-		}
-	}
-	if err = os.Rename(filepath.Join(temporaryDir, manifestName), filepath.Join(outputDir, manifestName)); err != nil {
-		return DevelopmentBuild{}, fmt.Errorf("store development checksum manifest: %w", err)
-	}
-	for _, result := range build.Artifacts {
-		if _, err = readManifest(filepath.Join(outputDir, manifestName), filepath.Base(result.Path)); err != nil {
+		if _, err = readManifest(filepath.Join(generationDir, manifestName), filepath.Base(result.Path)); err != nil {
 			return DevelopmentBuild{}, err
 		}
 		if err = verifyFile(result.Path, result.SHA256); err != nil {
 			return DevelopmentBuild{}, err
 		}
 	}
+	if err = publishDevelopmentGeneration(outputDir, generationDir); err != nil {
+		return DevelopmentBuild{}, err
+	}
+	published = true
 	return build, nil
+}
+
+func publishDevelopmentGeneration(outputDir, generationDir string) error {
+	pointer, err := os.CreateTemp(outputDir, ".current-")
+	if err != nil {
+		return fmt.Errorf("create development artifact pointer: %w", err)
+	}
+	pointerPath := pointer.Name()
+	defer os.Remove(pointerPath)
+
+	if _, err = fmt.Fprintln(pointer, filepath.Base(generationDir)); err != nil {
+		_ = pointer.Close()
+		return fmt.Errorf("write development artifact pointer: %w", err)
+	}
+	if err = pointer.Sync(); err != nil {
+		_ = pointer.Close()
+		return fmt.Errorf("sync development artifact pointer: %w", err)
+	}
+	if err = pointer.Close(); err != nil {
+		return fmt.Errorf("close development artifact pointer: %w", err)
+	}
+	if err = os.Rename(pointerPath, filepath.Join(outputDir, developmentCurrentName)); err != nil {
+		return fmt.Errorf("publish development artifacts: %w", err)
+	}
+	return nil
 }
 
 func developmentEnvironment(environment []string, arch string) []string {

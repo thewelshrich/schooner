@@ -55,7 +55,7 @@ func newDatabaseDestroyCommand(streams Streams, global *globalOptions) *cobra.Co
 					Destroyed     bool   `json:"destroyed"`
 				}{SchemaVersion: "1", Destroyed: destroyed})
 			}
-			theme := terminalTheme(global, streams)
+			theme := outputTheme(global, streams)
 			title := "No local Schooner database existed"
 			if destroyed {
 				title = "Destroyed the local Schooner database"
