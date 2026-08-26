@@ -198,7 +198,7 @@ func (r *Runtime) Doctor(ctx context.Context, request hostruntime.InspectRequest
 }
 
 func (r *Runtime) Configure(request hostruntime.ConfigureRequest) (hostruntime.ConfigureResult, error) {
-	if err := hostruntime.ValidateConfigureRequest(request); err != nil {
+	if err := hostruntime.ConfigureOperation().ValidateRequest(request); err != nil {
 		return hostruntime.ConfigureResult{}, err
 	}
 	identity, err := r.operationIdentity(request.BoxIdentity)
@@ -216,7 +216,7 @@ func (r *Runtime) Configure(request hostruntime.ConfigureRequest) (hostruntime.C
 }
 
 func (r *Runtime) ListWorktrees(ctx context.Context, request hostruntime.WorktreeRequest) (hostruntime.WorktreeCatalog, error) {
-	if err := hostruntime.ValidateWorktreeRequest(request, false); err != nil {
+	if err := hostruntime.WorktreeListOperation().ValidateRequest(request); err != nil {
 		return hostruntime.WorktreeCatalog{}, err
 	}
 	identity, err := r.operationIdentity(request.BoxIdentity)
@@ -235,7 +235,7 @@ func (r *Runtime) ListWorktrees(ctx context.Context, request hostruntime.Worktre
 }
 
 func (r *Runtime) InspectWorktree(ctx context.Context, request hostruntime.WorktreeRequest) (hostruntime.WorktreeInspection, error) {
-	if err := hostruntime.ValidateWorktreeRequest(request, true); err != nil {
+	if err := hostruntime.WorktreeInspectOperation().ValidateRequest(request); err != nil {
 		return hostruntime.WorktreeInspection{}, err
 	}
 	identity, err := r.operationIdentity(request.BoxIdentity)
@@ -254,7 +254,7 @@ func (r *Runtime) InspectWorktree(ctx context.Context, request hostruntime.Workt
 }
 
 func (r *Runtime) CloneRepository(ctx context.Context, request hostruntime.CloneRequest) (hostruntime.LifecycleResult, error) {
-	if err := hostruntime.ValidateCloneRequest(request); err != nil {
+	if err := hostruntime.RepositoryCloneOperation().ValidateRequest(request); err != nil {
 		return hostruntime.LifecycleResult{}, err
 	}
 	lifecycle, identity, err := r.lifecycle(request.BoxIdentity, request.WorktreeRoot, request.NonInteractive)
@@ -269,7 +269,7 @@ func (r *Runtime) CloneRepository(ctx context.Context, request hostruntime.Clone
 }
 
 func (r *Runtime) AddWorktree(ctx context.Context, request hostruntime.WorktreeMutationRequest) (hostruntime.LifecycleResult, error) {
-	if err := hostruntime.ValidateWorktreeMutationRequest(request, "add"); err != nil {
+	if err := hostruntime.WorktreeAddOperation().ValidateRequest(request); err != nil {
 		return hostruntime.LifecycleResult{}, err
 	}
 	lifecycle, identity, err := r.lifecycle(request.BoxIdentity, request.WorktreeRoot, request.NonInteractive)
@@ -284,7 +284,7 @@ func (r *Runtime) AddWorktree(ctx context.Context, request hostruntime.WorktreeM
 }
 
 func (r *Runtime) RemoveWorktree(ctx context.Context, request hostruntime.WorktreeMutationRequest) (hostruntime.LifecycleResult, error) {
-	if err := hostruntime.ValidateWorktreeMutationRequest(request, "remove"); err != nil {
+	if err := hostruntime.WorktreeRemoveOperation().ValidateRequest(request); err != nil {
 		return hostruntime.LifecycleResult{}, err
 	}
 	lifecycle, identity, err := r.lifecycle(request.BoxIdentity, request.WorktreeRoot, request.NonInteractive)
@@ -299,7 +299,7 @@ func (r *Runtime) RemoveWorktree(ctx context.Context, request hostruntime.Worktr
 }
 
 func (r *Runtime) PruneWorktrees(ctx context.Context, request hostruntime.WorktreeMutationRequest) (hostruntime.LifecycleResult, error) {
-	if err := hostruntime.ValidateWorktreeMutationRequest(request, "prune"); err != nil {
+	if err := hostruntime.WorktreePruneOperation().ValidateRequest(request); err != nil {
 		return hostruntime.LifecycleResult{}, err
 	}
 	lifecycle, identity, err := r.lifecycle(request.BoxIdentity, request.WorktreeRoot, request.NonInteractive)
@@ -314,7 +314,7 @@ func (r *Runtime) PruneWorktrees(ctx context.Context, request hostruntime.Worktr
 }
 
 func (r *Runtime) ListSessions(ctx context.Context, request hostruntime.SessionListRequest) (hostruntime.SessionCatalog, error) {
-	if err := hostruntime.ValidateSessionListRequest(request); err != nil {
+	if err := hostruntime.SessionListOperation().ValidateRequest(request); err != nil {
 		return hostruntime.SessionCatalog{}, err
 	}
 	manager, identity, err := r.sessionManager(request.BoxIdentity, request.WorktreeRoot)
@@ -329,7 +329,7 @@ func (r *Runtime) ListSessions(ctx context.Context, request hostruntime.SessionL
 }
 
 func (r *Runtime) StartSession(ctx context.Context, request hostruntime.SessionStartRequest) (hostruntime.SessionStartResult, error) {
-	if err := hostruntime.ValidateSessionStartRequest(request); err != nil {
+	if err := hostruntime.SessionStartOperation().ValidateRequest(request); err != nil {
 		return hostruntime.SessionStartResult{}, err
 	}
 	manager, identity, err := r.sessionManager(request.BoxIdentity, request.WorktreeRoot)
@@ -344,7 +344,7 @@ func (r *Runtime) StartSession(ctx context.Context, request hostruntime.SessionS
 }
 
 func (r *Runtime) SessionLogs(ctx context.Context, request hostruntime.SessionLogsRequest) (hostruntime.SessionLogsResult, error) {
-	if err := hostruntime.ValidateSessionLogsRequest(request); err != nil {
+	if err := hostruntime.SessionLogsOperation().ValidateRequest(request); err != nil {
 		return hostruntime.SessionLogsResult{}, err
 	}
 	manager, identity, err := r.sessionManager(request.BoxIdentity, request.WorktreeRoot)
@@ -359,7 +359,7 @@ func (r *Runtime) SessionLogs(ctx context.Context, request hostruntime.SessionLo
 }
 
 func (r *Runtime) StopSession(ctx context.Context, request hostruntime.SessionTargetRequest) (hostruntime.SessionStopResult, error) {
-	if err := hostruntime.ValidateSessionTargetRequest(request); err != nil {
+	if err := hostruntime.SessionStopOperation().ValidateRequest(request); err != nil {
 		return hostruntime.SessionStopResult{}, err
 	}
 	manager, identity, err := r.sessionManager(request.BoxIdentity, request.WorktreeRoot)

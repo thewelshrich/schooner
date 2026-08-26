@@ -245,130 +245,96 @@ func (r *Runtime) InspectHost(ctx context.Context, connection box.Connection, in
 
 func (r *Runtime) ConfigureHost(ctx context.Context, connection box.Connection, installed box.HostRuntime, worktreeRoot, expectedIdentity string) error {
 	request := hostruntime.NewConfigureRequest(worktreeRoot, expectedIdentity)
-	var result hostruntime.ConfigureResult
-	if err := r.invokeHostJSON(ctx, connection, installed, expectedIdentity, hostruntime.CapabilityConfigureV1, "host configure", request, &result); err != nil {
-		return err
-	}
-	if result.SchemaVersion != hostruntime.SchemaVersion || result.ProtocolVersion != hostruntime.ProtocolVersion || result.BoxIdentity != expectedIdentity || result.WorktreeRoot != worktreeRoot {
-		return box.NewError("host_runtime_incompatible", "host configuration returned an invalid result", nil)
-	}
-	return nil
+	_, err := invokeHostOperation(ctx, r, connection, installed, hostruntime.ConfigureOperation(), request)
+	return err
 }
 
 func (r *Runtime) ListWorktrees(ctx context.Context, connection box.Connection, installed box.HostRuntime, expectedIdentity string) (repository.Catalog, error) {
-	var result hostruntime.WorktreeCatalog
-	if err := r.invokeHostJSON(ctx, connection, installed, expectedIdentity, hostruntime.CapabilityWorktreeListV1, "host worktree list", hostruntime.NewWorktreeRequest("", expectedIdentity), &result); err != nil {
+	request := hostruntime.NewWorktreeRequest("", expectedIdentity)
+	result, err := invokeHostOperation(ctx, r, connection, installed, hostruntime.WorktreeListOperation(), request)
+	if err != nil {
 		return repository.Catalog{}, err
-	}
-	if result.SchemaVersion != hostruntime.SchemaVersion || result.ProtocolVersion != hostruntime.ProtocolVersion || result.BoxIdentity != expectedIdentity {
-		return repository.Catalog{}, box.NewError("host_runtime_incompatible", "worktree list returned an incompatible result", nil)
 	}
 	return result.Catalog, nil
 }
 
 func (r *Runtime) InspectWorktree(ctx context.Context, connection box.Connection, installed box.HostRuntime, expectedIdentity, selector string) (repository.Inspection, error) {
-	var result hostruntime.WorktreeInspection
-	if err := r.invokeHostJSON(ctx, connection, installed, expectedIdentity, hostruntime.CapabilityWorktreeInspectV1, "host worktree inspect", hostruntime.NewWorktreeRequest(selector, expectedIdentity), &result); err != nil {
+	request := hostruntime.NewWorktreeRequest(selector, expectedIdentity)
+	result, err := invokeHostOperation(ctx, r, connection, installed, hostruntime.WorktreeInspectOperation(), request)
+	if err != nil {
 		return repository.Inspection{}, err
-	}
-	if result.SchemaVersion != hostruntime.SchemaVersion || result.ProtocolVersion != hostruntime.ProtocolVersion || result.BoxIdentity != expectedIdentity {
-		return repository.Inspection{}, box.NewError("host_runtime_incompatible", "worktree inspection returned an incompatible result", nil)
 	}
 	return result.Inspection, nil
 }
 
 func (r *Runtime) CloneRepository(ctx context.Context, connection box.Connection, installed box.HostRuntime, expectedIdentity, worktreeRoot, source, branch string) (repository.MutationResult, error) {
-	var result hostruntime.LifecycleResult
 	request := hostruntime.NewCloneRequest(source, branch, worktreeRoot, expectedIdentity)
-	if err := r.invokeHostJSON(ctx, connection, installed, expectedIdentity, hostruntime.CapabilityRepositoryCloneV1, "host repository clone", request, &result); err != nil {
-		return repository.MutationResult{}, err
-	}
-	if err := validateLifecycleResult(result, expectedIdentity, "clone"); err != nil {
+	result, err := invokeHostOperation(ctx, r, connection, installed, hostruntime.RepositoryCloneOperation(), request)
+	if err != nil {
 		return repository.MutationResult{}, err
 	}
 	return result.MutationResult, nil
 }
 
 func (r *Runtime) AddWorktree(ctx context.Context, connection box.Connection, installed box.HostRuntime, expectedIdentity, worktreeRoot, repositoryPath, pathValue, branch string) (repository.MutationResult, error) {
-	var result hostruntime.LifecycleResult
 	request := hostruntime.NewWorktreeMutationRequest(repositoryPath, pathValue, branch, worktreeRoot, expectedIdentity)
-	if err := r.invokeHostJSON(ctx, connection, installed, expectedIdentity, hostruntime.CapabilityWorktreeAddV1, "host worktree add", request, &result); err != nil {
-		return repository.MutationResult{}, err
-	}
-	if err := validateLifecycleResult(result, expectedIdentity, "worktree_add"); err != nil {
+	result, err := invokeHostOperation(ctx, r, connection, installed, hostruntime.WorktreeAddOperation(), request)
+	if err != nil {
 		return repository.MutationResult{}, err
 	}
 	return result.MutationResult, nil
 }
 
 func (r *Runtime) RemoveWorktree(ctx context.Context, connection box.Connection, installed box.HostRuntime, expectedIdentity, worktreeRoot, pathValue string) (repository.MutationResult, error) {
-	var result hostruntime.LifecycleResult
 	request := hostruntime.NewWorktreeMutationRequest("", pathValue, "", worktreeRoot, expectedIdentity)
-	if err := r.invokeHostJSON(ctx, connection, installed, expectedIdentity, hostruntime.CapabilityWorktreeRemoveV1, "host worktree remove", request, &result); err != nil {
-		return repository.MutationResult{}, err
-	}
-	if err := validateLifecycleResult(result, expectedIdentity, "worktree_remove"); err != nil {
+	result, err := invokeHostOperation(ctx, r, connection, installed, hostruntime.WorktreeRemoveOperation(), request)
+	if err != nil {
 		return repository.MutationResult{}, err
 	}
 	return result.MutationResult, nil
 }
 
 func (r *Runtime) PruneWorktrees(ctx context.Context, connection box.Connection, installed box.HostRuntime, expectedIdentity, worktreeRoot string) (repository.MutationResult, error) {
-	var result hostruntime.LifecycleResult
 	request := hostruntime.NewWorktreeMutationRequest("", "", "", worktreeRoot, expectedIdentity)
-	if err := r.invokeHostJSON(ctx, connection, installed, expectedIdentity, hostruntime.CapabilityWorktreePruneV1, "host worktree prune", request, &result); err != nil {
-		return repository.MutationResult{}, err
-	}
-	if err := validateLifecycleResult(result, expectedIdentity, "worktree_prune"); err != nil {
+	result, err := invokeHostOperation(ctx, r, connection, installed, hostruntime.WorktreePruneOperation(), request)
+	if err != nil {
 		return repository.MutationResult{}, err
 	}
 	return result.MutationResult, nil
 }
 
 func (r *Runtime) ListSessions(ctx context.Context, connection box.Connection, installed box.HostRuntime, expectedIdentity, worktreeRoot string) (session.Catalog, error) {
-	var result hostruntime.SessionCatalog
 	request := hostruntime.NewSessionListRequest(worktreeRoot, expectedIdentity)
-	if err := r.invokeHostJSON(ctx, connection, installed, expectedIdentity, hostruntime.CapabilitySessionListV1, "host session list", request, &result); err != nil {
+	result, err := invokeHostOperation(ctx, r, connection, installed, hostruntime.SessionListOperation(), request)
+	if err != nil {
 		return session.Catalog{}, err
-	}
-	if result.SchemaVersion != hostruntime.SchemaVersion || result.ProtocolVersion != hostruntime.ProtocolVersion || result.BoxIdentity != expectedIdentity || result.WorktreeRoot != worktreeRoot {
-		return session.Catalog{}, box.NewError("host_runtime_incompatible", "Session list returned an incompatible result", nil)
 	}
 	return result.Catalog, nil
 }
 
 func (r *Runtime) StartSession(ctx context.Context, connection box.Connection, installed box.HostRuntime, expectedIdentity, worktreeRoot, worktree string) (session.StartResult, error) {
-	var result hostruntime.SessionStartResult
 	request := hostruntime.NewSessionStartRequest(worktreeRoot, expectedIdentity, worktree)
-	if err := r.invokeHostJSON(ctx, connection, installed, expectedIdentity, hostruntime.CapabilitySessionStartV1, "host session start", request, &result); err != nil {
+	result, err := invokeHostOperation(ctx, r, connection, installed, hostruntime.SessionStartOperation(), request)
+	if err != nil {
 		return session.StartResult{}, err
-	}
-	if result.SchemaVersion != hostruntime.SchemaVersion || result.ProtocolVersion != hostruntime.ProtocolVersion || result.BoxIdentity != expectedIdentity || result.WorktreeRoot != worktreeRoot || result.Session.WorktreePath == "" {
-		return session.StartResult{}, box.NewError("host_runtime_incompatible", "Session start returned an incompatible result", nil)
 	}
 	return result.StartResult, nil
 }
 
 func (r *Runtime) SessionLogs(ctx context.Context, connection box.Connection, installed box.HostRuntime, expectedIdentity, worktreeRoot, id string, lines int) (session.LogsResult, error) {
-	var result hostruntime.SessionLogsResult
 	request := hostruntime.NewSessionLogsRequest(worktreeRoot, expectedIdentity, id, lines)
-	if err := r.invokeHostJSON(ctx, connection, installed, expectedIdentity, hostruntime.CapabilitySessionLogsV1, "host session logs", request, &result); err != nil {
+	result, err := invokeHostOperation(ctx, r, connection, installed, hostruntime.SessionLogsOperation(), request)
+	if err != nil {
 		return session.LogsResult{}, err
-	}
-	if result.SchemaVersion != hostruntime.SchemaVersion || result.ProtocolVersion != hostruntime.ProtocolVersion || result.BoxIdentity != expectedIdentity || result.WorktreeRoot != worktreeRoot || result.SessionID != id {
-		return session.LogsResult{}, box.NewError("host_runtime_incompatible", "Session logs returned an incompatible result", nil)
 	}
 	return result.LogsResult, nil
 }
 
 func (r *Runtime) StopSession(ctx context.Context, connection box.Connection, installed box.HostRuntime, expectedIdentity, worktreeRoot, id string) (session.StopResult, error) {
-	var result hostruntime.SessionStopResult
 	request := hostruntime.NewSessionTargetRequest(worktreeRoot, expectedIdentity, id)
-	if err := r.invokeHostJSON(ctx, connection, installed, expectedIdentity, hostruntime.CapabilitySessionStopV1, "host session stop", request, &result); err != nil {
+	result, err := invokeHostOperation(ctx, r, connection, installed, hostruntime.SessionStopOperation(), request)
+	if err != nil {
 		return session.StopResult{}, err
-	}
-	if result.SchemaVersion != hostruntime.SchemaVersion || result.ProtocolVersion != hostruntime.ProtocolVersion || result.BoxIdentity != expectedIdentity || result.WorktreeRoot != worktreeRoot || result.SessionID != id || !result.Stopped {
-		return session.StopResult{}, box.NewError("host_runtime_incompatible", "Session stop returned an incompatible result", nil)
 	}
 	return result.StopResult, nil
 }
@@ -383,60 +349,51 @@ func (r *Runtime) OpenWorktreeShell(ctx context.Context, connection box.Connecti
 	return r.openHostInteractive(ctx, connection, installed, expectedIdentity, hostruntime.CapabilityWorktreeShellV1, "host worktree shell", request, terminal)
 }
 
-func validateLifecycleResult(result hostruntime.LifecycleResult, expectedIdentity, action string) error {
-	if result.SchemaVersion != hostruntime.SchemaVersion || result.ProtocolVersion != hostruntime.ProtocolVersion || result.BoxIdentity != expectedIdentity || result.Action != action {
-		return box.NewError("host_runtime_incompatible", "Git lifecycle operation returned an incompatible result", nil)
-	}
-	return nil
-}
-
-func (r *Runtime) invokeHostJSON(ctx context.Context, connection box.Connection, installed box.HostRuntime, expectedIdentity, capability, operation string, request, target any) error {
+func invokeHostOperation[Request, Result any](ctx context.Context, r *Runtime, connection box.Connection, installed box.HostRuntime, operation hostruntime.Operation[Request, Result], request Request) (Result, error) {
+	var zero Result
 	if err := validateRuntimePath(installed.Path); err != nil {
-		return err
+		return zero, err
 	}
 	hello, attempt, err := r.helloAt(ctx, connection, installed.Path)
 	if err != nil {
 		if isProtocolError(err) {
-			return protocolError(err)
+			return zero, protocolError(err)
 		}
-		return err
+		return zero, err
 	}
 	if attempt.ExitCode != 0 {
-		return box.NewError("host_runtime_missing", "the recorded host runtime is unavailable and must be repaired", fmt.Errorf("remote exit status %d", attempt.ExitCode))
+		return zero, box.NewError("host_runtime_missing", "the recorded host runtime is unavailable and must be repaired", fmt.Errorf("remote exit status %d", attempt.ExitCode))
 	}
-	if err = hostruntime.ValidateHello(hello, expectedIdentity, capability); err != nil {
+	if err = operation.ValidateHello(request, hello); err != nil {
 		if hostruntime.ErrorCode(err) == hostruntime.CodeCapabilityUnavailable {
-			return box.NewError("host_runtime_incompatible", "the host runtime lacks required support; run box update", err)
+			return zero, box.NewError("host_runtime_incompatible", "the host runtime lacks required support; run box update", err)
 		}
-		return protocolError(err)
+		return zero, protocolError(err)
 	}
-	payload, err := json.Marshal(request)
+	payload, err := operation.EncodeRequest(request)
 	if err != nil {
-		return box.NewError("internal", "encode host operation request", err)
+		return zero, box.NewError("internal", "encode host operation request", err)
 	}
-	hostOperation := operation
+	hostOperation := operation.Command()
 	if connection.BatchMode {
-		hostOperation = "--no-input " + operation
+		hostOperation = "--no-input " + hostOperation
 	}
 	command := fixedShellCommand(`runtime_path=$(printf %s "$1" | base64 -d) || exit 64; exec "$runtime_path" `+hostOperation, installed.Path)
 	result, err := r.runRemote(ctx, connection, command, strings.NewReader(string(payload)))
 	if err != nil {
-		return err
+		return zero, err
 	}
 	if result.ExitCode != 0 {
-		return remoteFailure(operation, result)
+		return zero, remoteFailure(operation.Command(), result)
 	}
-	operationError, present, err := hostruntime.DecodeOperationError(result.Stdout, expectedIdentity)
+	decoded, operationError, err := operation.DecodeResult(result.Stdout, request)
 	if err != nil {
-		return protocolError(err)
+		return zero, protocolError(err)
 	}
-	if present {
-		return box.NewError(string(operationError.Error.Code), operationError.Error.Message, nil)
+	if operationError != nil {
+		return zero, box.NewError(string(operationError.Error.Code), operationError.Error.Message, nil)
 	}
-	if err = hostruntime.DecodeStrict(result.Stdout, target); err != nil {
-		return protocolError(err)
-	}
-	return nil
+	return decoded, nil
 }
 
 func (r *Runtime) openHostInteractive(ctx context.Context, connection box.Connection, installed box.HostRuntime, expectedIdentity, capability, operation string, request any, terminal TerminalIO) (ShellResult, error) {
