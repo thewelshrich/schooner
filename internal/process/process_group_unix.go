@@ -116,15 +116,19 @@ func runInteractiveTerminal(command *exec.Cmd, terminal *os.File) (err error) {
 				<-waitDone
 				return fmt.Errorf("suspend for stopped interactive command: %w", err)
 			}
-			foregroundGroup, foregroundErr := unix.IoctlGetInt(int(terminal.Fd()), unix.TIOCGPGRP)
-			if foregroundErr != nil {
-				_ = command.Cancel()
-				<-waitDone
-				return fmt.Errorf("inspect terminal after resuming interactive command: %w", foregroundErr)
-			}
-			if foregroundGroup != parentGroup {
+			for {
+				foregroundGroup, foregroundErr := unix.IoctlGetInt(int(terminal.Fd()), unix.TIOCGPGRP)
+				if foregroundErr != nil {
+					_ = command.Cancel()
+					<-waitDone
+					return fmt.Errorf("inspect terminal after resuming interactive command: %w", foregroundErr)
+				}
+				if foregroundGroup == parentGroup {
+					break
+				}
 				// `bg` resumes Schooner without returning terminal ownership. Keep
-				// both process groups stopped until the invoking shell uses `fg`.
+				// both process groups stopped and recheck after every resume until the
+				// invoking shell uses `fg`.
 				if err := syscall.Kill(os.Getpid(), syscall.SIGSTOP); err != nil {
 					_ = command.Cancel()
 					<-waitDone
