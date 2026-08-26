@@ -189,7 +189,7 @@ func OriginKey(origin string) string {
 		if index := strings.IndexAny(origin, "?#"); index >= 0 {
 			origin = origin[:index]
 		}
-		colon := strings.IndexByte(origin, ':')
+		colon := scpPathSeparator(origin)
 		if colon <= 0 || strings.ContainsRune(origin[:colon], '/') {
 			return ""
 		}
@@ -203,7 +203,7 @@ func OriginKey(origin string) string {
 				return ""
 			}
 		}
-		host = strings.ToLower(host)
+		host = normalizeSCPHost(host)
 		path := cleanOriginPath(origin[colon+1:])
 		if host == "" || path == "" {
 			return ""
@@ -266,6 +266,37 @@ func originIdentityAuthority(username, host string) string {
 		return host
 	}
 	return username + "@" + host
+}
+
+func scpPathSeparator(value string) int {
+	hostStart := 0
+	if at := strings.IndexByte(value, '@'); at >= 0 {
+		hostStart = at + 1
+	}
+	if hostStart < len(value) && value[hostStart] == '[' {
+		end := strings.IndexByte(value[hostStart+1:], ']')
+		if end < 0 {
+			return -1
+		}
+		end += hostStart + 1
+		if end+1 >= len(value) || value[end+1] != ':' {
+			return -1
+		}
+		return end + 1
+	}
+	return strings.IndexByte(value, ':')
+}
+
+func normalizeSCPHost(host string) string {
+	if strings.HasPrefix(host, "[") {
+		if !strings.HasSuffix(host, "]") {
+			return ""
+		}
+		host = host[1 : len(host)-1]
+	} else if strings.ContainsRune(host, ':') {
+		return ""
+	}
+	return strings.ToLower(host)
 }
 
 func defaultOriginPort(scheme, port string) bool {

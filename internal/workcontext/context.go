@@ -120,7 +120,11 @@ func PlanResume(local *repository.LocalCheckout, catalog repository.Catalog, ses
 func matchingRepositories(key string, values []repository.Repository) []repository.Repository {
 	result := make([]repository.Repository, 0)
 	for _, value := range values {
-		if repository.OriginKey(value.Origin) == key {
+		candidateKey := value.OriginKey
+		if candidateKey == "" {
+			candidateKey = repository.OriginKey(value.Origin)
+		}
+		if candidateKey == key {
 			result = append(result, value)
 		}
 	}

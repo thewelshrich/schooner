@@ -51,6 +51,18 @@ func TestDiscoverGroupsPrimaryAndLinkedWorktreesFromGit(t *testing.T) {
 	if repository.Primary.Kind != Primary || repository.Linked[0].Kind != Linked {
 		t.Fatalf("kinds = %s, %s", repository.Primary.Kind, repository.Linked[0].Kind)
 	}
+
+	mustGitAt(t, primary, "remote", "set-url", "origin", "ssh://alice:secret@example.com/owner/repo.git")
+	catalog, err = Discover(t.Context(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := catalog.Repositories[0].Origin; got != "ssh://example.com/owner/repo" {
+		t.Fatalf("SSH origin = %q", got)
+	}
+	if got := catalog.Repositories[0].OriginKey; got != "alice@example.com/owner/repo" {
+		t.Fatalf("SSH origin key = %q", got)
+	}
 }
 
 func TestDiscoverIncludesInRootLinkedWorktreeWithoutOutsideSiblings(t *testing.T) {

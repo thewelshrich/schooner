@@ -23,6 +23,20 @@ func TestPlanStartUsesMatchingPrimaryAsIs(t *testing.T) {
 	}
 }
 
+func TestPlanStartMatchesNonDefaultSSHUsername(t *testing.T) {
+	primary := repository.Worktree{Path: "/remote/repo", RelativePath: "repo", Branch: "main"}
+	catalog := repository.Catalog{Repositories: []repository.Repository{
+		{Origin: "ssh://example.com/owner/repo", OriginKey: "bob@example.com/owner/repo", CommonDirectory: "/bob/.git", Primary: &repository.Worktree{Path: "/remote/bob", RelativePath: "bob"}},
+		{Origin: "ssh://example.com/owner/repo", OriginKey: "alice@example.com/owner/repo", CommonDirectory: "/alice/.git", Primary: &primary},
+	}}
+	local := &repository.LocalCheckout{OriginKey: "alice@example.com/owner/repo"}
+
+	plan := PlanStart(local, catalog)
+	if plan.Mode != StartUse || plan.Preferred.Worktree.Path != primary.Path {
+		t.Fatalf("plan = %+v", plan)
+	}
+}
+
 func TestPlanStartOffersCloneAndRetainsExistingFallback(t *testing.T) {
 	primary := repository.Worktree{Path: "/remote/existing", RelativePath: "existing"}
 	local := &repository.LocalCheckout{Origin: "https://example.com/new/repo", OriginKey: "example.com/new/repo", CloneSource: "git@example.com:new/repo"}

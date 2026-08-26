@@ -55,6 +55,18 @@ func TestOriginKeyNormalizesGitSuffixBeforeTrailingSlash(t *testing.T) {
 	}
 }
 
+func TestOriginKeyMatchesBracketedIPv6SCPAndSSHForms(t *testing.T) {
+	want := "2001:db8::1/owner/repo"
+	for _, value := range []string{
+		"git@[2001:db8::1]:owner/repo.git",
+		"ssh://git@[2001:db8::1]/owner/repo.git",
+	} {
+		if got := OriginKey(value); got != want {
+			t.Errorf("OriginKey(%q) = %q, want %q", value, got, want)
+		}
+	}
+}
+
 func TestInspectLocalObservesContainingCheckoutWithoutPersistingState(t *testing.T) {
 	repositoryPath := filepath.Join(t.TempDir(), "repo")
 	mustGit(t, "init", repositoryPath)
