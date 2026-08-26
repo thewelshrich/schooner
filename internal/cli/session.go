@@ -11,32 +11,29 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/thewelshrich/schooner/internal/box"
-	"github.com/thewelshrich/schooner/internal/repository"
-	hostruntime "github.com/thewelshrich/schooner/internal/runtime"
-	"github.com/thewelshrich/schooner/internal/runtime/host"
-	sshruntime "github.com/thewelshrich/schooner/internal/runtime/ssh"
+	"github.com/thewelshrich/schooner/internal/boxtarget"
 	"github.com/thewelshrich/schooner/internal/session"
 	"github.com/thewelshrich/schooner/internal/ui/prompts"
 )
 
-func newSessionCommands(streams Streams, global *globalOptions) []*cobra.Command {
+func newSessionCommands(streams Streams, global *globalOptions, targets *boxtarget.Resolver) []*cobra.Command {
 	return []*cobra.Command{
-		newStartSessionCommand(streams, global),
-		newResumeSessionCommand(streams, global),
-		newSessionsCommand(streams, global),
-		newSessionLogsCommand(streams, global),
-		newStopSessionCommand(streams, global),
-		newWorktreeShellCommand(streams, global),
+		newStartSessionCommand(streams, global, targets),
+		newResumeSessionCommand(streams, global, targets),
+		newSessionsCommand(streams, global, targets),
+		newSessionLogsCommand(streams, global, targets),
+		newStopSessionCommand(streams, global, targets),
+		newWorktreeShellCommand(streams, global, targets),
 	}
 }
 
-func newStartSessionCommand(streams Streams, global *globalOptions) *cobra.Command {
+func newStartSessionCommand(streams Streams, global *globalOptions, targets *boxtarget.Resolver) *cobra.Command {
 	var explicitBox string
 	command := &cobra.Command{Use: "start [worktree-path]", Short: "Start or reuse a persistent Worktree Session", Args: cobra.MaximumNArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		if err := requireInteractiveTerminal(streams, global, "start"); err != nil {
 			return err
 		}
-		target, err := resolveWorktreeTarget(cmd.Context(), streams, global, explicitBox)
+		target, err := resolveBoxExecutionTarget(cmd.Context(), streams, global, targets, explicitBox)
 		if err != nil {
 			return executionError{cause: err}
 		}
@@ -44,17 +41,14 @@ func newStartSessionCommand(streams Streams, global *globalOptions) *cobra.Comma
 		if sessionSelectorOmitted(args) {
 			selector, err = chooseWorktree(cmd.Context(), streams, global, target, "Choose a Worktree to start")
 			if err != nil {
-				closeWorktreeTarget(&target)
 				return err
 			}
 		}
-		result, err := startSessionOnTarget(cmd.Context(), streams, global, target, selector)
+		result, err := startSessionOnTarget(cmd.Context(), target, selector)
 		if err != nil {
-			closeWorktreeTarget(&target)
-			return executionError{cause: publicRepositoryError(err)}
+			return executionError{cause: err}
 		}
-		closeWorktreeTarget(&target)
-		attachResult, err := resumeSessionOnTarget(cmd.Context(), streams, global, target, result.Session.ID)
+		attachResult, err := resumeSessionOnTarget(cmd.Context(), streams, target, result.Session.ID)
 		if err != nil {
 			message := fmt.Errorf("Session %s remains running; resume it after fixing the connection: %w", result.Session.ID, err)
 			if attachResult.DiagnosticsReported {
@@ -73,36 +67,33 @@ func newStartSessionCommand(streams Streams, global *globalOptions) *cobra.Comma
 	return command
 }
 
-func newResumeSessionCommand(streams Streams, global *globalOptions) *cobra.Command {
+func newResumeSessionCommand(streams Streams, global *globalOptions, targets *boxtarget.Resolver) *cobra.Command {
 	var explicitBox string
 	command := &cobra.Command{Use: "resume [worktree-path-or-session-id]", Short: "Resume an existing persistent Session", Args: cobra.MaximumNArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		if err := requireInteractiveTerminal(streams, global, "resume"); err != nil {
 			return err
 		}
-		target, err := resolveWorktreeTarget(cmd.Context(), streams, global, explicitBox)
+		target, err := resolveBoxExecutionTarget(cmd.Context(), streams, global, targets, explicitBox)
 		if err != nil {
 			return executionError{cause: err}
 		}
 		selector := firstArgument(args)
 		if sessionSelectorOmitted(args) {
-			catalog, listErr := listSessionsOnTarget(cmd.Context(), streams, global, target)
+			catalog, listErr := listSessionsOnTarget(cmd.Context(), target)
 			if listErr != nil {
-				closeWorktreeTarget(&target)
-				return executionError{cause: publicRepositoryError(listErr)}
+				return executionError{cause: listErr}
 			}
 			selector, err = chooseSession(cmd.Context(), streams, global, catalog, sessionChoiceResume, "Choose a Session to resume")
 			if err != nil {
-				closeWorktreeTarget(&target)
 				return err
 			}
 		}
-		closeWorktreeTarget(&target)
-		result, err := resumeSessionOnTarget(cmd.Context(), streams, global, target, selector)
+		result, err := resumeSessionOnTarget(cmd.Context(), streams, target, selector)
 		if err != nil {
 			if result.DiagnosticsReported {
 				return reportedExecutionError{cause: err}
 			}
-			return executionError{cause: publicRepositoryError(err)}
+			return executionError{cause: err}
 		}
 		if result.ExitCode != 0 {
 			return exitStatusError{code: result.ExitCode}
@@ -113,17 +104,16 @@ func newResumeSessionCommand(streams Streams, global *globalOptions) *cobra.Comm
 	return command
 }
 
-func newSessionsCommand(streams Streams, global *globalOptions) *cobra.Command {
+func newSessionsCommand(streams Streams, global *globalOptions, targets *boxtarget.Resolver) *cobra.Command {
 	var explicitBox string
 	command := &cobra.Command{Use: "sessions", Short: "List live managed and unmanaged tmux Sessions", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
-		target, err := resolveWorktreeTarget(cmd.Context(), streams, global, explicitBox)
+		target, err := resolveBoxExecutionTarget(cmd.Context(), streams, global, targets, explicitBox)
 		if err != nil {
 			return executionError{cause: err}
 		}
-		defer closeWorktreeTarget(&target)
-		catalog, err := listSessionsOnTarget(cmd.Context(), streams, global, target)
+		catalog, err := listSessionsOnTarget(cmd.Context(), target)
 		if err != nil {
-			return executionError{cause: publicRepositoryError(err)}
+			return executionError{cause: err}
 		}
 		return writeSessions(cmd.OutOrStdout(), global.output, catalog)
 	}}
@@ -131,29 +121,28 @@ func newSessionsCommand(streams Streams, global *globalOptions) *cobra.Command {
 	return command
 }
 
-func newSessionLogsCommand(streams Streams, global *globalOptions) *cobra.Command {
+func newSessionLogsCommand(streams Streams, global *globalOptions, targets *boxtarget.Resolver) *cobra.Command {
 	var explicitBox string
 	var lines int
 	command := &cobra.Command{Use: "logs [session-id]", Short: "Capture bounded history from a managed Session", Args: cobra.MaximumNArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
-		target, err := resolveWorktreeTarget(cmd.Context(), streams, global, explicitBox)
+		target, err := resolveBoxExecutionTarget(cmd.Context(), streams, global, targets, explicitBox)
 		if err != nil {
 			return executionError{cause: err}
 		}
-		defer closeWorktreeTarget(&target)
 		id := firstArgument(args)
 		if sessionSelectorOmitted(args) {
-			catalog, listErr := listSessionsOnTarget(cmd.Context(), streams, global, target)
+			catalog, listErr := listSessionsOnTarget(cmd.Context(), target)
 			if listErr != nil {
-				return executionError{cause: publicRepositoryError(listErr)}
+				return executionError{cause: listErr}
 			}
 			id, err = chooseSession(cmd.Context(), streams, global, catalog, sessionChoiceManaged, "Choose a Session for logs")
 			if err != nil {
 				return err
 			}
 		}
-		result, err := logsOnTarget(cmd.Context(), streams, global, target, id, lines)
+		result, err := logsOnTarget(cmd.Context(), target, id, lines)
 		if err != nil {
-			return executionError{cause: publicRepositoryError(err)}
+			return executionError{cause: err}
 		}
 		return writeSessionLogs(cmd.OutOrStdout(), global.output, result)
 	}}
@@ -162,22 +151,21 @@ func newSessionLogsCommand(streams Streams, global *globalOptions) *cobra.Comman
 	return command
 }
 
-func newStopSessionCommand(streams Streams, global *globalOptions) *cobra.Command {
+func newStopSessionCommand(streams Streams, global *globalOptions, targets *boxtarget.Resolver) *cobra.Command {
 	var explicitBox string
 	command := &cobra.Command{Use: "stop [session-id]", Short: "Stop a managed Session without changing its Worktree", Args: cobra.MaximumNArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
-		target, err := resolveWorktreeTarget(cmd.Context(), streams, global, explicitBox)
+		target, err := resolveBoxExecutionTarget(cmd.Context(), streams, global, targets, explicitBox)
 		if err != nil {
 			return executionError{cause: err}
 		}
-		defer closeWorktreeTarget(&target)
 		id := firstArgument(args)
 		if sessionSelectorOmitted(args) {
 			if !interactionAllowed(streams, global) {
 				return usageError{cause: fmt.Errorf("a managed Session ID is required when prompts are unavailable")}
 			}
-			catalog, listErr := listSessionsOnTarget(cmd.Context(), streams, global, target)
+			catalog, listErr := listSessionsOnTarget(cmd.Context(), target)
 			if listErr != nil {
-				return executionError{cause: publicRepositoryError(listErr)}
+				return executionError{cause: listErr}
 			}
 			id, err = chooseSession(cmd.Context(), streams, global, catalog, sessionChoiceManaged, "Choose a Session to stop")
 			if err != nil {
@@ -194,9 +182,9 @@ func newStopSessionCommand(streams Streams, global *globalOptions) *cobra.Comman
 				return abortError{cause: prompts.ErrAborted}
 			}
 		}
-		result, err := stopOnTarget(cmd.Context(), streams, global, target, id)
+		result, err := stopOnTarget(cmd.Context(), target, id)
 		if err != nil {
-			return executionError{cause: publicRepositoryError(err)}
+			return executionError{cause: err}
 		}
 		return writeSessionStop(cmd.OutOrStdout(), global.output, result)
 	}}
@@ -204,13 +192,13 @@ func newStopSessionCommand(streams Streams, global *globalOptions) *cobra.Comman
 	return command
 }
 
-func newWorktreeShellCommand(streams Streams, global *globalOptions) *cobra.Command {
+func newWorktreeShellCommand(streams Streams, global *globalOptions, targets *boxtarget.Resolver) *cobra.Command {
 	var explicitBox string
 	command := &cobra.Command{Use: "shell [worktree-path]", Short: "Open an ephemeral shell in a live Worktree", Args: cobra.MaximumNArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		if err := requireInteractiveTerminal(streams, global, "shell"); err != nil {
 			return err
 		}
-		target, err := resolveWorktreeTarget(cmd.Context(), streams, global, explicitBox)
+		target, err := resolveBoxExecutionTarget(cmd.Context(), streams, global, targets, explicitBox)
 		if err != nil {
 			return executionError{cause: err}
 		}
@@ -218,17 +206,15 @@ func newWorktreeShellCommand(streams Streams, global *globalOptions) *cobra.Comm
 		if sessionSelectorOmitted(args) {
 			selector, err = chooseWorktree(cmd.Context(), streams, global, target, "Choose a Worktree for the shell")
 			if err != nil {
-				closeWorktreeTarget(&target)
 				return err
 			}
 		}
-		closeWorktreeTarget(&target)
-		result, err := shellOnTarget(cmd.Context(), streams, global, target, selector)
+		result, err := shellOnTarget(cmd.Context(), streams, target, selector)
 		if err != nil {
 			if result.DiagnosticsReported {
 				return reportedExecutionError{cause: err}
 			}
-			return executionError{cause: publicRepositoryError(err)}
+			return executionError{cause: err}
 		}
 		if result.ExitCode != 0 {
 			return exitStatusError{code: result.ExitCode}
@@ -239,68 +225,32 @@ func newWorktreeShellCommand(streams Streams, global *globalOptions) *cobra.Comm
 	return command
 }
 
-func listSessionsOnTarget(ctx context.Context, streams Streams, global *globalOptions, target worktreeTarget) (session.Catalog, error) {
-	if target.direct != nil {
-		result, err := target.direct.ListSessions(ctx, hostruntime.NewSessionListRequest(target.configured.WorktreeRoot, target.identity))
-		return result.Catalog, err
-	}
-	return target.remote.ssh.ListSessions(ctx, worktreeConnection(target.record, streams, global), box.HostRuntime{Path: target.record.RuntimePath}, target.record.RemoteIdentity, target.record.WorktreeRoot)
+func listSessionsOnTarget(ctx context.Context, target boxtarget.Target) (session.Catalog, error) {
+	return target.ListSessions(ctx)
 }
 
-func startSessionOnTarget(ctx context.Context, streams Streams, global *globalOptions, target worktreeTarget, worktree string) (session.StartResult, error) {
-	if target.direct != nil {
-		result, err := target.direct.StartSession(ctx, hostruntime.NewSessionStartRequest(target.configured.WorktreeRoot, target.identity, worktree))
-		return result.StartResult, err
-	}
-	return target.remote.ssh.StartSession(ctx, worktreeConnection(target.record, streams, global), box.HostRuntime{Path: target.record.RuntimePath}, target.record.RemoteIdentity, target.record.WorktreeRoot, worktree)
+func startSessionOnTarget(ctx context.Context, target boxtarget.Target, worktree string) (session.StartResult, error) {
+	return target.StartSession(ctx, worktree)
 }
 
-func resumeSessionOnTarget(ctx context.Context, streams Streams, global *globalOptions, target worktreeTarget, selector string) (sshruntime.ShellResult, error) {
-	terminal := sshruntime.TerminalIO{In: streams.In, Out: streams.Out, Err: streams.Err}
-	if target.direct != nil {
-		result, err := target.direct.ResumeSession(ctx, hostruntime.NewSessionTargetRequest(target.configured.WorktreeRoot, target.identity, selector), host.TerminalIO{In: streams.In, Out: streams.Out, Err: streams.Err})
-		return sshruntime.ShellResult{ExitCode: result.ExitCode}, err
-	}
-	connection := worktreeConnection(target.record, streams, global)
-	connection.BatchMode = global.noInput
-	return target.remote.ssh.ResumeSession(ctx, connection, box.HostRuntime{Path: target.record.RuntimePath}, target.record.RemoteIdentity, target.record.WorktreeRoot, selector, terminal)
+func resumeSessionOnTarget(ctx context.Context, streams Streams, target boxtarget.Target, selector string) (boxtarget.HandoffResult, error) {
+	return target.ResumeSession(ctx, selector, boxtarget.Terminal{In: streams.In, Out: streams.Out, Err: streams.Err})
 }
 
-func logsOnTarget(ctx context.Context, streams Streams, global *globalOptions, target worktreeTarget, id string, lines int) (session.LogsResult, error) {
-	if target.direct != nil {
-		result, err := target.direct.SessionLogs(ctx, hostruntime.NewSessionLogsRequest(target.configured.WorktreeRoot, target.identity, id, lines))
-		return result.LogsResult, err
-	}
-	return target.remote.ssh.SessionLogs(ctx, worktreeConnection(target.record, streams, global), box.HostRuntime{Path: target.record.RuntimePath}, target.record.RemoteIdentity, target.record.WorktreeRoot, id, lines)
+func logsOnTarget(ctx context.Context, target boxtarget.Target, id string, lines int) (session.LogsResult, error) {
+	return target.SessionLogs(ctx, id, lines)
 }
 
-func stopOnTarget(ctx context.Context, streams Streams, global *globalOptions, target worktreeTarget, id string) (session.StopResult, error) {
-	if target.direct != nil {
-		result, err := target.direct.StopSession(ctx, hostruntime.NewSessionTargetRequest(target.configured.WorktreeRoot, target.identity, id))
-		return result.StopResult, err
-	}
-	return target.remote.ssh.StopSession(ctx, worktreeConnection(target.record, streams, global), box.HostRuntime{Path: target.record.RuntimePath}, target.record.RemoteIdentity, target.record.WorktreeRoot, id)
+func stopOnTarget(ctx context.Context, target boxtarget.Target, id string) (session.StopResult, error) {
+	return target.StopSession(ctx, id)
 }
 
-func shellOnTarget(ctx context.Context, streams Streams, global *globalOptions, target worktreeTarget, worktree string) (sshruntime.ShellResult, error) {
-	if target.direct != nil {
-		result, err := target.direct.OpenWorktreeShell(ctx, hostruntime.NewWorktreeShellRequest(target.configured.WorktreeRoot, target.identity, worktree), host.TerminalIO{In: streams.In, Out: streams.Out, Err: streams.Err})
-		return sshruntime.ShellResult{ExitCode: result.ExitCode}, err
-	}
-	connection := worktreeConnection(target.record, streams, global)
-	connection.BatchMode = global.noInput
-	return target.remote.ssh.OpenWorktreeShell(ctx, connection, box.HostRuntime{Path: target.record.RuntimePath}, target.record.RemoteIdentity, target.record.WorktreeRoot, worktree, sshruntime.TerminalIO{In: streams.In, Out: streams.Out, Err: streams.Err})
+func shellOnTarget(ctx context.Context, streams Streams, target boxtarget.Target, worktree string) (boxtarget.HandoffResult, error) {
+	return target.OpenWorktreeShell(ctx, worktree, boxtarget.Terminal{In: streams.In, Out: streams.Out, Err: streams.Err})
 }
 
-func chooseWorktree(ctx context.Context, streams Streams, global *globalOptions, target worktreeTarget, title string) (string, error) {
-	var catalog repository.Catalog
-	var err error
-	if target.direct != nil {
-		result, callErr := target.direct.ListWorktrees(ctx, hostruntime.NewWorktreeRequest("", target.identity))
-		catalog, err = result.Catalog, callErr
-	} else {
-		catalog, err = target.remote.ssh.ListWorktrees(ctx, worktreeConnection(target.record, streams, global), box.HostRuntime{Path: target.record.RuntimePath}, target.record.RemoteIdentity)
-	}
+func chooseWorktree(ctx context.Context, streams Streams, global *globalOptions, target boxtarget.Target, title string) (string, error) {
+	catalog, err := target.ListWorktrees(ctx)
 	if err != nil {
 		return "", executionError{cause: err}
 	}
@@ -419,13 +369,6 @@ func requireInteractiveTerminal(streams Streams, global *globalOptions, command 
 		return usageError{cause: fmt.Errorf("%s requires an interactive terminal", command)}
 	}
 	return nil
-}
-
-func closeWorktreeTarget(target *worktreeTarget) {
-	if target.close != nil {
-		target.close()
-		target.close = nil
-	}
 }
 
 func firstArgument(args []string) string {

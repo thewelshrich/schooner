@@ -74,6 +74,7 @@ The repository uses one Go module and one application entry point:
 cmd/schooner/                 local and remote composition roots
 internal/cli/                 user-facing Cobra command adapter
 internal/ui/prompts/          focused Huh prompt adapter
+internal/boxtarget/           Box selection and bound direct/SSH execution
 internal/box/                 Box identity, inspection, and lifecycle
 internal/acquisition/         adopted and provider-created acquisition
 internal/repository/          live Git Repository and Worktree inspection
@@ -237,6 +238,13 @@ Input precedence is explicit:
 ```text
 flags > documented environment variables > TOML > defaults
 ```
+
+Repository, Worktree, and Session commands resolve one immutable Box execution
+target through `internal/boxtarget`. The module owns direct-host detection,
+inventory-backed Box resolution, direct-versus-SSH adapter binding, Worktree
+Root drift checks, and stable error normalization. Command modules provide
+domain intent and retain prompting and presentation; they do not construct
+remote protocol envelopes or branch on the selected adapter.
 
 Box resolution is a shared domain policy rather than command-specific logic:
 an explicit Box wins over the current Local Link, configured default, sole

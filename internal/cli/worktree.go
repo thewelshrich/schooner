@@ -3,9 +3,9 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
-	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -13,14 +13,12 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/thewelshrich/schooner/internal/box"
-	"github.com/thewelshrich/schooner/internal/config"
-	invsqlite "github.com/thewelshrich/schooner/internal/inventory/sqlite"
+	"github.com/thewelshrich/schooner/internal/boxtarget"
 	"github.com/thewelshrich/schooner/internal/repository"
-	hostruntime "github.com/thewelshrich/schooner/internal/runtime"
-	"github.com/thewelshrich/schooner/internal/runtime/host"
+	"github.com/thewelshrich/schooner/internal/ui/prompts"
 )
 
-func newWorktreeCommand(streams Streams, global *globalOptions) *cobra.Command {
+func newWorktreeCommand(streams Streams, global *globalOptions, targets *boxtarget.Resolver) *cobra.Command {
 	var explicitBox string
 	var addBranch string
 	command := &cobra.Command{
@@ -34,7 +32,7 @@ func newWorktreeCommand(streams Streams, global *globalOptions) *cobra.Command {
 		&cobra.Command{
 			Use: "list", Short: "List live Git worktrees", Args: cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, _ []string) error {
-				catalog, err := runWorktreeList(cmd.Context(), streams, global, explicitBox)
+				catalog, err := runWorktreeList(cmd.Context(), streams, global, targets, explicitBox)
 				if err != nil {
 					return executionError{cause: err}
 				}
@@ -44,7 +42,7 @@ func newWorktreeCommand(streams Streams, global *globalOptions) *cobra.Command {
 		&cobra.Command{
 			Use: "inspect <path>", Short: "Inspect one exact Git worktree path", Args: cobra.ExactArgs(1),
 			RunE: func(cmd *cobra.Command, args []string) error {
-				inspection, err := runWorktreeInspect(cmd.Context(), streams, global, explicitBox, args[0])
+				inspection, err := runWorktreeInspect(cmd.Context(), streams, global, targets, explicitBox, args[0])
 				if err != nil {
 					return executionError{cause: err}
 				}
@@ -55,7 +53,7 @@ func newWorktreeCommand(streams Streams, global *globalOptions) *cobra.Command {
 	add := &cobra.Command{
 		Use: "add <repository-path> <path>", Short: "Add an ordinary linked Git Worktree", Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			result, err := runWorktreeMutation(cmd.Context(), streams, global, explicitBox, "add", args, addBranch)
+			result, err := runWorktreeMutation(cmd.Context(), streams, global, targets, explicitBox, "add", args, addBranch)
 			if err != nil {
 				return executionError{cause: err}
 			}
@@ -68,7 +66,7 @@ func newWorktreeCommand(streams Streams, global *globalOptions) *cobra.Command {
 		&cobra.Command{
 			Use: "remove <path>", Short: "Remove one clean linked Git Worktree", Args: cobra.ExactArgs(1),
 			RunE: func(cmd *cobra.Command, args []string) error {
-				result, err := runWorktreeMutation(cmd.Context(), streams, global, explicitBox, "remove", args, "")
+				result, err := runWorktreeMutation(cmd.Context(), streams, global, targets, explicitBox, "remove", args, "")
 				if err != nil {
 					return executionError{cause: err}
 				}
@@ -78,7 +76,7 @@ func newWorktreeCommand(streams Streams, global *globalOptions) *cobra.Command {
 		&cobra.Command{
 			Use: "prune", Short: "Prune stale Git Worktree registrations", Args: cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, _ []string) error {
-				result, err := runWorktreeMutation(cmd.Context(), streams, global, explicitBox, "prune", nil, "")
+				result, err := runWorktreeMutation(cmd.Context(), streams, global, targets, explicitBox, "prune", nil, "")
 				if err != nil {
 					return executionError{cause: err}
 				}
@@ -89,13 +87,13 @@ func newWorktreeCommand(streams Streams, global *globalOptions) *cobra.Command {
 	return command
 }
 
-func newCloneCommand(streams Streams, global *globalOptions) *cobra.Command {
+func newCloneCommand(streams Streams, global *globalOptions, targets *boxtarget.Resolver) *cobra.Command {
 	var explicitBox string
 	var branch string
 	command := &cobra.Command{
 		Use: "clone <repository>", Short: "Clone a normal primary Git Worktree", Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			result, err := runClone(cmd.Context(), streams, global, explicitBox, args[0], branch)
+			result, err := runClone(cmd.Context(), streams, global, targets, explicitBox, args[0], branch)
 			if err != nil {
 				return executionError{cause: err}
 			}
@@ -107,251 +105,60 @@ func newCloneCommand(streams Streams, global *globalOptions) *cobra.Command {
 	return command
 }
 
-type worktreeTarget struct {
-	direct     *host.Runtime
-	remote     *application
-	record     box.Record
-	close      func()
-	configured config.Host
-	identity   string
+func resolveBoxExecutionTarget(ctx context.Context, streams Streams, global *globalOptions, targets *boxtarget.Resolver, explicit string) (boxtarget.Target, error) {
+	var selector box.Selector
+	if interactionAllowed(streams, global) {
+		selector = promptBoxSelector{options: promptOptions(streams, global), title: "Choose a box"}
+	}
+	target, err := targets.Resolve(ctx, boxtarget.ResolveRequest{ExplicitBox: explicit, Selector: selector, NonInteractive: !interactionAllowed(streams, global), NoInput: global.noInput})
+	if errors.Is(err, prompts.ErrAborted) {
+		return boxtarget.Target{}, abortError{cause: err}
+	}
+	if box.ErrorCode(err) == "invalid_input" {
+		return boxtarget.Target{}, usageError{cause: err}
+	}
+	return target, err
 }
 
-func resolveWorktreeTarget(ctx context.Context, streams Streams, global *globalOptions, explicit string) (worktreeTarget, error) {
-	if explicit == "" {
-		local := global.hostRuntime()
-		if hello, helloErr := local.Hello(); helloErr == nil {
-			configured, configErr := config.ReadDefault()
-			if configErr != nil {
-				return worktreeTarget{}, box.NewError("conflict", "direct Box configuration is unavailable; run box setup from a workstation", configErr)
-			}
-			if record, found := matchingLocalRecord(ctx, streams, global, hello.BoxIdentity); found {
-				if configured.WorktreeRoot != record.WorktreeRoot {
-					return worktreeTarget{}, box.NewError("conflict", fmt.Sprintf("direct Box worktree root differs from local inventory; run \"schooner box setup %s\" from a workstation", record.Name), nil)
-				}
-				return worktreeTarget{direct: local, record: record, configured: configured, identity: hello.BoxIdentity}, nil
-			}
-			return worktreeTarget{direct: local, configured: configured, identity: hello.BoxIdentity}, nil
-		}
-	}
-	services, closeServices, err := openApplication(ctx, streams, global.build)
-	if err != nil {
-		return worktreeTarget{}, err
-	}
-	record, err := resolveCommandBox(ctx, services.boxResolver, streams, global, explicit, "Choose a box")
-	if err != nil {
-		closeServices()
-		return worktreeTarget{}, err
-	}
-	if record.RuntimePath == "" {
-		closeServices()
-		return worktreeTarget{}, box.NewError("host_runtime_missing", fmt.Sprintf("the box does not have a host runtime; run \"schooner box setup %s\"", record.Name), nil)
-	}
-	return worktreeTarget{remote: services, record: record, close: closeServices}, nil
-}
-
-// matchingLocalRecord performs the optional drift check only when a local
-// inventory already exists. Direct host observation never creates inventory
-// and remains available if unrelated local inventory cannot be opened.
-func matchingLocalRecord(ctx context.Context, streams Streams, global *globalOptions, identity string) (box.Record, bool) {
-	path, err := invsqlite.DefaultPath()
-	if err != nil {
-		return box.Record{}, false
-	}
-	if _, err = os.Stat(path); err != nil {
-		return box.Record{}, false
-	}
-	services, closeServices, err := openApplication(ctx, streams, global.build)
-	if err != nil {
-		return box.Record{}, false
-	}
-	defer closeServices()
-	records, err := services.boxes.List(ctx)
-	if err != nil {
-		return box.Record{}, false
-	}
-	for _, record := range records {
-		if record.RemoteIdentity == identity {
-			return record, true
-		}
-	}
-	return box.Record{}, false
-}
-
-func runWorktreeList(ctx context.Context, streams Streams, global *globalOptions, explicit string) (repository.Catalog, error) {
-	target, err := resolveWorktreeTarget(ctx, streams, global, explicit)
+func runWorktreeList(ctx context.Context, streams Streams, global *globalOptions, targets *boxtarget.Resolver, explicit string) (repository.Catalog, error) {
+	target, err := resolveBoxExecutionTarget(ctx, streams, global, targets, explicit)
 	if err != nil {
 		return repository.Catalog{}, err
 	}
-	if target.close != nil {
-		defer target.close()
-	}
-	if target.direct != nil {
-		result, err := target.direct.ListWorktrees(ctx, hostruntime.NewWorktreeRequest("", target.identity))
-		if err != nil {
-			return repository.Catalog{}, err
-		}
-		if err = validateDirectWorktreeRoot(target, result.WorktreeRoot); err != nil {
-			return repository.Catalog{}, err
-		}
-		return result.Catalog, nil
-	}
-	connection := box.Connection{Destination: target.record.SSHDestination, IdentityFile: target.record.IdentityFile, BatchMode: !interactionAllowed(streams, global)}
-	catalog, err := target.remote.ssh.ListWorktrees(ctx, connection, box.HostRuntime{Path: target.record.RuntimePath}, target.record.RemoteIdentity)
-	if err != nil {
-		return repository.Catalog{}, err
-	}
-	if err = validateRemoteWorktreeRoot(target.record, catalog.WorktreeRoot); err != nil {
-		return repository.Catalog{}, err
-	}
-	return catalog, nil
+	return target.ListWorktrees(ctx)
 }
 
-func runWorktreeInspect(ctx context.Context, streams Streams, global *globalOptions, explicit, selector string) (repository.Inspection, error) {
-	target, err := resolveWorktreeTarget(ctx, streams, global, explicit)
+func runWorktreeInspect(ctx context.Context, streams Streams, global *globalOptions, targets *boxtarget.Resolver, explicit, selector string) (repository.Inspection, error) {
+	target, err := resolveBoxExecutionTarget(ctx, streams, global, targets, explicit)
 	if err != nil {
 		return repository.Inspection{}, err
 	}
-	if target.close != nil {
-		defer target.close()
-	}
-	if target.direct != nil {
-		result, err := target.direct.InspectWorktree(ctx, hostruntime.NewWorktreeRequest(selector, target.identity))
-		if err != nil {
-			return repository.Inspection{}, publicRepositoryError(err)
-		}
-		if err = validateDirectWorktreeRoot(target, result.WorktreeRoot); err != nil {
-			return repository.Inspection{}, err
-		}
-		return result.Inspection, nil
-	}
-	connection := box.Connection{Destination: target.record.SSHDestination, IdentityFile: target.record.IdentityFile, BatchMode: !interactionAllowed(streams, global)}
-	inspection, err := target.remote.ssh.InspectWorktree(ctx, connection, box.HostRuntime{Path: target.record.RuntimePath}, target.record.RemoteIdentity, selector)
-	if err != nil {
-		return repository.Inspection{}, err
-	}
-	if err = validateRemoteWorktreeRoot(target.record, inspection.WorktreeRoot); err != nil {
-		return repository.Inspection{}, err
-	}
-	return inspection, nil
+	return target.InspectWorktree(ctx, selector)
 }
 
-func runClone(ctx context.Context, streams Streams, global *globalOptions, explicit, source, branch string) (repository.MutationResult, error) {
-	target, err := resolveWorktreeTarget(ctx, streams, global, explicit)
+func runClone(ctx context.Context, streams Streams, global *globalOptions, targets *boxtarget.Resolver, explicit, source, branch string) (repository.MutationResult, error) {
+	target, err := resolveBoxExecutionTarget(ctx, streams, global, targets, explicit)
 	if err != nil {
 		return repository.MutationResult{}, err
 	}
-	if target.close != nil {
-		defer target.close()
-	}
-	var result repository.MutationResult
-	if target.direct != nil {
-		request := hostruntime.NewCloneRequest(source, branch, target.configured.WorktreeRoot, target.identity)
-		request.NonInteractive = !interactionAllowed(streams, global)
-		response, callErr := target.direct.CloneRepository(ctx, request)
-		result, err = response.MutationResult, callErr
-	} else {
-		connection := worktreeConnection(target.record, streams, global)
-		result, err = target.remote.ssh.CloneRepository(ctx, connection, box.HostRuntime{Path: target.record.RuntimePath}, target.record.RemoteIdentity, target.record.WorktreeRoot, source, branch)
-	}
-	if err != nil {
-		return repository.MutationResult{}, publicRepositoryError(err)
-	}
-	if err = validateLifecycleRoot(target, result.WorktreeRoot); err != nil {
-		return repository.MutationResult{}, err
-	}
-	return result, nil
+	return target.CloneRepository(ctx, repository.CloneRequest{Source: source, Branch: branch})
 }
 
-func runWorktreeMutation(ctx context.Context, streams Streams, global *globalOptions, explicit, operation string, args []string, branch string) (repository.MutationResult, error) {
-	target, err := resolveWorktreeTarget(ctx, streams, global, explicit)
+func runWorktreeMutation(ctx context.Context, streams Streams, global *globalOptions, targets *boxtarget.Resolver, explicit, operation string, args []string, branch string) (repository.MutationResult, error) {
+	target, err := resolveBoxExecutionTarget(ctx, streams, global, targets, explicit)
 	if err != nil {
 		return repository.MutationResult{}, err
 	}
-	if target.close != nil {
-		defer target.close()
+	switch operation {
+	case "add":
+		return target.AddWorktree(ctx, repository.AddRequest{RepositoryPath: args[0], Path: args[1], Branch: branch})
+	case "remove":
+		return target.RemoveWorktree(ctx, args[0])
+	case "prune":
+		return target.PruneWorktrees(ctx)
+	default:
+		return repository.MutationResult{}, box.NewError("internal", fmt.Sprintf("unknown Worktree mutation %q", operation), nil)
 	}
-	var result repository.MutationResult
-	if target.direct != nil {
-		var response hostruntime.LifecycleResult
-		nonInteractive := !interactionAllowed(streams, global)
-		switch operation {
-		case "add":
-			request := hostruntime.NewWorktreeMutationRequest(args[0], args[1], branch, target.configured.WorktreeRoot, target.identity)
-			request.NonInteractive = nonInteractive
-			response, err = target.direct.AddWorktree(ctx, request)
-		case "remove":
-			request := hostruntime.NewWorktreeMutationRequest("", args[0], "", target.configured.WorktreeRoot, target.identity)
-			request.NonInteractive = nonInteractive
-			response, err = target.direct.RemoveWorktree(ctx, request)
-		case "prune":
-			request := hostruntime.NewWorktreeMutationRequest("", "", "", target.configured.WorktreeRoot, target.identity)
-			request.NonInteractive = nonInteractive
-			response, err = target.direct.PruneWorktrees(ctx, request)
-		}
-		result = response.MutationResult
-	} else {
-		connection := worktreeConnection(target.record, streams, global)
-		switch operation {
-		case "add":
-			result, err = target.remote.ssh.AddWorktree(ctx, connection, box.HostRuntime{Path: target.record.RuntimePath}, target.record.RemoteIdentity, target.record.WorktreeRoot, args[0], args[1], branch)
-		case "remove":
-			result, err = target.remote.ssh.RemoveWorktree(ctx, connection, box.HostRuntime{Path: target.record.RuntimePath}, target.record.RemoteIdentity, target.record.WorktreeRoot, args[0])
-		case "prune":
-			result, err = target.remote.ssh.PruneWorktrees(ctx, connection, box.HostRuntime{Path: target.record.RuntimePath}, target.record.RemoteIdentity, target.record.WorktreeRoot)
-		}
-	}
-	if err != nil {
-		return repository.MutationResult{}, publicRepositoryError(err)
-	}
-	if err = validateLifecycleRoot(target, result.WorktreeRoot); err != nil {
-		return repository.MutationResult{}, err
-	}
-	return result, nil
-}
-
-func worktreeConnection(record box.Record, streams Streams, global *globalOptions) box.Connection {
-	return box.Connection{Destination: record.SSHDestination, IdentityFile: record.IdentityFile, BatchMode: !interactionAllowed(streams, global)}
-}
-
-func validateLifecycleRoot(target worktreeTarget, actual string) error {
-	if target.direct != nil {
-		return validateDirectWorktreeRoot(target, actual)
-	}
-	return validateRemoteWorktreeRoot(target.record, actual)
-}
-
-func publicRepositoryError(err error) error {
-	if repository.ErrorCode(err) == repository.CodeNotFound {
-		return box.NewError("not_found", err.Error(), err)
-	}
-	if repository.ErrorCode(err) == repository.CodeInvalidInput {
-		return box.NewError("invalid_input", err.Error(), err)
-	}
-	if hostruntime.ErrorCode(err) == hostruntime.CodeInvalidInput {
-		return box.NewError("invalid_input", err.Error(), err)
-	}
-	switch repository.ErrorCode(err) {
-	case repository.CodeConflict, repository.CodeAuthentication, repository.CodePermissionDenied, repository.CodeOperationInProgress, repository.CodeOutcomeUnknown:
-		return box.NewError(string(repository.ErrorCode(err)), err.Error(), err)
-	}
-	return err
-}
-
-func validateDirectWorktreeRoot(target worktreeTarget, actual string) error {
-	if actual == target.configured.WorktreeRoot {
-		return nil
-	}
-	if target.record.Name != "" {
-		return box.NewError("conflict", fmt.Sprintf("direct Box worktree root differs from local inventory; run \"schooner box setup %s\" from a workstation", target.record.Name), nil)
-	}
-	return box.NewError("conflict", "direct Box worktree root differs from host configuration; run box setup from a workstation", nil)
-}
-
-func validateRemoteWorktreeRoot(record box.Record, actual string) error {
-	if actual != record.WorktreeRoot {
-		return box.NewError("conflict", fmt.Sprintf("remote Box worktree root differs from local inventory; run \"schooner box setup %s\"", record.Name), nil)
-	}
-	return nil
 }
 
 type worktreeDocument struct {
