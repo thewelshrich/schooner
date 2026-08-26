@@ -52,6 +52,15 @@ type HandoffResult struct {
 	DiagnosticsReported bool
 }
 
+// BoxName returns the inventory name bound to this target. It is empty for a
+// direct target that is not associated with an inventory record.
+func (t Target) BoxName() string {
+	if t.state == nil {
+		return ""
+	}
+	return t.state.boxName
+}
+
 func (t Target) ListWorktrees(ctx context.Context) (repository.Catalog, error) {
 	if err := t.valid(); err != nil {
 		return repository.Catalog{}, err

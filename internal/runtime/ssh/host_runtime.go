@@ -122,6 +122,12 @@ func (r *Runtime) EnsureHost(ctx context.Context, connection box.Connection, req
 func compatibleHostDecision(targetVersion string, mode box.HostInstallMode, installed box.HostRuntime) (box.HostInstallResult, bool, error) {
 	result := box.HostInstallResult{Runtime: installed, PreviousVersion: installed.Version, TargetVersion: targetVersion, Action: box.HostReused}
 	if mode == box.HostRepair {
+		if targetVersion == "dev" && installed.Version == "dev" {
+			// Development builds have no stable build identity. Setup and adoption
+			// promise a matching runtime, so promote the currently verified local
+			// artifact instead of silently reusing an arbitrary older dev binary.
+			return result, true, nil
+		}
 		return result, false, nil
 	}
 	if targetVersion == "dev" || installed.Version == "dev" {

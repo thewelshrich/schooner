@@ -106,6 +106,22 @@ func TestContinueProcessGroupResumesStoppedChild(t *testing.T) {
 	}
 }
 
+func TestCancellationWithoutJobControlKeepsChildInForegroundGroup(t *testing.T) {
+	command := exec.CommandContext(t.Context(), "/bin/sh", "-c", "ps -o pgid= -p $$")
+	configureCommandCancellationWithoutProcessGroup(command)
+	output, err := command.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	group, err := strconv.Atoi(strings.TrimSpace(string(output)))
+	if err != nil {
+		t.Fatalf("child process group %q: %v", output, err)
+	}
+	if group != syscall.Getpgrp() {
+		t.Fatalf("child process group = %d, parent = %d", group, syscall.Getpgrp())
+	}
+}
+
 func TestTerminateDescendantsFindsBackgroundProcessGroup(t *testing.T) {
 	command := exec.Command(os.Args[0], "-test.run=^$")
 	command.Env = append(os.Environ(), "SCHOONER_PROCESS_TREE_ROOT=1", "SCHOONER_PROCESS_TREE_CHILD=")

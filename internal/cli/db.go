@@ -36,7 +36,7 @@ func newDatabaseDestroyCommand(streams Streams, global *globalOptions) *cobra.Co
 					return executionError{cause: err}
 				}
 				if !confirmed {
-					_, _ = fmt.Fprintln(streams.Out, "Cancelled. No changes made.")
+					writeCancelled(streams.Out)
 					return nil
 				}
 			}
@@ -55,13 +55,17 @@ func newDatabaseDestroyCommand(streams Streams, global *globalOptions) *cobra.Co
 					Destroyed     bool   `json:"destroyed"`
 				}{SchemaVersion: "1", Destroyed: destroyed})
 			}
+			theme := terminalTheme(global, streams)
+			title := "No local Schooner database existed"
 			if destroyed {
-				_, _ = fmt.Fprintln(streams.Out, "Destroyed the local Schooner database.")
-			} else {
-				_, _ = fmt.Fprintln(streams.Out, "No local Schooner database existed.")
+				title = "Destroyed the local Schooner database"
 			}
-			_, err = fmt.Fprintln(streams.Out, "DigitalOcean resources, credential-store entries, migration backups, and SSH identities were not changed.")
-			return err
+			return writeReadySummary(streams.Out, theme, title, []summaryRow{
+				{Label: "DigitalOcean resources", Value: "unchanged"},
+				{Label: "Credential-store entries", Value: "unchanged"},
+				{Label: "Migration backups", Value: "unchanged"},
+				{Label: "SSH identities", Value: "unchanged"},
+			})
 		},
 	}
 	cmd.Flags().BoolVar(&yes, "yes", false, "confirm permanent local database destruction")

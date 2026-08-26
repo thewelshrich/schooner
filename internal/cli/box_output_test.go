@@ -15,10 +15,10 @@ func TestWriteAddResultHumanReadySummary(t *testing.T) {
 	result := box.AddResult{
 		Box: box.Record{
 			Name:               "newtest",
-			SSHDestination:     "root@209.97.139.0",
+			SSHDestination:     "root@203.0.113.10",
 			WorktreeRoot:       "/root/schooner",
 			Provider:           "digitalocean",
-			ProviderResourceID: "594799357",
+			ProviderResourceID: "123456789",
 		},
 		Capabilities: box.Capabilities{
 			OSID:         "ubuntu",
@@ -35,8 +35,8 @@ func TestWriteAddResultHumanReadySummary(t *testing.T) {
 	got := out.String()
 	for _, want := range []string{
 		"\n✓ newtest is ready\n",
-		"  Provider       digitalocean (594799357)\n",
-		"  SSH            root@209.97.139.0\n",
+		"  Provider       digitalocean (123456789)\n",
+		"  SSH            root@203.0.113.10\n",
 		"  Worktree root  /root/schooner\n",
 		"  OS             Ubuntu 26.04 (amd64)\n",
 		"  Git            git version 2.53.0\n",
@@ -94,5 +94,41 @@ func TestWriteListResultMixedInventory(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), `"acquisition":"adopted"`) || !strings.Contains(out.String(), `"region":"fra1"`) || !strings.Contains(out.String(), `"reachable":true`) || !strings.Contains(out.String(), `"default":true`) {
 		t.Fatalf("json = %s", out.String())
+	}
+}
+
+func TestWriteStatusResultHumanReadySummary(t *testing.T) {
+	var out bytes.Buffer
+	result := box.StatusResult{
+		Box: box.Record{Name: "testbox", SSHDestination: "root@203.0.113.10"},
+		Observation: box.Observation{
+			ObservedAt: time.Date(2026, 8, 26, 16, 0, 0, 0, time.UTC),
+			Capabilities: box.Capabilities{
+				OSID: "ubuntu", OSVersion: "26.04", Architecture: "amd64",
+				WorktreeRoot: "/root/schooner", WorktreeRootExists: true,
+				Host: box.HostRuntime{Path: "/root/.local/bin/schooner", Version: "dev", ProtocolVersion: "1", Capabilities: []string{"host.hello.v1"}},
+				Git:  box.Tool{Version: "git version 2.53.0"}, Tmux: box.Tool{Version: "tmux 3.6"},
+			},
+		},
+	}
+	if err := writeStatusResult(&out, "human", result, nil); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	for _, want := range []string{"\n✓ testbox is reachable\n", "  SSH            root@203.0.113.10\n", "  OS             Ubuntu 26.04 (amd64)\n", "  Worktree root  /root/schooner\n"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing %q in %q", want, got)
+		}
+	}
+}
+
+func TestWriteRemoveResultHumanReadySummary(t *testing.T) {
+	var out bytes.Buffer
+	if err := writeRemoveResult(&out, "human", box.RemoveResult{Box: box.Record{Name: "work"}, RemoteUnchanged: true}, nil); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "\n✓ Removed work from Schooner\n") || !strings.Contains(got, "  Remote machine  unchanged\n") {
+		t.Fatalf("output = %q", got)
 	}
 }

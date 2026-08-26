@@ -134,9 +134,11 @@ verified executable. GitHub Releases is the canonical published source. A
 required `SHA256SUMS` manifest supplies runtime integrity; GitHub build
 provenance attestations supplement it at publication time. Verified downloads
 are cached beneath the operating system's user cache directory at
-`schooner/artifacts/<version>`. `SCHOONER_ARTIFACT_DIR` replaces both the
-release source and cache lookup for explicit development builds, but it must
-contain the same binary and checksum-manifest contract. Concurrent resolutions
+`schooner/artifacts/<version>`. The `schooner dev artifacts` command prepares
+both supported Linux development runtimes in the local `dev` artifact cache.
+`SCHOONER_ARTIFACT_DIR` replaces both the release source and cache lookup when
+an explicit override is needed, but it must contain the same binary and
+checksum-manifest contract. Concurrent resolutions
 may duplicate a download, but temporary files and checksum sidecars are stored
 atomically so callers never receive a partially written artifact. Stable
 artifact errors distinguish invalid versions, unsupported platforms,

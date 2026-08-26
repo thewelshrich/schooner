@@ -211,7 +211,7 @@ func TestConfirmDatabaseDestroyStatesExternalResourcesAreUnchanged(t *testing.T)
 	if err != nil || !confirmed {
 		t.Fatalf("confirmed = %v, err = %v", confirmed, err)
 	}
-	for _, phrase := range []string{"DigitalOcean resources", "credential-store entries", "remain unchanged"} {
+	for _, phrase := range []string{"DigitalOcean resources", "Credential-store entries", "unchanged"} {
 		if !strings.Contains(output.String(), phrase) {
 			t.Fatalf("output %q does not contain %q", output.String(), phrase)
 		}

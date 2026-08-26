@@ -13,10 +13,10 @@ Available Commands:
   help        Help about any command
   logs        Capture bounded history from a managed Session
   provider    Manage cloud provider credential profiles
-  resume      Resume an existing persistent Session
+  resume      Resume the most relevant live Session
   sessions    List live managed and unmanaged tmux Sessions
   shell       Open an ephemeral shell in a live Worktree
-  start       Start or reuse a persistent Worktree Session
+  start       Start new work in a remote Repository
   stop        Stop a managed Session without changing its Worktree
   version     Show Schooner build information
   worktree    Discover and inspect live Git worktrees

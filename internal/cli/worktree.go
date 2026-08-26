@@ -9,13 +9,13 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"text/tabwriter"
 
 	"github.com/spf13/cobra"
 	"github.com/thewelshrich/schooner/internal/box"
 	"github.com/thewelshrich/schooner/internal/boxtarget"
 	"github.com/thewelshrich/schooner/internal/repository"
 	"github.com/thewelshrich/schooner/internal/ui/prompts"
+	uitheme "github.com/thewelshrich/schooner/internal/ui/theme"
 )
 
 func newWorktreeCommand(streams Streams, global *globalOptions, targets *boxtarget.Resolver) *cobra.Command {
@@ -36,7 +36,7 @@ func newWorktreeCommand(streams Streams, global *globalOptions, targets *boxtarg
 				if err != nil {
 					return executionError{cause: err}
 				}
-				return writeWorktreeList(cmd.OutOrStdout(), global.output, catalog)
+				return writeWorktreeList(cmd.OutOrStdout(), global.output, catalog, terminalTheme(global, streams))
 			},
 		},
 		&cobra.Command{
@@ -46,7 +46,7 @@ func newWorktreeCommand(streams Streams, global *globalOptions, targets *boxtarg
 				if err != nil {
 					return executionError{cause: err}
 				}
-				return writeWorktreeInspection(cmd.OutOrStdout(), global.output, inspection)
+				return writeWorktreeInspection(cmd.OutOrStdout(), global.output, inspection, terminalTheme(global, streams))
 			},
 		},
 	)
@@ -57,7 +57,7 @@ func newWorktreeCommand(streams Streams, global *globalOptions, targets *boxtarg
 			if err != nil {
 				return executionError{cause: err}
 			}
-			return writeLifecycleResult(cmd.OutOrStdout(), global.output, result)
+			return writeLifecycleResult(cmd.OutOrStdout(), global.output, result, terminalTheme(global, streams))
 		},
 	}
 	add.Flags().StringVar(&addBranch, "branch", "", "existing branch or ref to check out")
@@ -70,7 +70,7 @@ func newWorktreeCommand(streams Streams, global *globalOptions, targets *boxtarg
 				if err != nil {
 					return executionError{cause: err}
 				}
-				return writeLifecycleResult(cmd.OutOrStdout(), global.output, result)
+				return writeLifecycleResult(cmd.OutOrStdout(), global.output, result, terminalTheme(global, streams))
 			},
 		},
 		&cobra.Command{
@@ -80,7 +80,7 @@ func newWorktreeCommand(streams Streams, global *globalOptions, targets *boxtarg
 				if err != nil {
 					return executionError{cause: err}
 				}
-				return writeLifecycleResult(cmd.OutOrStdout(), global.output, result)
+				return writeLifecycleResult(cmd.OutOrStdout(), global.output, result, terminalTheme(global, streams))
 			},
 		},
 	)
@@ -97,7 +97,7 @@ func newCloneCommand(streams Streams, global *globalOptions, targets *boxtarget.
 			if err != nil {
 				return executionError{cause: err}
 			}
-			return writeLifecycleResult(cmd.OutOrStdout(), global.output, result)
+			return writeLifecycleResult(cmd.OutOrStdout(), global.output, result, terminalTheme(global, streams))
 		},
 	}
 	command.Flags().StringVar(&explicitBox, "box", "", "box name (always uses OpenSSH)")
@@ -141,7 +141,18 @@ func runClone(ctx context.Context, streams Streams, global *globalOptions, targe
 	if err != nil {
 		return repository.MutationResult{}, err
 	}
-	return target.CloneRepository(ctx, repository.CloneRequest{Source: source, Branch: branch})
+	result, err := target.CloneRepository(ctx, repository.CloneRequest{Source: source, Branch: branch})
+	return result, withCloneCollisionGuidance(err)
+}
+
+func withCloneCollisionGuidance(err error) error {
+	if err == nil || box.ErrorCode(err) != "conflict" || !strings.Contains(err.Error(), "clone destination") || !strings.Contains(err.Error(), "already exists") {
+		return err
+	}
+	return guidanceError{
+		cause:    err,
+		guidance: "run `schooner worktree list --box <box>` to inspect existing checkouts; Schooner will not overwrite them",
+	}
 }
 
 func runWorktreeMutation(ctx context.Context, streams Streams, global *globalOptions, targets *boxtarget.Resolver, explicit, operation string, args []string, branch string) (repository.MutationResult, error) {
@@ -195,7 +206,7 @@ func documentWorktree(value repository.Worktree) worktreeDocument {
 	return worktreeDocument{Path: value.Path, RelativePath: value.RelativePath, GitDirectory: value.GitDirectory, Kind: string(value.Kind), Branch: value.Branch, Detached: value.Detached, HEAD: value.HEAD, Status: value.Status}
 }
 
-func writeWorktreeList(writer io.Writer, output string, catalog repository.Catalog) error {
+func writeWorktreeList(writer io.Writer, output string, catalog repository.Catalog, theme *uitheme.Theme) error {
 	if output == "json" {
 		repositories := make([]repositoryDocument, len(catalog.Repositories))
 		for index, value := range catalog.Repositories {
@@ -212,24 +223,27 @@ func writeWorktreeList(writer io.Writer, output string, catalog repository.Catal
 		return fmt.Errorf("unsupported output format %q", output)
 	}
 	values := flattenWorktrees(catalog.Repositories)
-	table := tabwriter.NewWriter(writer, 0, 4, 2, ' ', 0)
-	if _, err := fmt.Fprintln(table, "PATH\tKIND\tBRANCH\tSTAGED\tUNSTAGED\tUNTRACKED\tCONFLICTED"); err != nil {
-		return err
-	}
+	rows := make([][]string, 0, len(values))
 	for _, value := range values {
 		branch := value.Branch
 		if value.Detached {
 			branch = "(detached)"
 		}
-		if _, err := fmt.Fprintf(table, "%s\t%s\t%s\t%d\t%d\t%d\t%d\n", humanSafe(value.RelativePath), humanSafe(string(value.Kind)), humanSafe(branch), value.Status.Staged, value.Status.Unstaged, value.Status.Untracked, value.Status.Conflicted); err != nil {
-			return err
-		}
+		rows = append(rows, []string{
+			humanSafe(value.RelativePath),
+			humanSafe(string(value.Kind)),
+			humanSafe(branch),
+			strconv.Itoa(value.Status.Staged),
+			strconv.Itoa(value.Status.Unstaged),
+			strconv.Itoa(value.Status.Untracked),
+			strconv.Itoa(value.Status.Conflicted),
+		})
 	}
-	if err := table.Flush(); err != nil {
+	if err := writeTable(writer, theme, []string{"PATH", "KIND", "BRANCH", "STAGED", "UNSTAGED", "UNTRACKED", "CONFLICTED"}, rows); err != nil {
 		return err
 	}
 	for _, warning := range catalog.Warnings {
-		if _, err := fmt.Fprintf(writer, "Warning: %s: %s\n", humanSafe(warning.Path), humanSafe(warning.Message)); err != nil {
+		if err := writeWarningLine(writer, theme, humanSafe(warning.Path)+": "+humanSafe(warning.Message)); err != nil {
 			return err
 		}
 	}
@@ -241,7 +255,7 @@ func humanSafe(value string) string {
 	return strings.TrimSuffix(strings.TrimPrefix(quoted, `"`), `"`)
 }
 
-func writeWorktreeInspection(writer io.Writer, output string, inspection repository.Inspection) error {
+func writeWorktreeInspection(writer io.Writer, output string, inspection repository.Inspection, theme *uitheme.Theme) error {
 	if output == "json" {
 		return json.NewEncoder(writer).Encode(struct {
 			SchemaVersion string               `json:"schema_version"`
@@ -259,18 +273,28 @@ func writeWorktreeInspection(writer io.Writer, output string, inspection reposit
 	if value.Detached {
 		branch = "(detached)"
 	}
-	if _, err := fmt.Fprintf(writer, "Path: %s\nRelative path: %s\nKind: %s\nRepository: %s\nOrigin: %s\nGit directory: %s\nBranch: %s\nHEAD: %s\nStatus: %d staged, %d unstaged, %d untracked, %d conflicted\n", humanSafe(value.Path), humanSafe(value.RelativePath), humanSafe(string(value.Kind)), humanSafe(inspection.Repository.CommonDirectory), humanSafe(inspection.Repository.Origin), humanSafe(value.GitDirectory), humanSafe(branch), humanSafe(value.HEAD), value.Status.Staged, value.Status.Unstaged, value.Status.Untracked, value.Status.Conflicted); err != nil {
+	if err := writeReadySummary(writer, theme, "Worktree "+humanSafe(value.RelativePath), []summaryRow{
+		{Label: "Path", Value: humanSafe(value.Path)},
+		{Label: "Relative path", Value: humanSafe(value.RelativePath)},
+		{Label: "Kind", Value: humanSafe(string(value.Kind))},
+		{Label: "Repository", Value: humanSafe(inspection.Repository.CommonDirectory)},
+		{Label: "Origin", Value: humanSafe(inspection.Repository.Origin)},
+		{Label: "Git directory", Value: humanSafe(value.GitDirectory)},
+		{Label: "Branch", Value: humanSafe(branch)},
+		{Label: "HEAD", Value: humanSafe(value.HEAD)},
+		{Label: "Status", Value: fmt.Sprintf("%d staged, %d unstaged, %d untracked, %d conflicted", value.Status.Staged, value.Status.Unstaged, value.Status.Untracked, value.Status.Conflicted)},
+	}); err != nil {
 		return err
 	}
 	for _, warning := range inspection.Warnings {
-		if _, err := fmt.Fprintf(writer, "Warning: %s: %s\n", humanSafe(warning.Path), humanSafe(warning.Message)); err != nil {
+		if err := writeWarningLine(writer, theme, humanSafe(warning.Path)+": "+humanSafe(warning.Message)); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func writeLifecycleResult(writer io.Writer, output string, result repository.MutationResult) error {
+func writeLifecycleResult(writer io.Writer, output string, result repository.MutationResult, theme *uitheme.Theme) error {
 	if output == "json" {
 		document := struct {
 			SchemaVersion       string              `json:"schema_version"`
@@ -293,17 +317,15 @@ func writeLifecycleResult(writer io.Writer, output string, result repository.Mut
 	}
 	switch result.Action {
 	case "clone":
-		_, err := fmt.Fprintf(writer, "Cloned %s\n", humanSafe(result.Path))
-		return err
+		return writeReadySummary(writer, theme, "Cloned "+humanSafe(result.Path), nil)
 	case "worktree_add":
-		_, err := fmt.Fprintf(writer, "Added Worktree %s\n", humanSafe(result.Path))
-		return err
+		return writeReadySummary(writer, theme, "Added Worktree "+humanSafe(result.Path), nil)
 	case "worktree_remove":
-		_, err := fmt.Fprintf(writer, "Removed Worktree %s\n", humanSafe(result.Path))
-		return err
+		return writeReadySummary(writer, theme, "Removed Worktree "+humanSafe(result.Path), nil)
 	case "worktree_prune":
-		_, err := fmt.Fprintf(writer, "Pruned Worktree registrations for %d repositories\n", result.RepositoriesChecked)
-		return err
+		return writeReadySummary(writer, theme, "Pruned Worktree registrations", []summaryRow{
+			{Label: "Repositories checked", Value: strconv.Itoa(result.RepositoriesChecked)},
+		})
 	default:
 		return fmt.Errorf("unsupported lifecycle action %q", result.Action)
 	}

@@ -293,11 +293,11 @@ func (s *Service) Start(ctx context.Context, selector string) (StartResult, erro
 	created := s.now().UTC().Truncate(time.Second)
 	name := "schooner-" + compactID(id)[:12]
 	args := []string{"new-session", "-d", "-s", name, "-c", inspection.Worktree.Path, "-P", "-F", "#{session_id}",
-		";", "set-option", "-t", "=" + name, SchemaOption, SchemaVersion,
-		";", "set-option", "-t", "=" + name, IDOption, id,
-		";", "set-option", "-t", "=" + name, KindOption, KindShell,
-		";", "set-option", "-t", "=" + name, CreatedAtOption, created.Format(time.RFC3339),
-		";", "set-option", "-t", "=" + name, WorktreePathOption, inspection.Worktree.Path}
+		";", "set-option", "-t", name, SchemaOption, SchemaVersion,
+		";", "set-option", "-t", name, IDOption, id,
+		";", "set-option", "-t", name, KindOption, KindShell,
+		";", "set-option", "-t", name, CreatedAtOption, created.Format(time.RFC3339),
+		";", "set-option", "-t", name, WorktreePathOption, inspection.Worktree.Path}
 	result, runErr := s.commands.Run(ctx, maxMetadataBytes, "tmux", args...)
 	if runErr != nil || result.Truncated {
 		return StartResult{}, &repository.Error{Code: repository.CodeOutcomeUnknown, Message: "tmux Session creation outcome could not be verified", Cause: runErr}
@@ -574,41 +574,64 @@ func listRows(ctx context.Context, commands commandRunner) ([]tmuxRow, error) {
 
 func sessionListFormat() string {
 	fields := []string{"session_id", "session_name", "session_created", "session_activity", "session_attached", SchemaOption, IDOption, KindOption, CreatedAtOption, WorktreePathOption}
-	framed := make([]string, 0, len(fields)*2)
-	for _, field := range fields {
-		framed = append(framed, "#{n:"+field+"}", "#{"+field+"}")
-	}
-	return strings.Join(framed, "\t")
+	return framedTmuxFormat(fields...)
 }
 
 func parseRows(output []byte) ([]tmuxRow, error) {
-	rows := make([]tmuxRow, 0)
-	for len(output) > 0 {
-		if len(rows) >= maxSessions {
-			return nil, &repository.Error{Code: repository.CodeOutcomeUnknown, Message: "tmux Session count exceeded 256"}
+	framed, err := parseFramedTmuxRows(output, 10, maxSessions, maxMetadataBytes, "tmux Session count exceeded 256", "tmux returned malformed Session metadata")
+	if err != nil {
+		return nil, err
+	}
+	rows := make([]tmuxRow, 0, len(framed))
+	for _, fields := range framed {
+		rows = append(rows, tmuxRow{fields[0], fields[1], fields[2], fields[3], fields[4], fields[5], fields[6], fields[7], fields[8], fields[9]})
+	}
+	return rows, nil
+}
+
+// tmux replaces literal control characters in format output when it runs in
+// the C locale (tmux 3.6 does this for tabs). Keep the framing itself printable
+// and use byte lengths so field values may still contain either delimiter.
+func framedTmuxFormat(fields ...string) string {
+	var format strings.Builder
+	for index, field := range fields {
+		if index != 0 {
+			format.WriteByte(';')
 		}
-		fields := make([]string, 10)
+		format.WriteString("#{n:")
+		format.WriteString(field)
+		format.WriteString("}:#{")
+		format.WriteString(field)
+		format.WriteByte('}')
+	}
+	return format.String()
+}
+
+func parseFramedTmuxRows(output []byte, fieldCount, maximumRows, maximumFieldBytes int, countMessage, malformedMessage string) ([][]string, error) {
+	rows := make([][]string, 0)
+	for len(output) > 0 {
+		if len(rows) >= maximumRows {
+			return nil, &repository.Error{Code: repository.CodeOutcomeUnknown, Message: countMessage}
+		}
+		fields := make([]string, fieldCount)
 		for index := range fields {
-			separator := bytes.IndexByte(output, '\t')
+			separator := bytes.IndexByte(output, ':')
 			if separator < 0 {
-				return nil, errors.New("tmux returned malformed Session metadata")
+				return nil, errors.New(malformedMessage)
 			}
 			length, err := strconv.Atoi(string(output[:separator]))
 			start := separator + 1
-			if err != nil || length < 0 || length > maxMetadataBytes || start+length >= len(output) {
-				return nil, errors.New("tmux returned malformed Session metadata")
-			}
-			fields[index] = string(output[start : start+length])
-			delimiter := byte('\t')
+			delimiter := byte(';')
 			if index == len(fields)-1 {
 				delimiter = '\n'
 			}
-			if output[start+length] != delimiter {
-				return nil, errors.New("tmux returned malformed Session metadata")
+			if err != nil || length < 0 || length > maximumFieldBytes || start+length >= len(output) || output[start+length] != delimiter {
+				return nil, errors.New(malformedMessage)
 			}
+			fields[index] = string(output[start : start+length])
 			output = output[start+length+1:]
 		}
-		rows = append(rows, tmuxRow{fields[0], fields[1], fields[2], fields[3], fields[4], fields[5], fields[6], fields[7], fields[8], fields[9]})
+		rows = append(rows, fields)
 	}
 	return rows, nil
 }
@@ -644,7 +667,7 @@ func classifyRow(row tmuxRow) Session {
 }
 
 func listPanes(ctx context.Context, commands commandRunner) (map[string][]string, error) {
-	result, err := commands.Run(ctx, maxMetadataBytes, "tmux", "list-panes", "-a", "-F", "#{session_id}\t#{n:pane_current_path}\t#{pane_current_path}")
+	result, err := commands.Run(ctx, maxMetadataBytes, "tmux", "list-panes", "-a", "-F", framedTmuxFormat("session_id", "pane_current_path"))
 	if err != nil {
 		message := strings.ToLower(string(result.Stderr))
 		if process.ExitCode(err) == 1 && (strings.Contains(message, "no server running") || strings.Contains(message, "no sessions") || strings.Contains(message, "no such file or directory")) {
@@ -659,32 +682,17 @@ func listPanes(ctx context.Context, commands commandRunner) (map[string][]string
 }
 
 func parsePanes(output []byte) (map[string][]string, error) {
+	rows, err := parseFramedTmuxRows(output, 2, maxPanes, 4096, "tmux pane count exceeded 4096", "tmux returned malformed pane metadata")
+	if err != nil {
+		return nil, err
+	}
 	grouped := map[string][]string{}
-	for count := 0; len(output) > 0; count++ {
-		if count >= maxPanes {
-			return nil, &repository.Error{Code: repository.CodeOutcomeUnknown, Message: "tmux pane count exceeded 4096"}
-		}
-		first := bytes.IndexByte(output, '\t')
-		if first < 0 {
-			return nil, errors.New("tmux returned malformed pane metadata")
-		}
-		secondRelative := bytes.IndexByte(output[first+1:], '\t')
-		if secondRelative < 0 {
-			return nil, errors.New("tmux returned malformed pane metadata")
-		}
-		second := first + 1 + secondRelative
-		tmuxID := string(output[:first])
-		length, err := strconv.Atoi(string(output[first+1 : second]))
-		pathStart := second + 1
-		if err != nil || length < 0 || length > 4096 || pathStart+length >= len(output) || output[pathStart+length] != '\n' {
-			return nil, errors.New("tmux returned malformed pane metadata")
-		}
-		path := string(output[pathStart : pathStart+length])
+	for _, row := range rows {
+		tmuxID, path := row[0], row[1]
 		if !validTmuxID(tmuxID) || !canonicalPanePath(path) {
 			return nil, errors.New("tmux returned malformed pane metadata")
 		}
 		grouped[tmuxID] = append(grouped[tmuxID], path)
-		output = output[pathStart+length+1:]
 	}
 	return grouped, nil
 }

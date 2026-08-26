@@ -127,7 +127,7 @@ func newBoxAddCommand(streams Streams, global *globalOptions) *cobra.Command {
 					return executionError{cause: err}
 				}
 				if !confirmed {
-					_, _ = fmt.Fprintln(streams.Out, "Cancelled. No changes made.")
+					writeCancelled(streams.Out)
 					return nil
 				}
 				name, destination, worktreeRoot = draft.Name, draft.SSHDestination, draft.WorktreeRoot
@@ -313,7 +313,7 @@ func runDigitalOceanAdd(cmd *cobra.Command, streams Streams, global *globalOptio
 					return executionError{cause: connectErr}
 				}
 				if profile.Warning != "" {
-					_, _ = fmt.Fprintln(streams.Err, "Warning:", profile.Warning)
+					_ = writeWarningLine(streams.Err, terminalTheme(global, streams), profile.Warning)
 				}
 			}
 		} else {
@@ -337,7 +337,7 @@ func runDigitalOceanAdd(cmd *cobra.Command, streams Streams, global *globalOptio
 				return executionError{cause: connectErr}
 			}
 			if profile.Warning != "" {
-				_, _ = fmt.Fprintln(streams.Err, "Warning:", profile.Warning)
+				_ = writeWarningLine(streams.Err, terminalTheme(global, streams), profile.Warning)
 			}
 			ref = profile.Ref
 		}
@@ -394,7 +394,7 @@ func runDigitalOceanAdd(cmd *cobra.Command, streams Streams, global *globalOptio
 				return executionError{cause: confirmErr}
 			}
 			if !confirmed {
-				_, _ = fmt.Fprintln(streams.Out, "Cancelled. No changes made.")
+				writeCancelled(streams.Out)
 				return nil
 			}
 		}
@@ -410,7 +410,7 @@ func runDigitalOceanAdd(cmd *cobra.Command, streams Streams, global *globalOptio
 		return executionError{cause: err}
 	}
 	if result.Warning != "" {
-		_, _ = fmt.Fprintln(streams.Err, "Warning:", result.Warning)
+		_ = writeWarningLine(streams.Err, terminalTheme(global, streams), result.Warning)
 	}
 	return writeAddResult(streams.Out, global.output, result.AddResult, terminalTheme(global, streams))
 }
@@ -470,7 +470,7 @@ func resumeDigitalOceanAdd(cmd *cobra.Command, streams Streams, global *globalOp
 			return executionError{cause: confirmErr}
 		}
 		if !confirmed {
-			_, _ = fmt.Fprintln(streams.Out, "Cancelled. No changes made.")
+			writeCancelled(streams.Out)
 			return nil
 		}
 	}
@@ -485,7 +485,7 @@ func resumeDigitalOceanAdd(cmd *cobra.Command, streams Streams, global *globalOp
 		return executionError{cause: err}
 	}
 	if result.Warning != "" {
-		_, _ = fmt.Fprintln(streams.Err, "Warning:", result.Warning)
+		_ = writeWarningLine(streams.Err, terminalTheme(global, streams), result.Warning)
 	}
 	return writeAddResult(streams.Out, global.output, result.AddResult, terminalTheme(global, streams))
 }
@@ -545,7 +545,7 @@ func newBoxUseCommand(streams Streams, global *globalOptions) *cobra.Command {
 				}
 				return executionError{cause: err}
 			}
-			return writeUseResult(streams.Out, global.output, record)
+			return writeUseResult(streams.Out, global.output, record, terminalTheme(global, streams))
 		},
 	}
 }
@@ -577,7 +577,7 @@ func newBoxStatusCommand(streams Streams, global *globalOptions) *cobra.Command 
 			if err != nil {
 				return executionError{cause: err}
 			}
-			if err = writeStatusResult(streams.Out, global.output, result); err != nil {
+			if err = writeStatusResult(streams.Out, global.output, result, terminalTheme(global, streams)); err != nil {
 				return executionError{cause: err}
 			}
 			return nil
@@ -627,7 +627,7 @@ func newBoxMaintenanceCommand(streams Streams, global *globalOptions, use, short
 			if updateErr != nil {
 				return executionError{cause: updateErr}
 			}
-			return writeUpdateResult(streams.Out, global.output, result)
+			return writeUpdateResult(streams.Out, global.output, result, terminalTheme(global, streams))
 		},
 	}
 }
@@ -747,7 +747,7 @@ func newBoxRemoveCommand(streams Streams, global *globalOptions) *cobra.Command 
 					return executionError{cause: confirmErr}
 				}
 				if !confirmed {
-					_, _ = fmt.Fprintln(streams.Out, "Cancelled. No changes made.")
+					writeCancelled(streams.Out)
 					return nil
 				}
 			}
@@ -755,7 +755,7 @@ func newBoxRemoveCommand(streams Streams, global *globalOptions) *cobra.Command 
 			if err != nil {
 				return executionError{cause: err}
 			}
-			if err = writeRemoveResult(streams.Out, global.output, result); err != nil {
+			if err = writeRemoveResult(streams.Out, global.output, result, terminalTheme(global, streams)); err != nil {
 				return executionError{cause: err}
 			}
 			return nil
@@ -819,7 +819,7 @@ func newBoxDestroyCommand(streams Streams, global *globalOptions) *cobra.Command
 				return executionError{cause: confirmErr}
 			}
 			if !confirmed {
-				_, _ = fmt.Fprintln(streams.Out, "Cancelled. No changes made.")
+				writeCancelled(streams.Out)
 				return nil
 			}
 		}
@@ -827,7 +827,7 @@ func newBoxDestroyCommand(streams Streams, global *globalOptions) *cobra.Command
 		if err != nil {
 			return executionError{cause: err}
 		}
-		return writeDestroyResult(streams.Out, global.output, result)
+		return writeDestroyResult(streams.Out, global.output, result, terminalTheme(global, streams))
 	}}
 	cmd.Flags().BoolVar(&yes, "yes", false, "confirm permanent provider destruction")
 	return cmd
@@ -969,15 +969,14 @@ func documentHostMaintenance(value box.HostInstallResult) hostMaintenanceDocumen
 	return hostMaintenanceDocument{Action: string(value.Action), PreviousVersion: value.PreviousVersion, TargetVersion: value.TargetVersion, Runtime: documentHostRuntime(value.Runtime)}
 }
 
-func writeUseResult(w io.Writer, output string, record box.Record) error {
+func writeUseResult(w io.Writer, output string, record box.Record, theme *uitheme.Theme) error {
 	if output == "json" {
 		return json.NewEncoder(w).Encode(struct {
 			SchemaVersion string `json:"schema_version"`
 			DefaultBox    string `json:"default_box"`
 		}{SchemaVersion: "1", DefaultBox: record.Name})
 	}
-	_, err := fmt.Fprintf(w, "Default box: %s\n", record.Name)
-	return err
+	return writeReadySummary(w, theme, "Default box: "+record.Name, nil)
 }
 
 func writeListResult(w io.Writer, output string, entries []box.ListEntry, theme *uitheme.Theme) error {
@@ -1017,14 +1016,18 @@ func writeListResult(w io.Writer, output string, entries []box.ListEntry, theme 
 		return json.NewEncoder(w).Encode(doc)
 	}
 	if len(entries) == 0 {
-		_, err := fmt.Fprintln(w, "No boxes in local inventory.")
-		return err
+		return writeMutedNotice(w, theme, "No boxes in local inventory.")
 	}
 	rows := make([][]string, 0, len(entries))
+	roles := make([][]*uitheme.Role, 0, len(entries))
+	reachableYes := uitheme.Success
+	reachableUnknown := uitheme.Offline
 	for _, entry := range entries {
 		reachable := "unknown"
+		reachRole := &reachableUnknown
 		if entry.Reachable {
 			reachable = "yes"
+			reachRole = &reachableYes
 		}
 		observed := "—"
 		if entry.HasObservation {
@@ -1043,8 +1046,9 @@ func writeListResult(w io.Writer, output string, entries []box.ListEntry, theme 
 			observed,
 			entry.Box.SSHDestination,
 		})
+		roles = append(roles, []*uitheme.Role{nil, nil, nil, nil, reachRole, nil, nil})
 	}
-	return writeTable(w, theme, []string{"NAME", "DEFAULT", "PROVIDER", "REGION", "REACHABLE", "LAST OBSERVED", "SSH"}, rows)
+	return writeTableWithRoles(w, theme, []string{"NAME", "DEFAULT", "PROVIDER", "REGION", "REACHABLE", "LAST OBSERVED", "SSH"}, rows, roles)
 }
 
 func listProviderLabel(record box.Record) string {
@@ -1056,46 +1060,6 @@ func listProviderLabel(record box.Record) string {
 	default:
 		return record.Provider
 	}
-}
-
-func writeTable(w io.Writer, theme *uitheme.Theme, headers []string, rows [][]string) error {
-	widths := make([]int, len(headers))
-	for i, header := range headers {
-		widths[i] = len(header)
-	}
-	for _, row := range rows {
-		for i, cell := range row {
-			if len(cell) > widths[i] {
-				widths[i] = len(cell)
-			}
-		}
-	}
-	writeCell := func(value string, width int, header bool) string {
-		cell := fmt.Sprintf("%-*s", width, value)
-		if theme != nil && theme.HasColor() {
-			if header {
-				return theme.Style(uitheme.Muted).Render(cell)
-			}
-			return theme.Style(uitheme.Text).Render(cell)
-		}
-		return cell
-	}
-	line := make([]string, len(headers))
-	for i, header := range headers {
-		line[i] = writeCell(header, widths[i], true)
-	}
-	if _, err := fmt.Fprintln(w, strings.Join(line, "  ")); err != nil {
-		return err
-	}
-	for _, row := range rows {
-		for i, cell := range row {
-			line[i] = writeCell(cell, widths[i], false)
-		}
-		if _, err := fmt.Fprintln(w, strings.Join(line, "  ")); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func writeAddResult(w io.Writer, output string, result box.AddResult, theme *uitheme.Theme) error {
@@ -1166,7 +1130,7 @@ func writeSetupResult(w io.Writer, output string, result box.SetupResult, theme 
 	return writeReadySummary(w, theme, result.Box.Name+" is ready", rows)
 }
 
-func writeUpdateResult(w io.Writer, output string, result box.UpdateResult) error {
+func writeUpdateResult(w io.Writer, output string, result box.UpdateResult, theme *uitheme.Theme) error {
 	if output == "json" {
 		return json.NewEncoder(w).Encode(struct {
 			SchemaVersion string                  `json:"schema_version"`
@@ -1177,52 +1141,21 @@ func writeUpdateResult(w io.Writer, output string, result box.UpdateResult) erro
 	}
 	switch result.Host.Action {
 	case box.HostReplaced:
-		_, err := fmt.Fprintf(w, "Updated host runtime on %s: %s -> %s\n", result.Box.Name, result.Host.PreviousVersion, result.Host.Runtime.Version)
-		return err
+		return writeReadySummary(w, theme, "Updated host runtime on "+result.Box.Name, []summaryRow{
+			{Label: "Previous", Value: result.Host.PreviousVersion},
+			{Label: "Current", Value: result.Host.Runtime.Version},
+		})
 	case box.HostNewerRetained:
-		_, err := fmt.Fprintf(w, "Host runtime on %s is newer and compatible: %s (local %s); no changes made.\n", result.Box.Name, result.Host.Runtime.Version, result.Host.TargetVersion)
-		return err
+		return writeReadySummary(w, theme, "Host runtime on "+result.Box.Name+" is newer and compatible", []summaryRow{
+			{Label: "Remote", Value: result.Host.Runtime.Version},
+			{Label: "Local", Value: result.Host.TargetVersion},
+			{Label: "Action", Value: "no changes made"},
+		})
 	default:
-		_, err := fmt.Fprintf(w, "Host runtime on %s is current: %s\n", result.Box.Name, result.Host.Runtime.Version)
-		return err
+		return writeReadySummary(w, theme, "Host runtime on "+result.Box.Name+" is current", []summaryRow{
+			{Label: "Version", Value: result.Host.Runtime.Version},
+		})
 	}
-}
-
-type summaryRow struct {
-	Label, Value string
-}
-
-func writeReadySummary(w io.Writer, theme *uitheme.Theme, title string, rows []summaryRow) error {
-	if _, err := fmt.Fprintln(w); err != nil {
-		return err
-	}
-	mark, heading := "✓", title
-	if theme != nil && theme.HasColor() {
-		mark = theme.Style(uitheme.Success).Bold(true).Render("✓")
-		heading = theme.Style(uitheme.Text).Bold(true).Render(title)
-	}
-	if _, err := fmt.Fprintf(w, "%s %s\n", mark, heading); err != nil {
-		return err
-	}
-	if len(rows) == 0 {
-		return nil
-	}
-	width := 0
-	for _, row := range rows {
-		width = max(width, len(row.Label))
-	}
-	for _, row := range rows {
-		label := fmt.Sprintf("%-*s", width, row.Label)
-		value := row.Value
-		if theme != nil && theme.HasColor() {
-			label = theme.Style(uitheme.Muted).Render(label)
-			value = theme.Style(uitheme.Text).Render(value)
-		}
-		if _, err := fmt.Fprintf(w, "  %s  %s\n", label, value); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func formatOS(capabilities box.Capabilities) string {
@@ -1240,7 +1173,7 @@ func formatHostRuntime(runtime box.HostRuntime) string {
 	return fmt.Sprintf("%s (protocol %s)", runtime.Version, runtime.ProtocolVersion)
 }
 
-func writeDestroyResult(w interface{ Write([]byte) (int, error) }, output string, result acquisition.DestroyResult) error {
+func writeDestroyResult(w io.Writer, output string, result acquisition.DestroyResult, theme *uitheme.Theme) error {
 	if output == "json" {
 		return json.NewEncoder(w).Encode(struct {
 			SchemaVersion string      `json:"schema_version"`
@@ -1249,11 +1182,18 @@ func writeDestroyResult(w interface{ Write([]byte) (int, error) }, output string
 			LocalRemoved  bool        `json:"local_removed"`
 		}{SchemaVersion: "1", Box: documentBox(result.Box), Destroyed: true, LocalRemoved: result.LocalRemoved})
 	}
-	_, err := fmt.Fprintf(w, "Destroyed box %s\nProvider: %s\nResource: %s\nLocal inventory removed: %t\n", result.Box.Name, result.Resource.Provider, result.Resource.ResourceID, result.LocalRemoved)
-	return err
+	local := "kept"
+	if result.LocalRemoved {
+		local = "removed"
+	}
+	return writeReadySummary(w, theme, "Destroyed box "+result.Box.Name, []summaryRow{
+		{Label: "Provider", Value: string(result.Resource.Provider)},
+		{Label: "Resource", Value: result.Resource.ResourceID},
+		{Label: "Local inventory", Value: local},
+	})
 }
 
-func writeStatusResult(w interface{ Write([]byte) (int, error) }, output string, result box.StatusResult) error {
+func writeStatusResult(w io.Writer, output string, result box.StatusResult, theme *uitheme.Theme) error {
 	if output == "json" {
 		doc := struct {
 			SchemaVersion string      `json:"schema_version"`
@@ -1275,11 +1215,20 @@ func writeStatusResult(w interface{ Write([]byte) (int, error) }, output string,
 	if !c.WorktreeRootExists {
 		worktreeRoot += " (missing)"
 	}
-	_, err := fmt.Fprintf(w, "%s is reachable\nSSH: %s\nObserved: %s\nUbuntu: %s (%s)\nWorktree root: %s\nSchooner: %s\nRuntime path: %s\nCapabilities: %s\nGit: %s\ntmux: %s\n", result.Box.Name, result.Box.SSHDestination, result.Observation.ObservedAt.Format(time.RFC3339), c.OSVersion, c.Architecture, worktreeRoot, formatHostRuntime(c.Host), c.Host.Path, strings.Join(c.Host.Capabilities, ", "), c.Git.Version, c.Tmux.Version)
-	return err
+	return writeReadySummary(w, theme, result.Box.Name+" is reachable", []summaryRow{
+		{Label: "SSH", Value: result.Box.SSHDestination},
+		{Label: "Observed", Value: result.Observation.ObservedAt.Format(time.RFC3339)},
+		{Label: "OS", Value: formatOS(c)},
+		{Label: "Worktree root", Value: worktreeRoot},
+		{Label: "Schooner", Value: formatHostRuntime(c.Host)},
+		{Label: "Runtime path", Value: c.Host.Path},
+		{Label: "Capabilities", Value: strings.Join(c.Host.Capabilities, ", ")},
+		{Label: "Git", Value: c.Git.Version},
+		{Label: "tmux", Value: c.Tmux.Version},
+	})
 }
 
-func writeRemoveResult(w interface{ Write([]byte) (int, error) }, output string, result box.RemoveResult) error {
+func writeRemoveResult(w io.Writer, output string, result box.RemoveResult, theme *uitheme.Theme) error {
 	if output == "json" {
 		return json.NewEncoder(w).Encode(struct {
 			SchemaVersion   string      `json:"schema_version"`
@@ -1287,6 +1236,7 @@ func writeRemoveResult(w interface{ Write([]byte) (int, error) }, output string,
 			RemoteUnchanged bool        `json:"remote_unchanged"`
 		}{"1", documentBox(result.Box), result.RemoteUnchanged})
 	}
-	_, err := fmt.Fprintf(w, "Removed box %s from Schooner. The remote machine was not changed.\n", result.Box.Name)
-	return err
+	return writeReadySummary(w, theme, "Removed "+result.Box.Name+" from Schooner", []summaryRow{
+		{Label: "Remote machine", Value: "unchanged"},
+	})
 }

@@ -71,7 +71,7 @@ func TestAssociateUnmanagedRequiresEveryPaneToMapToOneWorktree(t *testing.T) {
 func TestParsePanesUsesByteLengthsForControlCharacters(t *testing.T) {
 	first := "/work/repo/tab\tdirectory"
 	second := "/work/repo/new\nline"
-	output := []byte("$1\t" + strconv.Itoa(len(first)) + "\t" + first + "\n$2\t" + strconv.Itoa(len(second)) + "\t" + second + "\n")
+	output := frameTmuxRows([][]string{{"$1", first}, {"$2", second}})
 	got, err := parsePanes(output)
 	if err != nil {
 		t.Fatal(err)
@@ -139,7 +139,7 @@ func (f *fakeTmux) run(name string, args ...string) (process.Result, error) {
 		if f.row == "" {
 			return process.Result{}, nil
 		}
-		return process.Result{Stdout: []byte("$4\t" + strconv.Itoa(len(f.path)) + "\t" + f.path + "\n")}, nil
+		return process.Result{Stdout: frameTmuxRows([][]string{{"$4", f.path}})}, nil
 	case "new-session":
 		f.row = "$4\tschooner-111111111111\t1720000000\t1720000000\t0\t" + SchemaVersion + "\t" + testSessionID + "\tshell\t2024-07-03T09:46:40Z\t" + f.path + "\n"
 		return process.Result{Stdout: []byte("$4\n")}, nil
@@ -171,18 +171,25 @@ func (f *fakeTmux) run(name string, args ...string) (process.Result, error) {
 }
 
 func frameFakeRows(rows string) []byte {
-	var output strings.Builder
+	values := make([][]string, 0)
 	for _, row := range strings.Split(strings.TrimSuffix(rows, "\n"), "\n") {
 		if row == "" {
 			continue
 		}
-		fields := strings.Split(row, "\t")
+		values = append(values, strings.Split(row, "\t"))
+	}
+	return frameTmuxRows(values)
+}
+
+func frameTmuxRows(rows [][]string) []byte {
+	var output strings.Builder
+	for _, fields := range rows {
 		for index, field := range fields {
 			if index != 0 {
-				output.WriteByte('\t')
+				output.WriteByte(';')
 			}
 			output.WriteString(strconv.Itoa(len(field)))
-			output.WriteByte('\t')
+			output.WriteByte(':')
 			output.WriteString(field)
 		}
 		output.WriteByte('\n')
@@ -193,19 +200,22 @@ func frameFakeRows(rows string) []byte {
 func TestParseRowsLengthFramesUnmanagedNames(t *testing.T) {
 	name := "external\tname\ncontinued"
 	fields := []string{"$8", name, "1720000000", "1720000300", "0", "", "", "", "", ""}
-	var framed strings.Builder
-	for index, field := range fields {
-		if index != 0 {
-			framed.WriteByte('\t')
-		}
-		framed.WriteString(strconv.Itoa(len(field)))
-		framed.WriteByte('\t')
-		framed.WriteString(field)
-	}
-	framed.WriteByte('\n')
-	rows, err := parseRows([]byte(framed.String()))
+	rows, err := parseRows(frameTmuxRows([][]string{fields}))
 	if err != nil || len(rows) != 1 || rows[0].name != name {
 		t.Fatalf("rows = %+v, error = %v", rows, err)
+	}
+}
+
+func TestTmuxMetadataFormatsUseOnlyPrintableFraming(t *testing.T) {
+	for name, format := range map[string]string{
+		"sessions": sessionListFormat(),
+		"panes":    framedTmuxFormat("session_id", "pane_current_path"),
+	} {
+		for _, value := range []byte(format) {
+			if value < 0x20 || value == 0x7f {
+				t.Fatalf("%s format contains control byte %#x: %q", name, value, format)
+			}
+		}
 	}
 }
 
@@ -292,6 +302,13 @@ func TestServiceStartsReusesCapturesAndStopsManagedSession(t *testing.T) {
 	started, err := manager.Start(t.Context(), "repo")
 	if err != nil || !started.Created || started.Session.ID != testSessionID || started.Session.Association != AssociationLive {
 		t.Fatalf("start = %+v, %v", started, err)
+	}
+	for _, call := range fake.calls {
+		for index, argument := range call {
+			if argument == "-t" && index+1 < len(call) && strings.HasPrefix(call[index+1], "=schooner-") {
+				t.Fatalf("Session metadata used an unsupported exact-name target: %v", call)
+			}
+		}
 	}
 	reused, err := manager.Start(t.Context(), "repo")
 	if err != nil || reused.Created || reused.Session.TmuxID != "$4" {

@@ -103,7 +103,7 @@ func PickBox(ctx context.Context, options Options, title string, boxes []box.Rec
 	}
 	items := make([]huh.Option[string], 0, len(boxes))
 	for _, record := range boxes {
-		items = append(items, huh.NewOption(record.Name+"  "+record.SSHDestination, record.Name))
+		items = append(items, huh.NewOption(catalogOption(options, record.Name, record.SSHDestination), record.Name))
 	}
 	value := boxes[0].Name
 	form := huh.NewForm(huh.NewGroup(huh.NewSelect[string]().Title(title).Options(items...).Value(&value)))
@@ -139,7 +139,13 @@ func Confirm(ctx context.Context, options Options, title, affirmative, negative 
 }
 
 func ConfirmRemove(ctx context.Context, options Options, record box.Record) (bool, error) {
-	_, _ = fmt.Fprintf(options.Output, "\nRemove %s from Schooner?\n  SSH destination: %s\n  The remote machine and its Schooner identity will remain unchanged.\n\n", record.Name, record.SSHDestination)
+	section(options, "Remove box")
+	renderKeyValues(options,
+		Choice{Label: "Name", Value: record.Name},
+		Choice{Label: "SSH destination", Value: record.SSHDestination},
+		Choice{Label: "Remote machine", Value: "unchanged"},
+	)
+	_, _ = fmt.Fprintf(options.Output, "\nThe remote machine and its Schooner identity will remain unchanged.\n\n")
 	confirmed := false
 	form := huh.NewForm(huh.NewGroup(huh.NewConfirm().Title("Remove this box?").Affirmative("Remove").Negative("Keep it").Value(&confirmed)))
 	if err := run(ctx, options, form); err != nil {
@@ -203,7 +209,7 @@ func PickCredentialProfile(ctx context.Context, options Options, profiles []cred
 	items := make([]huh.Option[string], 0, len(profiles))
 	value := string(profiles[0].Ref)
 	for _, profile := range profiles {
-		label := string(profile.Ref) + "  " + firstPromptValue(profile.AccountName, profile.AccountEmail, string(profile.Status))
+		label := catalogOption(options, string(profile.Ref), firstPromptValue(profile.AccountName, profile.AccountEmail, string(profile.Status)))
 		items = append(items, huh.NewOption(label, string(profile.Ref)))
 		if profile.Default {
 			value = string(profile.Ref)
@@ -530,7 +536,13 @@ func sizeCatalogOption(options Options, id string, vcpus, memoryMB int, monthly 
 }
 
 func ConfirmDestroy(ctx context.Context, options Options, record box.Record) (bool, error) {
-	_, _ = fmt.Fprintf(options.Output, "\nPermanently destroy %s?\n  Provider: DigitalOcean\n  Droplet ID: %s\n  The provider resource will be deleted before local inventory is removed.\n\n", record.Name, record.ProviderResourceID)
+	section(options, "Destroy box")
+	renderKeyValues(options,
+		Choice{Label: "Name", Value: record.Name},
+		Choice{Label: "Provider", Value: "DigitalOcean"},
+		Choice{Label: "Droplet ID", Value: record.ProviderResourceID},
+	)
+	_, _ = fmt.Fprintf(options.Output, "\nThe provider resource will be deleted before local inventory is removed.\n\n")
 	confirmed := false
 	if err := run(ctx, options, huh.NewForm(huh.NewGroup(huh.NewConfirm().Title("Destroy this Droplet?").Affirmative("Destroy permanently").Negative("Keep it").Value(&confirmed)))); err != nil {
 		return false, err
@@ -547,7 +559,15 @@ func ConfirmProviderDisconnect(ctx context.Context, options Options, ref string)
 }
 
 func ConfirmDatabaseDestroy(ctx context.Context, options Options) (bool, error) {
-	_, _ = fmt.Fprint(options.Output, "\nDestroy the local Schooner database?\n  All locally recorded boxes, provider profiles, and recovery operations will be forgotten.\n  DigitalOcean resources, credential-store entries, migration backups, and SSH identities will remain unchanged.\n\n")
+	section(options, "Destroy local database")
+	renderKeyValues(options,
+		Choice{Label: "Local inventory", Value: "forgotten"},
+		Choice{Label: "DigitalOcean resources", Value: "unchanged"},
+		Choice{Label: "Credential-store entries", Value: "unchanged"},
+		Choice{Label: "Migration backups", Value: "unchanged"},
+		Choice{Label: "SSH identities", Value: "unchanged"},
+	)
+	_, _ = fmt.Fprintf(options.Output, "\nAll locally recorded boxes, provider profiles, and recovery operations will be forgotten.\n\n")
 	confirmed := false
 	form := huh.NewForm(huh.NewGroup(huh.NewConfirm().Title("Destroy local database?").Affirmative("Destroy permanently").Negative("Keep it").Value(&confirmed)))
 	if err := run(ctx, options, form); err != nil {
