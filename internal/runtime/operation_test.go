@@ -46,6 +46,30 @@ func TestOperationKeepsStrictDecodingAndSemanticValidationSeparate(t *testing.T)
 	}
 }
 
+func TestContextWorktreeListRequiresOriginIdentityCapability(t *testing.T) {
+	request := NewWorktreeRequest("", testIdentity)
+	hello := Hello{
+		SchemaVersion:   SchemaVersion,
+		ProtocolVersion: ProtocolVersion,
+		SchoonerVersion: "v1.2.3",
+		Commit:          "abc123",
+		BoxIdentity:     testIdentity,
+		OS:              "linux",
+		Architecture:    "amd64",
+		Capabilities:    Capabilities(),
+	}
+	if err := ContextWorktreeListOperation().ValidateHello(request, hello); err != nil {
+		t.Fatal(err)
+	}
+	hello.Capabilities = slices.DeleteFunc(hello.Capabilities, func(value string) bool { return value == CapabilityOriginIdentityV1 })
+	if err := ContextWorktreeListOperation().ValidateHello(request, hello); ErrorCode(err) != CodeCapabilityUnavailable {
+		t.Fatalf("context capability error = %v", err)
+	}
+	if err := WorktreeListOperation().ValidateHello(request, hello); err != nil {
+		t.Fatalf("ordinary list should remain v1 compatible: %v", err)
+	}
+}
+
 func TestOperationDecodeResultAppliesEnvelopeAndResultInvariant(t *testing.T) {
 	operation := RepositoryCloneOperation()
 	request := NewCloneRequest("git@example.com:owner/repo.git", "main", "/worktrees", testIdentity)

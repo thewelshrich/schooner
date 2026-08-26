@@ -125,9 +125,19 @@ func ConfigureOperation() Operation[ConfigureRequest, ConfigureResult] {
 }
 
 func WorktreeListOperation() Operation[WorktreeRequest, WorktreeCatalog] {
+	return worktreeListOperation(CapabilityWorktreeListV1)
+}
+
+// ContextWorktreeListOperation uses the v1 worktree-list wire shape but also
+// requires the runtime to preserve credential-free SSH usernames in origins.
+func ContextWorktreeListOperation() Operation[WorktreeRequest, WorktreeCatalog] {
+	return worktreeListOperation(CapabilityOriginIdentityV1)
+}
+
+func worktreeListOperation(capability string) Operation[WorktreeRequest, WorktreeCatalog] {
 	return newOperation(
 		"host worktree list",
-		CapabilityWorktreeListV1,
+		capability,
 		func(request WorktreeRequest) error { return ValidateWorktreeRequest(request, false) },
 		func(request WorktreeRequest, result WorktreeCatalog) error {
 			return validateOperationEnvelope(result.SchemaVersion, result.ProtocolVersion, result.BoxIdentity, request.BoxIdentity, "worktree list returned an incompatible result")

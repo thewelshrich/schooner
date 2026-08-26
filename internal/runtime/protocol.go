@@ -25,6 +25,7 @@ const (
 	CapabilityDoctorV1          = "host.doctor.v1"
 	CapabilityConfigureV1       = "host.configure.v1"
 	CapabilityWorktreeListV1    = "worktree.list.v1"
+	CapabilityOriginIdentityV1  = "repository.identity.v1"
 	CapabilityWorktreeInspectV1 = "worktree.inspect.v1"
 	CapabilityRepositoryCloneV1 = "repository.clone.v1"
 	CapabilityWorktreeAddV1     = "worktree.add.v1"
@@ -209,7 +210,7 @@ type DoctorReport struct {
 }
 
 func Capabilities() []string {
-	result := []string{CapabilityDoctorV1, CapabilityHelloV1, CapabilityInspectV2, CapabilitySessionResumeV1, CapabilityWorktreeShellV1}
+	result := []string{CapabilityDoctorV1, CapabilityHelloV1, CapabilityInspectV2, CapabilityOriginIdentityV1, CapabilitySessionResumeV1, CapabilityWorktreeShellV1}
 	for _, operation := range boundedOperationContracts() {
 		result = append(result, operation.capabilityName())
 	}

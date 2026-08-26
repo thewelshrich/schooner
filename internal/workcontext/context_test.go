@@ -74,6 +74,30 @@ func TestPlanStartDoesNotOfferCloneWithoutUsableSource(t *testing.T) {
 	}
 }
 
+func TestPlanStartDoesNotCloneWhenDiscoveryIsPartial(t *testing.T) {
+	local := &repository.LocalCheckout{OriginKey: "example.com/owner/repo", CloneSource: "https://example.com/owner/repo.git"}
+	choice := repository.Worktree{Path: "/remote/existing", RelativePath: "existing"}
+	plan := PlanStart(local, repository.Catalog{
+		Repositories: []repository.Repository{{Primary: &choice}},
+		Warnings:     []repository.Warning{{Message: "checkout candidate limit reached"}},
+	})
+	if plan.Mode != StartChoose || len(plan.Choices) != 1 || !plan.Incomplete || plan.CloneSource != "" {
+		t.Fatalf("plan = %+v", plan)
+	}
+}
+
+func TestPlanStartRequiresChoiceForKnownMatchWhenDiscoveryIsPartial(t *testing.T) {
+	local := &repository.LocalCheckout{OriginKey: "example.com/owner/repo"}
+	match := repository.Worktree{Path: "/remote/match", RelativePath: "match"}
+	plan := PlanStart(local, repository.Catalog{
+		Repositories: []repository.Repository{{Origin: "https://example.com/owner/repo", Primary: &match}},
+		Warnings:     []repository.Warning{{Message: "filesystem entry limit reached"}},
+	})
+	if plan.Mode != StartChoose || len(plan.Choices) != 1 || !plan.Incomplete {
+		t.Fatalf("plan = %+v", plan)
+	}
+}
+
 func TestPlanResumePrefersNewestManagedLiveSessionForMatchingRepository(t *testing.T) {
 	now := time.Date(2026, 8, 26, 12, 0, 0, 0, time.UTC)
 	primary := repository.Worktree{Path: "/remote/repo"}

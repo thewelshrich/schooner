@@ -150,6 +150,9 @@ type fakeExecutionAdapter struct {
 func (f *fakeExecutionAdapter) listWorktrees(context.Context) (repository.Catalog, error) {
 	return f.catalog, f.err
 }
+func (f *fakeExecutionAdapter) listContextWorktrees(context.Context) (repository.Catalog, error) {
+	return f.catalog, f.err
+}
 func (*fakeExecutionAdapter) inspectWorktree(context.Context, string) (repository.Inspection, error) {
 	return repository.Inspection{}, nil
 }

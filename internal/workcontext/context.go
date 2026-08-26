@@ -32,6 +32,7 @@ type StartPlan struct {
 	Preferred   WorktreeChoice
 	Choices     []WorktreeChoice
 	CloneSource string
+	Incomplete  bool
 }
 
 // PlanStart prefers the primary Worktree of the Repository matching local.
@@ -43,6 +44,17 @@ func PlanStart(local *repository.LocalCheckout, catalog repository.Catalog) Star
 		return chooseStart(fallback)
 	}
 	matching := matchingRepositories(local.OriginKey, catalog.Repositories)
+	if len(catalog.Warnings) != 0 {
+		choices := fallback
+		if len(matching) != 0 {
+			choices = defaultChoices(matching)
+		}
+		sortWorktrees(choices)
+		if len(choices) == 0 {
+			return StartPlan{Mode: StartUnavailable, Incomplete: true}
+		}
+		return StartPlan{Mode: StartChoose, Choices: choices, Incomplete: true}
+	}
 	if len(matching) == 0 {
 		if local.CloneSource == "" {
 			return chooseStart(fallback)

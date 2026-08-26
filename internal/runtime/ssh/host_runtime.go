@@ -257,8 +257,16 @@ func (r *Runtime) ConfigureHost(ctx context.Context, connection box.Connection, 
 }
 
 func (r *Runtime) ListWorktrees(ctx context.Context, connection box.Connection, installed box.HostRuntime, expectedIdentity string) (repository.Catalog, error) {
+	return r.listWorktrees(ctx, connection, installed, expectedIdentity, hostruntime.WorktreeListOperation())
+}
+
+func (r *Runtime) ListContextWorktrees(ctx context.Context, connection box.Connection, installed box.HostRuntime, expectedIdentity string) (repository.Catalog, error) {
+	return r.listWorktrees(ctx, connection, installed, expectedIdentity, hostruntime.ContextWorktreeListOperation())
+}
+
+func (r *Runtime) listWorktrees(ctx context.Context, connection box.Connection, installed box.HostRuntime, expectedIdentity string, operation hostruntime.Operation[hostruntime.WorktreeRequest, hostruntime.WorktreeCatalog]) (repository.Catalog, error) {
 	request := hostruntime.NewWorktreeRequest("", expectedIdentity)
-	result, err := invokeHostOperation(ctx, r, connection, installed, hostruntime.WorktreeListOperation(), request)
+	result, err := invokeHostOperation(ctx, r, connection, installed, operation, request)
 	if err != nil {
 		return repository.Catalog{}, err
 	}

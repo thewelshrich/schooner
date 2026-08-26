@@ -21,6 +21,10 @@ func (a sshAdapter) listWorktrees(ctx context.Context) (repository.Catalog, erro
 	return a.runtime.ListWorktrees(ctx, a.connection, a.installed, a.state.boxIdentity)
 }
 
+func (a sshAdapter) listContextWorktrees(ctx context.Context) (repository.Catalog, error) {
+	return a.runtime.ListContextWorktrees(ctx, a.connection, a.installed, a.state.boxIdentity)
+}
+
 func (a sshAdapter) inspectWorktree(ctx context.Context, selector string) (repository.Inspection, error) {
 	return a.runtime.InspectWorktree(ctx, a.connection, a.installed, a.state.boxIdentity, selector)
 }

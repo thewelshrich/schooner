@@ -14,6 +14,7 @@ import (
 
 type executionAdapter interface {
 	listWorktrees(context.Context) (repository.Catalog, error)
+	listContextWorktrees(context.Context) (repository.Catalog, error)
 	inspectWorktree(context.Context, string) (repository.Inspection, error)
 	cloneRepository(context.Context, repository.CloneRequest) (repository.MutationResult, error)
 	addWorktree(context.Context, repository.AddRequest) (repository.MutationResult, error)
@@ -62,10 +63,26 @@ func (t Target) BoxName() string {
 }
 
 func (t Target) ListWorktrees(ctx context.Context) (repository.Catalog, error) {
+	return t.listWorktrees(ctx, false)
+}
+
+// ListContextWorktrees requires repository origins with the identity semantics
+// used by contextual start and resume.
+func (t Target) ListContextWorktrees(ctx context.Context) (repository.Catalog, error) {
+	return t.listWorktrees(ctx, true)
+}
+
+func (t Target) listWorktrees(ctx context.Context, contextual bool) (repository.Catalog, error) {
 	if err := t.valid(); err != nil {
 		return repository.Catalog{}, err
 	}
-	result, err := t.state.run.listWorktrees(ctx)
+	var result repository.Catalog
+	var err error
+	if contextual {
+		result, err = t.state.run.listContextWorktrees(ctx)
+	} else {
+		result, err = t.state.run.listWorktrees(ctx)
+	}
 	if err != nil {
 		return repository.Catalog{}, normalizeError(err)
 	}

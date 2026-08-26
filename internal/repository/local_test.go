@@ -80,6 +80,31 @@ func TestOriginKeyDistinguishesAbsoluteAndRelativeSCPPaths(t *testing.T) {
 	}
 }
 
+func TestOriginKeyMatchesSSHTildeAndSCPHomeRelativePaths(t *testing.T) {
+	want := "alice@example.com/~/repo"
+	for _, value := range []string{
+		"ssh://alice@example.com/~/repo.git",
+		"alice@example.com:~/repo.git",
+	} {
+		if got := OriginKey(value); got != want {
+			t.Errorf("OriginKey(%q) = %q, want %q", value, got, want)
+		}
+	}
+}
+
+func TestOriginIdentityUsesNonDefaultSSHUsername(t *testing.T) {
+	for _, value := range []string{"alice@example.com:repo.git", "ssh://alice:secret@example.com/repo.git"} {
+		if !originIdentityUsesSSHUsername(value) {
+			t.Errorf("originIdentityUsesSSHUsername(%q) = false, want true", value)
+		}
+	}
+	for _, value := range []string{"git@example.com:repo.git", "https://alice:secret@example.com/repo.git", "alice:secret@example.com:repo.git"} {
+		if originIdentityUsesSSHUsername(value) {
+			t.Errorf("originIdentityUsesSSHUsername(%q) = true, want false", value)
+		}
+	}
+}
+
 func TestInspectLocalObservesContainingCheckoutWithoutPersistingState(t *testing.T) {
 	repositoryPath := filepath.Join(t.TempDir(), "repo")
 	mustGit(t, "init", repositoryPath)
@@ -95,6 +120,11 @@ func TestInspectLocalObservesContainingCheckoutWithoutPersistingState(t *testing
 		t.Fatal(err)
 	}
 	mustWrite(t, filepath.Join(repositoryPath, "untracked"), "local\n")
+	if err := os.Mkdir(filepath.Join(repositoryPath, "untracked-tree"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(repositoryPath, "untracked-tree", "first"), "generated\n")
+	mustWrite(t, filepath.Join(repositoryPath, "untracked-tree", "second"), "generated\n")
 	if err := os.Mkdir(filepath.Join(repositoryPath, "ignored"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -111,10 +141,10 @@ func TestInspectLocalObservesContainingCheckoutWithoutPersistingState(t *testing
 	if checkout == nil || checkout.TopLevel != wantTopLevel {
 		t.Fatalf("checkout = %+v", checkout)
 	}
-	if checkout.Origin != "https://example.com/owner/repo" || checkout.OriginKey != "example.com/owner/repo" || checkout.CloneSource != "https://example.com/owner/repo.git" {
+	if checkout.Origin != "https://example.com/owner/repo" || checkout.OriginKey != "example.com/owner/repo" || checkout.CloneSource != "https://example.com/owner/repo.git" || checkout.OriginKeyUsesSSHUsername {
 		t.Fatalf("origin = %q, key = %q, clone source = %q", checkout.Origin, checkout.OriginKey, checkout.CloneSource)
 	}
-	if checkout.Branch == "" || checkout.Detached || checkout.Upstream != "" || checkout.Status.Untracked != 1 || checkout.Status.Ignored != 0 {
+	if checkout.Branch == "" || checkout.Detached || checkout.Upstream != "" || checkout.Status.Untracked != 2 || checkout.Status.Ignored != 0 {
 		t.Fatalf("checkout = %+v", checkout)
 	}
 
@@ -123,7 +153,7 @@ func TestInspectLocalObservesContainingCheckoutWithoutPersistingState(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if checkout.Origin != "ssh://alice@example.com/owner/repo" || checkout.OriginKey != "alice@example.com//owner/repo" || checkout.CloneSource != "ssh://alice@example.com/owner/repo.git" {
+	if checkout.Origin != "ssh://alice@example.com/owner/repo" || checkout.OriginKey != "alice@example.com//owner/repo" || checkout.CloneSource != "ssh://alice@example.com/owner/repo.git" || !checkout.OriginKeyUsesSSHUsername {
 		t.Fatalf("SSH origin = %q, key = %q, clone source = %q", checkout.Origin, checkout.OriginKey, checkout.CloneSource)
 	}
 }

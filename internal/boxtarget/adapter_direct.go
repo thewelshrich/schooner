@@ -20,6 +20,10 @@ func (a directAdapter) listWorktrees(ctx context.Context) (repository.Catalog, e
 	return result.Catalog, err
 }
 
+func (a directAdapter) listContextWorktrees(ctx context.Context) (repository.Catalog, error) {
+	return a.listWorktrees(ctx)
+}
+
 func (a directAdapter) inspectWorktree(ctx context.Context, selector string) (repository.Inspection, error) {
 	result, err := a.runtime.InspectWorktree(ctx, hostruntime.NewWorktreeRequest(selector, a.state.boxIdentity))
 	return result.Inspection, err

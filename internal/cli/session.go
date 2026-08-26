@@ -239,7 +239,7 @@ func resolveContextualStart(ctx context.Context, streams Streams, global *global
 	var catalog repository.Catalog
 	err = prompts.Wait(ctx, promptOptions(streams, global), "Finding remote work", func(waitCtx context.Context) error {
 		var listErr error
-		catalog, listErr = target.ListWorktrees(waitCtx)
+		catalog, listErr = listWorktreesForContext(waitCtx, target, local)
 		return listErr
 	})
 	if errors.Is(err, prompts.ErrAborted) {
@@ -249,6 +249,9 @@ func resolveContextualStart(ctx context.Context, streams Streams, global *global
 		return "", executionError{cause: err}
 	}
 	plan := workcontext.PlanStart(local, catalog)
+	if plan.Incomplete {
+		_ = writeMutedNotice(streams.Err, terminalTheme(global, streams), "Remote Repository discovery was incomplete; choose known work explicitly instead of cloning.")
+	}
 	switch plan.Mode {
 	case workcontext.StartUse:
 		return plan.Preferred.Worktree.Path, nil
@@ -257,6 +260,9 @@ func resolveContextualStart(ctx context.Context, streams Streams, global *global
 	case workcontext.StartClone:
 		return confirmCloneForStart(ctx, streams, global, target, local, plan)
 	default:
+		if plan.Incomplete {
+			return "", contextualUnavailable("remote Repository discovery was incomplete", "resolve the Box discovery warnings, or specify a known remote Worktree explicitly")
+		}
 		return "", contextualUnavailable("no remote Repository is available to start", "add a network origin to this local Repository, or run `schooner clone <origin> --box <box>`")
 	}
 }
@@ -330,7 +336,7 @@ func resolveContextualResume(ctx context.Context, streams Streams, global *globa
 	err = prompts.Wait(ctx, promptOptions(streams, global), "Finding live Sessions", func(waitCtx context.Context) error {
 		if local != nil && local.OriginKey != "" {
 			var listErr error
-			repositories, listErr = target.ListWorktrees(waitCtx)
+			repositories, listErr = listWorktreesForContext(waitCtx, target, local)
 			if listErr != nil {
 				return listErr
 			}
@@ -362,6 +368,13 @@ func resolveContextualResume(ctx context.Context, streams Streams, global *globa
 	default:
 		return "", contextualUnavailable("no live Session is available to resume", "run `schooner start` to begin work")
 	}
+}
+
+func listWorktreesForContext(ctx context.Context, target boxtarget.Target, local *repository.LocalCheckout) (repository.Catalog, error) {
+	if local != nil && local.OriginKeyUsesSSHUsername {
+		return target.ListContextWorktrees(ctx)
+	}
+	return target.ListWorktrees(ctx)
 }
 
 func contextualUnavailable(message, guidance string) error {
