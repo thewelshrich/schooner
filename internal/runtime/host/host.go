@@ -38,9 +38,10 @@ type Runtime struct {
 }
 
 type TerminalIO struct {
-	In  io.Reader
-	Out io.Writer
-	Err io.Writer
+	In                io.Reader
+	Out               io.Writer
+	Err               io.Writer
+	DisableJobControl bool
 }
 
 type InteractiveResult struct{ ExitCode int }
@@ -384,7 +385,12 @@ func (r *Runtime) ResumeSession(ctx context.Context, request hostruntime.Session
 	if err != nil {
 		return InteractiveResult{}, err
 	}
-	exitCode, err := process.RunInteractiveWithoutEnvironment(ctx, "", attachment.Path, attachment.Args, attachment.ExcludedEnvironment, terminal.In, terminal.Out, terminal.Err)
+	var exitCode int
+	if terminal.DisableJobControl {
+		exitCode, err = process.RunInteractiveWithoutJobControl(ctx, "", attachment.Path, attachment.Args, attachment.ExcludedEnvironment, terminal.In, terminal.Out, terminal.Err)
+	} else {
+		exitCode, err = process.RunInteractiveWithoutEnvironment(ctx, "", attachment.Path, attachment.Args, attachment.ExcludedEnvironment, terminal.In, terminal.Out, terminal.Err)
+	}
 	return InteractiveResult{ExitCode: exitCode}, err
 }
 
@@ -422,6 +428,10 @@ func (r *Runtime) OpenWorktreeShell(ctx context.Context, request hostruntime.Wor
 	}
 	if info, statErr := os.Stat(shell); statErr != nil || !info.Mode().IsRegular() || info.Mode()&0o111 == 0 {
 		shell = "/bin/sh"
+	}
+	if terminal.DisableJobControl {
+		exitCode, runErr := process.RunInteractiveWithoutJobControl(ctx, inspection.Worktree.Path, shell, []string{"-i"}, nil, terminal.In, terminal.Out, terminal.Err)
+		return InteractiveResult{ExitCode: exitCode}, runErr
 	}
 	return runInteractive(ctx, inspection.Worktree.Path, shell, []string{"-i"}, terminal)
 }

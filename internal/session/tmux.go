@@ -173,8 +173,18 @@ func (use TmuxUse) ManagedSessions(ctx context.Context, worktreePath string) ([]
 		if parsed.Ownership == Invalid && row.hasSchoonerMetadata() {
 			return nil, fmt.Errorf("tmux contains invalid Schooner Session metadata")
 		}
-		if parsed.Ownership == Managed && managedUsesPath(parsed, panes[parsed.TmuxID], worktreePath) {
-			result = append(result, parsed.ID)
+		if parsed.Ownership == Managed {
+			sessionPanes := panes[parsed.TmuxID]
+			usesPath := managedUsesPath(parsed, sessionPanes, worktreePath)
+			metadataObserved := panesUsePath(sessionPanes, parsed.MetadataWorktreePath)
+			_, metadataErr := os.Stat(parsed.MetadataWorktreePath)
+			// A missing/unreadable metadata path or panes outside that path may
+			// represent a Worktree that moved while this Session incarnation stayed
+			// live. Until Schooner can prove its association, fail closed for every
+			// removal candidate—even if the old path has since been reused.
+			if usesPath || metadataErr != nil || !metadataObserved {
+				result = append(result, parsed.ID)
+			}
 		}
 	}
 	return result, nil
@@ -381,7 +391,7 @@ func (s *Service) Attachment(ctx context.Context, selector string, insideTmux bo
 		refusal := "display-message -p 'Schooner refused attachment because Session ownership changed.' ; run-shell \"exit 76\""
 		args = append([]string{"-L", tmuxSocketName}, managedActionArguments(value, action, refusal)...)
 	}
-	excluded := []string(nil)
+	excluded := []string{"TMUX_TMPDIR"}
 	if !insideTmux {
 		excluded = []string{"TMUX", "TMUX_TMPDIR"}
 	}

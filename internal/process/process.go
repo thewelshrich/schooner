@@ -133,20 +133,27 @@ func ExitCode(err error) int {
 // a real terminal receives foreground job control while remaining isolated in
 // a process group that can be cancelled together with all descendants.
 func RunInteractive(ctx context.Context, directory, name string, arguments []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
-	return runInteractive(ctx, directory, name, arguments, nil, stdin, stdout, stderr)
+	return runInteractive(ctx, directory, name, arguments, nil, true, stdin, stdout, stderr)
 }
 
 // RunInteractiveWithoutEnvironment runs an interactive command after removing
 // environment variables that would otherwise change the selected external
 // resource (for example, tmux's current server socket).
 func RunInteractiveWithoutEnvironment(ctx context.Context, directory, name string, arguments, excluded []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
-	return runInteractive(ctx, directory, name, arguments, excluded, stdin, stdout, stderr)
+	return runInteractive(ctx, directory, name, arguments, excluded, true, stdin, stdout, stderr)
 }
 
-func runInteractive(ctx context.Context, directory, name string, arguments, excluded []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
+// RunInteractiveWithoutJobControl attaches the supplied streams but leaves
+// terminal ownership with the caller. Remote host runtimes use this because
+// there is no Box-local shell available to resume a suspended runtime.
+func RunInteractiveWithoutJobControl(ctx context.Context, directory, name string, arguments, excluded []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
+	return runInteractive(ctx, directory, name, arguments, excluded, false, stdin, stdout, stderr)
+}
+
+func runInteractive(ctx context.Context, directory, name string, arguments, excluded []string, jobControl bool, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
 	command := exec.CommandContext(ctx, name, arguments...)
 	terminal, isTerminal := interactiveTerminal(stdin)
-	if !isTerminal {
+	if !isTerminal || !jobControl {
 		configureCommandCancellation(command)
 	}
 	command.Dir = directory
@@ -165,11 +172,12 @@ func runInteractive(ctx context.Context, directory, name string, arguments, excl
 	}
 	command.Stdin, command.Stdout, command.Stderr = stdin, stdout, stderr
 	var err error
-	if isTerminal {
+	if isTerminal && jobControl {
 		err = runInteractiveTerminal(command, terminal)
 	} else {
 		err = command.Run()
 	}
+	cleanupErr := cleanupInteractiveProcessTree(command)
 	if err != nil {
 		if ctx.Err() != nil {
 			return 0, ctx.Err()
@@ -179,6 +187,9 @@ func runInteractive(ctx context.Context, directory, name string, arguments, excl
 			return exitErr.ExitCode(), nil
 		}
 		return 0, err
+	}
+	if cleanupErr != nil {
+		return 0, cleanupErr
 	}
 	return 0, nil
 }

@@ -133,7 +133,7 @@ func newHostCommand(streams Streams, options *globalOptions) *cobra.Command {
 			if err := decodeInteractiveHostRequest(args[0], &request); err != nil {
 				return usageError{cause: err}
 			}
-			result, err := runtime.OpenWorktreeShell(cmd.Context(), request, host.TerminalIO{In: streams.In, Out: streams.Out, Err: streams.Err})
+			result, err := runtime.OpenWorktreeShell(cmd.Context(), request, host.TerminalIO{In: streams.In, Out: streams.Out, Err: streams.Err, DisableJobControl: true})
 			if err != nil {
 				return executionError{cause: err}
 			}
@@ -194,7 +194,7 @@ func newHostCommand(streams Streams, options *globalOptions) *cobra.Command {
 			if err := decodeInteractiveHostRequest(args[0], &request); err != nil {
 				return usageError{cause: err}
 			}
-			result, err := runtime.ResumeSession(cmd.Context(), request, host.TerminalIO{In: streams.In, Out: streams.Out, Err: streams.Err})
+			result, err := runtime.ResumeSession(cmd.Context(), request, host.TerminalIO{In: streams.In, Out: streams.Out, Err: streams.Err, DisableJobControl: true})
 			if err != nil {
 				return executionError{cause: err}
 			}

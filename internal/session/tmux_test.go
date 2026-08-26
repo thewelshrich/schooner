@@ -301,6 +301,10 @@ func TestServiceStartsReusesCapturesAndStopsManagedSession(t *testing.T) {
 	if err != nil || attachment.Path != "tmux" || len(attachment.Args) != 9 || attachment.Args[0] != "-L" || attachment.Args[1] != tmuxSocketName || attachment.Args[2] != "if-shell" || !strings.Contains(attachment.Args[6], testSessionID) || attachment.Args[7] != "attach-session -t $4" || len(attachment.ExcludedEnvironment) != 2 {
 		t.Fatalf("attachment = %+v, %v", attachment, err)
 	}
+	insideAttachment, err := manager.Attachment(t.Context(), testSessionID, true)
+	if err != nil || !slices.Equal(insideAttachment.ExcludedEnvironment, []string{"TMUX_TMPDIR"}) {
+		t.Fatalf("inside attachment = %+v, %v", insideAttachment, err)
+	}
 	logs, err := manager.Logs(t.Context(), testSessionID, 2)
 	if err != nil || logs.Content != "one\ntwo\n" || logs.Lines != 2 || !logs.Truncated {
 		t.Fatalf("logs = %+v, %v", logs, err)
@@ -442,6 +446,9 @@ func TestMovedManagedSessionStillBlocksCurrentWorktreePath(t *testing.T) {
 	}
 	if stale, err := (TmuxUse{commands: fake}).ManagedSessions(t.Context(), "/work/repo-old"); err != nil || len(stale) != 1 {
 		t.Fatalf("conservative metadata path sessions = %v, error = %v", stale, err)
+	}
+	if uncertain, err := (TmuxUse{commands: fake}).ManagedSessions(t.Context(), "/work/unrelated"); err != nil || len(uncertain) != 1 {
+		t.Fatalf("missing metadata path sessions = %v, error = %v", uncertain, err)
 	}
 }
 

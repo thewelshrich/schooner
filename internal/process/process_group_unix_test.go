@@ -4,6 +4,7 @@ package process
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -15,6 +16,37 @@ import (
 	"testing"
 	"time"
 )
+
+func TestRunInteractiveNormalExitTerminatesBackgroundProcessGroup(t *testing.T) {
+	stdout, err := os.CreateTemp(t.TempDir(), "background-pid")
+	if err != nil {
+		t.Fatal(err)
+	}
+	exitCode, err := RunInteractive(t.Context(), "", "/bin/sh", []string{"-c", `nohup sleep 60 >/dev/null 2>&1 & printf '%d' "$!"`}, nil, stdout, io.Discard)
+	if err != nil || exitCode != 0 {
+		t.Fatalf("exit code = %d, error = %v", exitCode, err)
+	}
+	if err = stdout.Close(); err != nil {
+		t.Fatal(err)
+	}
+	output, err := os.ReadFile(stdout.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, err := strconv.Atoi(string(output))
+	if err != nil {
+		t.Fatalf("background pid %q: %v", output, err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		err = syscall.Kill(pid, 0)
+		if errors.Is(err, syscall.ESRCH) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("background process %d survived normal exit: %v", pid, err)
+}
 
 func TestMain(m *testing.M) {
 	if os.Getenv("SCHOONER_PROCESS_TREE_CHILD") == "1" {

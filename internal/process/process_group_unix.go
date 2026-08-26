@@ -22,8 +22,33 @@ func configureCommandCancellation(command *exec.Cmd) {
 		if command.Process == nil {
 			return os.ErrProcessDone
 		}
-		return killProcessGroup(command.Process.Pid)
+		return cancelInteractiveProcessTree(command.Process.Pid)
 	}
+}
+
+func cancelInteractiveProcessTree(root int) error {
+	stopErr := stopProcessGroup(root)
+	if errors.Is(stopErr, os.ErrProcessDone) {
+		stopErr = nil
+	}
+	treeErr := terminateDescendants(root)
+	groupErr := killProcessGroup(root)
+	if errors.Is(groupErr, os.ErrProcessDone) {
+		groupErr = nil
+	}
+	return errors.Join(stopErr, treeErr, groupErr)
+}
+
+func cleanupInteractiveProcessTree(command *exec.Cmd) error {
+	if command.Process == nil {
+		return nil
+	}
+	treeErr := terminateDescendants(command.Process.Pid)
+	groupErr := killProcessGroup(command.Process.Pid)
+	if errors.Is(groupErr, os.ErrProcessDone) {
+		groupErr = nil
+	}
+	return errors.Join(treeErr, groupErr)
 }
 
 func runInteractiveTerminal(command *exec.Cmd, terminal *os.File) (err error) {
@@ -37,19 +62,7 @@ func runInteractiveTerminal(command *exec.Cmd, terminal *os.File) (err error) {
 		// Publish cancellation before stopping the child group so the SIGCHLD
 		// monitor cannot mistake this synthetic stop for interactive Ctrl-Z.
 		cancelling.Store(true)
-		var cancellationErrors []error
-		if stopErr := stopProcessGroup(command.Process.Pid); stopErr != nil && !errors.Is(stopErr, os.ErrProcessDone) {
-			cancellationErrors = append(cancellationErrors, stopErr)
-		}
-		if treeErr := terminateDescendants(command.Process.Pid); treeErr != nil {
-			cancellationErrors = append(cancellationErrors, treeErr)
-		}
-		commandKillErr := killProcessGroup(command.Process.Pid)
-		if commandKillErr == nil {
-			return nil
-		}
-		cancellationErrors = append(cancellationErrors, commandKillErr)
-		return errors.Join(cancellationErrors...)
+		return cancelInteractiveProcessTree(command.Process.Pid)
 	}
 	if err := command.Start(); err != nil {
 		return err
