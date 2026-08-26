@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 
 	"golang.org/x/sys/unix"
@@ -28,10 +29,14 @@ func configureCommandCancellation(command *exec.Cmd) {
 func runInteractiveTerminal(command *exec.Cmd, terminal *os.File) (err error) {
 	parentGroup := syscall.Getpgrp()
 	configureCommandCancellation(command)
+	var cancelling atomic.Bool
 	command.Cancel = func() error {
 		if command.Process == nil {
 			return os.ErrProcessDone
 		}
+		// Publish cancellation before stopping the child group so the SIGCHLD
+		// monitor cannot mistake this synthetic stop for interactive Ctrl-Z.
+		cancelling.Store(true)
 		var cancellationErrors []error
 		if stopErr := stopProcessGroup(command.Process.Pid); stopErr != nil && !errors.Is(stopErr, os.ErrProcessDone) {
 			cancellationErrors = append(cancellationErrors, stopErr)
@@ -81,12 +86,15 @@ func runInteractiveTerminal(command *exec.Cmd, terminal *os.File) (err error) {
 		case err := <-waitDone:
 			return err
 		case <-childChanges:
+			if cancelling.Load() {
+				continue
+			}
 			// Avoid feeding the SIGCHLD from the short-lived ps probe back into
 			// this channel and creating a probe loop.
 			signal.Stop(childChanges)
 			stopped, stateErr := processIsStopped(command.Process.Pid)
 			signal.Notify(childChanges, syscall.SIGCHLD)
-			if stateErr != nil || !stopped {
+			if stateErr != nil || !stopped || cancelling.Load() {
 				continue
 			}
 			if err := setForegroundProcessGroup(terminal, parentGroup); err != nil {
