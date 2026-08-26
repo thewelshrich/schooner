@@ -123,6 +123,12 @@ func (r *Runtime) EnsureHost(ctx context.Context, connection box.Connection, req
 func compatibleHostDecision(targetVersion string, mode box.HostInstallMode, installed box.HostRuntime) (box.HostInstallResult, bool, error) {
 	result := box.HostInstallResult{Runtime: installed, PreviousVersion: installed.Version, TargetVersion: targetVersion, Action: box.HostReused}
 	if mode == box.HostRepair {
+		if targetVersion == "dev" && installed.Version == "dev" {
+			// Development builds have no stable build identity. Setup and adoption
+			// promise a matching runtime, so promote the currently verified local
+			// artifact instead of silently reusing an arbitrary older dev binary.
+			return result, true, nil
+		}
 		return result, false, nil
 	}
 	if targetVersion == "dev" || installed.Version == "dev" {
@@ -251,8 +257,16 @@ func (r *Runtime) ConfigureHost(ctx context.Context, connection box.Connection, 
 }
 
 func (r *Runtime) ListWorktrees(ctx context.Context, connection box.Connection, installed box.HostRuntime, expectedIdentity string) (repository.Catalog, error) {
+	return r.listWorktrees(ctx, connection, installed, expectedIdentity, hostruntime.WorktreeListOperation())
+}
+
+func (r *Runtime) ListContextWorktrees(ctx context.Context, connection box.Connection, installed box.HostRuntime, expectedIdentity string) (repository.Catalog, error) {
+	return r.listWorktrees(ctx, connection, installed, expectedIdentity, hostruntime.ContextWorktreeListOperation())
+}
+
+func (r *Runtime) listWorktrees(ctx context.Context, connection box.Connection, installed box.HostRuntime, expectedIdentity string, operation hostruntime.Operation[hostruntime.WorktreeRequest, hostruntime.WorktreeCatalog]) (repository.Catalog, error) {
 	request := hostruntime.NewWorktreeRequest("", expectedIdentity)
-	result, err := invokeHostOperation(ctx, r, connection, installed, hostruntime.WorktreeListOperation(), request)
+	result, err := invokeHostOperation(ctx, r, connection, installed, operation, request)
 	if err != nil {
 		return repository.Catalog{}, err
 	}

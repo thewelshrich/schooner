@@ -493,7 +493,8 @@ func inspectCandidate(ctx context.Context, root, candidate string, commands runn
 	}
 	origin := ""
 	if rawOrigin, originErr := git(ctx, commands, canonical, "remote", "get-url", "origin"); originErr == nil {
-		origin = sanitizeOrigin(strings.TrimSpace(string(rawOrigin)))
+		raw := strings.TrimSpace(string(rawOrigin))
+		origin = sanitizeOrigin(raw)
 	} else if exitCode(originErr) != 2 {
 		return observation{}, fmt.Errorf("read origin: %w", originErr)
 	}
@@ -715,7 +716,11 @@ func sanitizeOrigin(raw string) string {
 		if parsed.Opaque != "" {
 			return ""
 		}
-		parsed.User = nil
+		if strings.EqualFold(parsed.Scheme, "ssh") && parsed.User != nil {
+			parsed.User = url.User(parsed.User.Username())
+		} else {
+			parsed.User = nil
+		}
 		parsed.RawQuery = ""
 		parsed.Fragment = ""
 		parsed.Path = strings.TrimSuffix(parsed.Path, ".git")
@@ -727,10 +732,14 @@ func sanitizeOrigin(raw string) string {
 	if index := strings.IndexAny(raw, "?#"); index >= 0 {
 		raw = raw[:index]
 	}
-	if colon := strings.IndexByte(raw, ':'); colon > 0 && !strings.ContainsRune(raw[:colon], '/') {
+	if colon := scpPathSeparator(raw); colon > 0 && !strings.ContainsRune(raw[:colon], '/') {
 		if at := strings.LastIndexByte(raw[:colon], '@'); at >= 0 {
-			raw = raw[at+1:]
+			username := raw[:at]
+			if originIdentityUsername(username) == "" && username != "git" {
+				return ""
+			}
 		}
+		return boundedOrigin(strings.TrimSuffix(raw, ".git"))
 	}
 	return boundedOrigin(strings.TrimSuffix(raw, ".git"))
 }

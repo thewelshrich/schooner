@@ -15,10 +15,10 @@ func TestWriteAddResultHumanReadySummary(t *testing.T) {
 	result := box.AddResult{
 		Box: box.Record{
 			Name:               "newtest",
-			SSHDestination:     "root@209.97.139.0",
+			SSHDestination:     "root@203.0.113.10",
 			WorktreeRoot:       "/root/schooner",
 			Provider:           "digitalocean",
-			ProviderResourceID: "594799357",
+			ProviderResourceID: "123456789",
 		},
 		Capabilities: box.Capabilities{
 			OSID:         "ubuntu",
@@ -35,8 +35,8 @@ func TestWriteAddResultHumanReadySummary(t *testing.T) {
 	got := out.String()
 	for _, want := range []string{
 		"\n✓ newtest is ready\n",
-		"  Provider       digitalocean (594799357)\n",
-		"  SSH            root@209.97.139.0\n",
+		"  Provider       digitalocean (123456789)\n",
+		"  SSH            root@203.0.113.10\n",
 		"  Worktree root  /root/schooner\n",
 		"  OS             Ubuntu 26.04 (amd64)\n",
 		"  Git            git version 2.53.0\n",
@@ -100,7 +100,7 @@ func TestWriteListResultMixedInventory(t *testing.T) {
 func TestWriteStatusResultHumanReadySummary(t *testing.T) {
 	var out bytes.Buffer
 	result := box.StatusResult{
-		Box: box.Record{Name: "testbox", SSHDestination: "root@209.97.139.0"},
+		Box: box.Record{Name: "testbox", SSHDestination: "root@203.0.113.10"},
 		Observation: box.Observation{
 			ObservedAt: time.Date(2026, 8, 26, 16, 0, 0, 0, time.UTC),
 			Capabilities: box.Capabilities{
@@ -115,7 +115,7 @@ func TestWriteStatusResultHumanReadySummary(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := out.String()
-	for _, want := range []string{"\n✓ testbox is reachable\n", "  SSH            root@209.97.139.0\n", "  OS             Ubuntu 26.04 (amd64)\n", "  Worktree root  /root/schooner\n"} {
+	for _, want := range []string{"\n✓ testbox is reachable\n", "  SSH            root@203.0.113.10\n", "  OS             Ubuntu 26.04 (amd64)\n", "  Worktree root  /root/schooner\n"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("missing %q in %q", want, got)
 		}

@@ -421,7 +421,22 @@ func writeDoctorReport(w io.Writer, report hostruntime.DoctorReport, theme *uith
 			return err
 		}
 	}
+	if doctorIsUnsupportedLocalClient(report) {
+		if _, err := fmt.Fprintln(w); err != nil {
+			return err
+		}
+		return writeMutedNotice(w, theme, "This client can still manage remote boxes. Next: run `schooner box add` with a supported Ubuntu SSH destination.")
+	}
 	return nil
+}
+
+func doctorIsUnsupportedLocalClient(report hostruntime.DoctorReport) bool {
+	for _, check := range report.Checks {
+		if (check.ID == "platform" || check.ID == "operating_system") && !check.OK {
+			return true
+		}
+	}
+	return false
 }
 
 func encodeHostResult(w io.Writer, value any) error {

@@ -153,7 +153,10 @@ func RunInteractiveWithoutJobControl(ctx context.Context, directory, name string
 func runInteractive(ctx context.Context, directory, name string, arguments, excluded []string, jobControl bool, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
 	command := exec.CommandContext(ctx, name, arguments...)
 	terminal, isTerminal := interactiveTerminal(stdin)
-	if !isTerminal || !jobControl {
+	withoutJobControl := isTerminal && !jobControl
+	if withoutJobControl {
+		configureCommandCancellationWithoutProcessGroup(command)
+	} else if !isTerminal {
 		configureCommandCancellation(command)
 	}
 	command.Dir = directory
@@ -177,7 +180,12 @@ func runInteractive(ctx context.Context, directory, name string, arguments, excl
 	} else {
 		err = command.Run()
 	}
-	cleanupErr := cleanupInteractiveProcessTree(command)
+	var cleanupErr error
+	if withoutJobControl {
+		cleanupErr = cleanupInteractiveProcessTreeWithoutGroup(command)
+	} else {
+		cleanupErr = cleanupInteractiveProcessTree(command)
+	}
 	if err != nil {
 		if ctx.Err() != nil {
 			return 0, ctx.Err()

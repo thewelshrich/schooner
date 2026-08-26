@@ -2,14 +2,70 @@ package cli
 
 import (
 	"bytes"
+	"errors"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/thewelshrich/schooner/internal/boxtarget"
+	"github.com/thewelshrich/schooner/internal/repository"
 	hostruntime "github.com/thewelshrich/schooner/internal/runtime"
 	"github.com/thewelshrich/schooner/internal/runtime/host"
 	"github.com/thewelshrich/schooner/internal/session"
+	"github.com/thewelshrich/schooner/internal/workcontext"
 )
+
+func TestContextualCloneHonorsNoInput(t *testing.T) {
+	var output bytes.Buffer
+	_, err := confirmCloneForStart(t.Context(), Streams{Err: &output, InIsTerminal: true, OutIsTerminal: true, ErrIsTerminal: true}, &globalOptions{output: "human", noInput: true}, boxtarget.Target{}, &repository.LocalCheckout{TopLevel: "/repo"}, workcontext.StartPlan{Mode: workcontext.StartClone, CloneSource: "https://example.com/repo.git"})
+	var usage usageError
+	if !errors.As(err, &usage) || output.Len() != 0 {
+		t.Fatalf("error = %v, output = %q", err, output.String())
+	}
+}
+
+func TestIncompleteContextualStartForcesChoiceWithSingleWorktree(t *testing.T) {
+	choice := workcontext.WorktreeChoice{Worktree: repository.Worktree{Path: "/remote/repo", RelativePath: "repo", Branch: "main"}}
+	selected, err := pickWorktreeChoices(t.Context(), Streams{}, &globalOptions{output: "human", noInput: true}, "Choose", []workcontext.WorktreeChoice{choice})
+	var usage usageError
+	if selected != "" || !errors.As(err, &usage) {
+		t.Fatalf("selected = %q, error = %v", selected, err)
+	}
+}
+
+func TestContextualUnavailableIsAnExecutionFailureWithGuidance(t *testing.T) {
+	err := contextualUnavailable("nothing available", "start something")
+	var execution executionError
+	var guidance guidanceError
+	if !errors.As(err, &execution) || !errors.As(err, &guidance) || guidance.guidance != "start something" {
+		t.Fatalf("error = %#v", err)
+	}
+}
+
+func TestCloneStartWarningsExplainLocalOnlyState(t *testing.T) {
+	warnings := cloneStartWarnings(&repository.LocalCheckout{
+		Detached: true,
+		Ahead:    3,
+		Status:   repository.Status{Staged: 1, Unstaged: 2, Untracked: 1},
+	})
+	joined := strings.Join(warnings, "\n")
+	for _, expected := range []string{"not copied", "4 changed", "detached HEAD", "origin default branch"} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("warnings missing %q: %s", expected, joined)
+		}
+	}
+}
+
+func TestCloneStartWarningsReportAheadAndMissingUpstream(t *testing.T) {
+	ahead := strings.Join(cloneStartWarnings(&repository.LocalCheckout{Upstream: "origin/main", Ahead: 2}), "\n")
+	if !strings.Contains(ahead, "2 commit(s) ahead") {
+		t.Fatalf("ahead warnings = %s", ahead)
+	}
+	missing := strings.Join(cloneStartWarnings(&repository.LocalCheckout{}), "\n")
+	if !strings.Contains(missing, "no upstream") {
+		t.Fatalf("missing-upstream warnings = %s", missing)
+	}
+}
 
 func TestSessionCommandsExposeConsistentBoxSelection(t *testing.T) {
 	home := t.TempDir()

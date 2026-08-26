@@ -204,7 +204,7 @@ func TestGitLifecycleCommandsRunDirectlyOnIdentifiedBox(t *testing.T) {
 	if err = os.WriteFile(tmuxMetadata, frameTmuxSessionFields([]string{"$1", "schooner-test", "1720000000", "1720000000", "0", "2", "11111111-1111-4111-8111-111111111111", "shell", "2024-07-03T09:46:40Z", featurePath}), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err = os.WriteFile(tmuxPanes, []byte(fmt.Sprintf("$1\t%d\t%s\n", len(featurePath), featurePath)), 0o600); err != nil {
+	if err = os.WriteFile(tmuxPanes, []byte(fmt.Sprintf("2:$1;%d:%s\n", len(featurePath), featurePath)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	code, _, stderr = run(t.Context(), []string{"worktree", "remove", "feature", "--output", "json", "--no-input"}, testBuild(), nil)
@@ -231,9 +231,9 @@ func frameTmuxSessionFields(fields []string) []byte {
 	var output strings.Builder
 	for index, field := range fields {
 		if index != 0 {
-			output.WriteByte('\t')
+			output.WriteByte(';')
 		}
-		_, _ = fmt.Fprintf(&output, "%d\t%s", len(field), field)
+		_, _ = fmt.Fprintf(&output, "%d:%s", len(field), field)
 	}
 	output.WriteByte('\n')
 	return []byte(output.String())

@@ -228,6 +228,14 @@ type executionError struct{ cause error }
 func (e executionError) Error() string { return e.cause.Error() }
 func (e executionError) Unwrap() error { return e.cause }
 
+type guidanceError struct {
+	cause    error
+	guidance string
+}
+
+func (e guidanceError) Error() string { return e.cause.Error() }
+func (e guidanceError) Unwrap() error { return e.cause }
+
 type usageError struct{ cause error }
 
 func (e usageError) Error() string { return e.cause.Error() }
@@ -287,6 +295,10 @@ func printError(w io.Writer, err error, output string, theme *uitheme.Theme) {
 		return
 	}
 	printHumanError(w, err, theme)
+	var guidance guidanceError
+	if errors.As(err, &guidance) {
+		_ = writeMutedNotice(w, theme, "Next: "+guidance.guidance)
+	}
 	var domain *box.Error
 	if errors.As(err, &domain) {
 		if observed := domain.Context["last_observed_at"]; observed != "" {

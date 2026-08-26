@@ -141,7 +141,18 @@ func runClone(ctx context.Context, streams Streams, global *globalOptions, targe
 	if err != nil {
 		return repository.MutationResult{}, err
 	}
-	return target.CloneRepository(ctx, repository.CloneRequest{Source: source, Branch: branch})
+	result, err := target.CloneRepository(ctx, repository.CloneRequest{Source: source, Branch: branch})
+	return result, withCloneCollisionGuidance(err)
+}
+
+func withCloneCollisionGuidance(err error) error {
+	if err == nil || box.ErrorCode(err) != "conflict" || !strings.Contains(err.Error(), "clone destination") || !strings.Contains(err.Error(), "already exists") {
+		return err
+	}
+	return guidanceError{
+		cause:    err,
+		guidance: "run `schooner worktree list --box <box>` to inspect existing checkouts; Schooner will not overwrite them",
+	}
 }
 
 func runWorktreeMutation(ctx context.Context, streams Streams, global *globalOptions, targets *boxtarget.Resolver, explicit, operation string, args []string, branch string) (repository.MutationResult, error) {

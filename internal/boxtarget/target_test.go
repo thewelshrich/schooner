@@ -82,6 +82,9 @@ func TestResolverRejectsDirectInventoryRootDrift(t *testing.T) {
 func TestTargetValidatesRootsAndNormalizesAdapterErrors(t *testing.T) {
 	adapter := &fakeExecutionAdapter{catalog: repository.Catalog{WorktreeRoot: "/other"}}
 	target := Target{state: &targetState{boxName: "work", worktreeRoot: "/expected", run: adapter}}
+	if target.BoxName() != "work" || (Target{}).BoxName() != "" {
+		t.Fatalf("target names = %q, %q", target.BoxName(), (Target{}).BoxName())
+	}
 	if _, err := target.ListWorktrees(t.Context()); box.ErrorCode(err) != "conflict" || !strings.Contains(err.Error(), "box setup work") {
 		t.Fatalf("root error = %v", err)
 	}
@@ -145,6 +148,9 @@ type fakeExecutionAdapter struct {
 }
 
 func (f *fakeExecutionAdapter) listWorktrees(context.Context) (repository.Catalog, error) {
+	return f.catalog, f.err
+}
+func (f *fakeExecutionAdapter) listContextWorktrees(context.Context) (repository.Catalog, error) {
 	return f.catalog, f.err
 }
 func (*fakeExecutionAdapter) inspectWorktree(context.Context, string) (repository.Inspection, error) {

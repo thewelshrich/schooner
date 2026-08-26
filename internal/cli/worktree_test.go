@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/thewelshrich/schooner/internal/box"
 	"github.com/thewelshrich/schooner/internal/repository"
 )
 
@@ -89,5 +90,19 @@ func TestLifecycleHumanOutputReturnsWriteFailure(t *testing.T) {
 	want := errors.New("write failed")
 	if err := writeLifecycleResult(lifecycleFailingWriter{err: want}, "human", repository.MutationResult{Action: "clone", Path: "/root/repo"}, nil); !errors.Is(err, want) {
 		t.Fatalf("write error = %v", err)
+	}
+}
+
+func TestCloneCollisionAddsHumanGuidanceWithoutChangingStructuredError(t *testing.T) {
+	err := withCloneCollisionGuidance(box.NewError("conflict", `clone destination "/root/schooner/repo" already exists`, nil))
+	var human bytes.Buffer
+	printError(&human, err, "human", nil)
+	if !strings.Contains(human.String(), "Error: clone destination") || !strings.Contains(human.String(), "Next: run `schooner worktree list --box <box>`") {
+		t.Fatalf("human error = %q", human.String())
+	}
+	var structured bytes.Buffer
+	printError(&structured, err, "json", nil)
+	if strings.Contains(structured.String(), "Next:") || !strings.Contains(structured.String(), `"code":"conflict"`) {
+		t.Fatalf("structured error = %q", structured.String())
 	}
 }

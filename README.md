@@ -48,14 +48,13 @@ Then adopt the machine and start persistent work:
 schooner doctor
 schooner box add work-api --ssh work-api
 
-# Clone a repository directly onto it.
-schooner clone git@github.com:owner/repository.git --box work-api
-
-# Start a persistent shell in the remote worktree.
-schooner start repository --box work-api
+# From a local Git checkout, start persistent work. If the repository is not
+# on the box yet, Schooner reviews and offers to clone its network origin.
+cd repository
+schooner start --box work-api
 
 # Disconnect whenever you like, then return to the same tmux session.
-schooner resume repository --box work-api
+schooner resume --box work-api
 ```
 
 `box add` verifies the remote system, installs or checks Git and tmux, and
@@ -131,6 +130,12 @@ store source-host credentials or require a repository configuration file.
 ### Start and resume persistent sessions
 
 ```bash
+# Contextual defaults for everyday use.
+cd /path/to/local/repository
+schooner start --box work-api
+schooner resume --box work-api
+
+# Exact selectors remain available when you need them.
 schooner start repository --box work-api
 schooner sessions --box work-api
 schooner resume repository --box work-api
@@ -141,6 +146,19 @@ schooner shell repository --box work-api
 
 Each worktree has at most one Schooner-managed persistent shell session.
 Unmanaged tmux sessions remain visible and independently usable.
+
+Without a selector, `start` matches the current local checkout to a remote
+repository by its network origin. It uses the remote primary worktree as-is;
+it does not switch that worktree to the local branch. When no match exists,
+Schooner can clone the origin's default branch after showing local dirty,
+unpushed, detached-HEAD, or missing-upstream warnings. Local files and
+unpushed commits are never copied by this flow.
+
+Without a selector, `resume` first chooses the most recently active managed
+live session for the matching repository. If none matches, it chooses the most
+recent managed live session on the selected box. Unmanaged or uncertain tmux
+sessions always require an explicit choice. These decisions use live Git and
+tmux state; Schooner does not persist a local-to-remote repository link.
 
 ### Provision with DigitalOcean
 

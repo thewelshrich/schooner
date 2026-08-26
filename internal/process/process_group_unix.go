@@ -26,6 +26,28 @@ func configureCommandCancellation(command *exec.Cmd) {
 	}
 }
 
+func configureCommandCancellationWithoutProcessGroup(command *exec.Cmd) {
+	command.Cancel = func() error {
+		if command.Process == nil {
+			return os.ErrProcessDone
+		}
+		return cancelInteractiveProcessTreeWithoutGroup(command.Process.Pid)
+	}
+}
+
+func cancelInteractiveProcessTreeWithoutGroup(root int) error {
+	stopErr := syscall.Kill(root, syscall.SIGSTOP)
+	if errors.Is(stopErr, syscall.ESRCH) {
+		stopErr = nil
+	}
+	treeErr := terminateDescendants(root)
+	killErr := syscall.Kill(root, syscall.SIGKILL)
+	if errors.Is(killErr, syscall.ESRCH) {
+		killErr = nil
+	}
+	return errors.Join(stopErr, treeErr, killErr)
+}
+
 func cancelInteractiveProcessTree(root int) error {
 	stopErr := stopProcessGroup(root)
 	if errors.Is(stopErr, os.ErrProcessDone) {
@@ -50,6 +72,12 @@ func cleanupInteractiveProcessTree(command *exec.Cmd) error {
 	}
 	return errors.Join(treeErr, groupErr)
 }
+
+// A foreground child shares the remote runtime's process group, so group-wide
+// cleanup would also kill the runtime and its SSH transport. Context
+// cancellation performs targeted cleanup before the child exits; after an
+// ordinary exit there is no safe process-group boundary left to clean.
+func cleanupInteractiveProcessTreeWithoutGroup(_ *exec.Cmd) error { return nil }
 
 func runInteractiveTerminal(command *exec.Cmd, terminal *os.File) (err error) {
 	parentGroup := syscall.Getpgrp()

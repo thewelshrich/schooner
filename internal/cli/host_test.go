@@ -50,3 +50,17 @@ func TestWriteDoctorResultReturnsSuccessForHealthyReport(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestDoctorExplainsUnsupportedLocalClientCanUseRemoteBoxes(t *testing.T) {
+	var destination bytes.Buffer
+	report := hostruntime.DoctorReport{
+		SchemaVersion:   hostruntime.SchemaVersion,
+		ProtocolVersion: hostruntime.ProtocolVersion,
+		Healthy:         false,
+		Checks:          []hostruntime.Check{{ID: "platform", OK: false, Message: "Platform is darwin/arm64."}},
+	}
+	_ = writeDoctorResult(&destination, "human", report, nil)
+	if !strings.Contains(destination.String(), "This client can still manage remote boxes") || !strings.Contains(destination.String(), "schooner box add") {
+		t.Fatalf("doctor output = %q", destination.String())
+	}
+}

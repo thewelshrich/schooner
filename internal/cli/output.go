@@ -27,6 +27,20 @@ func writeReadySummary(w io.Writer, theme *uitheme.Theme, title string, rows []s
 	return writeSummaryRows(w, theme, rows)
 }
 
+func writeActionSummary(w io.Writer, theme *uitheme.Theme, title string, rows []summaryRow) error {
+	if _, err := fmt.Fprintln(w); err != nil {
+		return err
+	}
+	heading := title
+	if theme != nil && theme.HasColor() {
+		heading = theme.Style(uitheme.Text).Bold(true).Render(title)
+	}
+	if _, err := fmt.Fprintln(w, heading); err != nil {
+		return err
+	}
+	return writeSummaryRows(w, theme, rows)
+}
+
 func writeSummaryRows(w io.Writer, theme *uitheme.Theme, rows []summaryRow) error {
 	if len(rows) == 0 {
 		return nil
