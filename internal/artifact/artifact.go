@@ -66,26 +66,29 @@ type Result struct {
 }
 
 type Config struct {
-	CacheDir    string
-	OverrideDir string
-	BaseURL     string
-	HTTPClient  *http.Client
+	CacheDir       string
+	OverrideDir    string
+	DevelopmentDir string
+	BaseURL        string
+	HTTPClient     *http.Client
 }
 
 type Resolver struct {
-	cacheDir    string
-	overrideDir string
-	baseURL     string
-	client      *http.Client
+	cacheDir       string
+	overrideDir    string
+	developmentDir string
+	baseURL        string
+	client         *http.Client
 }
 
 // DeferredResolver postpones cache discovery until a host artifact is
 // actually requested. Most CLI commands never need the artifact subsystem.
 type DeferredResolver struct {
-	config   Config
-	once     sync.Once
-	resolver *Resolver
-	err      error
+	config        Config
+	defaultConfig bool
+	once          sync.Once
+	resolver      *Resolver
+	err           error
 }
 
 func New(config Config) (*Resolver, error) {
@@ -107,15 +110,20 @@ func New(config Config) (*Resolver, error) {
 		config.HTTPClient = &http.Client{Timeout: 2 * time.Minute}
 	}
 	return &Resolver{
-		cacheDir:    config.CacheDir,
-		overrideDir: config.OverrideDir,
-		baseURL:     strings.TrimRight(config.BaseURL, "/"),
-		client:      config.HTTPClient,
+		cacheDir:       config.CacheDir,
+		overrideDir:    config.OverrideDir,
+		developmentDir: config.DevelopmentDir,
+		baseURL:        strings.TrimRight(config.BaseURL, "/"),
+		client:         config.HTTPClient,
 	}, nil
 }
 
 func NewDefault() (*Resolver, error) {
-	return New(Config{OverrideDir: os.Getenv("SCHOONER_ARTIFACT_DIR")})
+	config, err := defaultConfig()
+	if err != nil {
+		return nil, err
+	}
+	return New(config)
 }
 
 func NewDeferred(config Config) *DeferredResolver {
@@ -123,12 +131,19 @@ func NewDeferred(config Config) *DeferredResolver {
 }
 
 func NewDeferredDefault() *DeferredResolver {
-	return NewDeferred(Config{OverrideDir: os.Getenv("SCHOONER_ARTIFACT_DIR")})
+	return &DeferredResolver{defaultConfig: true}
 }
 
 func (r *DeferredResolver) Resolve(ctx context.Context, version string, platform Platform) (Result, error) {
 	r.once.Do(func() {
-		r.resolver, r.err = New(r.config)
+		config := r.config
+		if r.defaultConfig {
+			config, r.err = defaultConfig()
+			if r.err != nil {
+				return
+			}
+		}
+		r.resolver, r.err = New(config)
 	})
 	if r.err != nil {
 		return Result{}, r.err
@@ -151,9 +166,22 @@ func (r *Resolver) Resolve(ctx context.Context, version string, platform Platfor
 		return Result{}, err
 	}
 	if version == "dev" {
-		if r.overrideDir == "" {
+		directory := r.overrideDir
+		if directory == "" {
+			directory = r.developmentDir
+		}
+		if directory == "" {
 			return Result{}, &Error{Code: CodeInvalidVersion, Message: "development builds require SCHOONER_ARTIFACT_DIR"}
 		}
+		if r.overrideDir == "" {
+			if _, err := os.Stat(filepath.Join(directory, manifestName)); errors.Is(err, os.ErrNotExist) {
+				return Result{}, &Error{Code: CodeUnavailable, Message: "development host runtimes are unavailable; run `schooner dev artifacts` from the Schooner source directory"}
+			} else if err != nil {
+				return Result{}, &Error{Code: CodeInvalidManifest, Message: fmt.Sprintf("inspect checksum manifest %s", filepath.Join(directory, manifestName)), Cause: err}
+			}
+		}
+		name := fileName(version, platform)
+		return resolveDirectory(directory, version, platform, name)
 	} else if !validVersion(version) {
 		return Result{}, &Error{Code: CodeInvalidVersion, Message: fmt.Sprintf("artifact version %q must be a v-prefixed semantic version", version)}
 	}
@@ -171,6 +199,26 @@ func (r *Resolver) Resolve(ctx context.Context, version string, platform Platfor
 		return Result{}, err
 	}
 	return r.download(ctx, version, platform, name, digest)
+}
+
+func defaultConfig() (Config, error) {
+	override := os.Getenv("SCHOONER_ARTIFACT_DIR")
+	if override != "" {
+		return Config{OverrideDir: override}, nil
+	}
+	directory, err := DefaultDevelopmentDirectory()
+	if err != nil {
+		return Config{}, err
+	}
+	return Config{DevelopmentDir: directory}, nil
+}
+
+func DefaultDevelopmentDirectory() (string, error) {
+	root, err := os.UserCacheDir()
+	if err != nil {
+		return "", cacheError("resolve the local cache directory", err)
+	}
+	return filepath.Join(root, "schooner", "artifacts", "dev"), nil
 }
 
 func validatePlatform(platform Platform) error {

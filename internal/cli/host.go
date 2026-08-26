@@ -13,6 +13,7 @@ import (
 	"github.com/thewelshrich/schooner/internal/repository"
 	hostruntime "github.com/thewelshrich/schooner/internal/runtime"
 	"github.com/thewelshrich/schooner/internal/runtime/host"
+	uitheme "github.com/thewelshrich/schooner/internal/ui/theme"
 )
 
 func newHostCommand(streams Streams, options *globalOptions) *cobra.Command {
@@ -324,18 +325,18 @@ func newDoctorCommand(streams Streams, options *globalOptions) *cobra.Command {
 			if err != nil {
 				return executionError{cause: err}
 			}
-			return writeDoctorResult(cmd.OutOrStdout(), options.output, report)
+			return writeDoctorResult(cmd.OutOrStdout(), options.output, report, terminalTheme(options, streams))
 		},
 	}
 }
 
-func writeDoctorResult(w io.Writer, output string, report hostruntime.DoctorReport) error {
+func writeDoctorResult(w io.Writer, output string, report hostruntime.DoctorReport, theme *uitheme.Theme) error {
 	var err error
 	switch output {
 	case "json":
 		err = encodeHostResult(w, report)
 	case "human":
-		err = writeDoctorReport(w, report)
+		err = writeDoctorReport(w, report, theme)
 	default:
 		return usageError{cause: fmt.Errorf("unsupported output format %q (expected human or json)", output)}
 	}
@@ -388,20 +389,35 @@ func encodeHostOperationResult[Request, Result any](writer io.Writer, operation 
 	return encodeHostResult(writer, result)
 }
 
-func writeDoctorReport(w io.Writer, report hostruntime.DoctorReport) error {
+func writeDoctorReport(w io.Writer, report hostruntime.DoctorReport, theme *uitheme.Theme) error {
 	status := "ready"
 	if !report.Healthy {
 		status = "needs attention"
 	}
-	if _, err := fmt.Fprintf(w, "Schooner doctor: %s\n", status); err != nil {
+	heading := "Schooner doctor: " + status
+	if theme != nil && theme.HasColor() {
+		role := uitheme.Success
+		if !report.Healthy {
+			role = uitheme.Warning
+		}
+		heading = theme.Style(role).Bold(true).Render(heading)
+	}
+	if _, err := fmt.Fprintln(w, heading); err != nil {
 		return err
 	}
 	for _, check := range report.Checks {
 		mark := "✓"
+		role := uitheme.Success
 		if !check.OK {
 			mark = "!"
+			role = uitheme.Warning
 		}
-		if _, err := fmt.Fprintf(w, "%s %s\n", mark, check.Message); err != nil {
+		message := check.Message
+		if theme != nil && theme.HasColor() {
+			mark = theme.Style(role).Render(mark)
+			message = theme.Style(uitheme.Text).Render(message)
+		}
+		if _, err := fmt.Fprintf(w, "%s %s\n", mark, message); err != nil {
 			return err
 		}
 	}

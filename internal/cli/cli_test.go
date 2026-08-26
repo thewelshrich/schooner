@@ -291,11 +291,11 @@ func TestVersionHuman(t *testing.T) {
 		t.Fatalf("exit status = %d, want 0", code)
 	}
 
-	want := "Schooner v0.1.0-test\n" +
-		"Commit: abc1234\n" +
-		"Built: 2026-08-24T12:34:56Z\n" +
-		"Go: go1.27.0\n" +
-		"Platform: linux/arm64\n"
+	want := "\n✓ Schooner v0.1.0-test\n" +
+		"  Commit    abc1234\n" +
+		"  Built     2026-08-24T12:34:56Z\n" +
+		"  Go        go1.27.0\n" +
+		"  Platform  linux/arm64\n"
 	if stdout != want {
 		t.Errorf("stdout mismatch\n--- want ---\n%s\n--- got ---\n%s", want, stdout)
 	}
@@ -742,7 +742,7 @@ func TestBoxUseMarksListAndResolvesDefault(t *testing.T) {
 		t.Fatalf("use json: code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 	code, stdout, stderr = run(t.Context(), []string{"box", "use", "beta"}, testBuild(), nil)
-	if code != 0 || stdout != "Default box: beta\n" || stderr != "" {
+	if code != 0 || stdout != "\n✓ Default box: beta\n" || stderr != "" {
 		t.Fatalf("use: code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 	code, stdout, stderr = run(t.Context(), []string{"box", "list", "--output", "json"}, testBuild(), nil)

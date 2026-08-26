@@ -21,6 +21,7 @@ import (
 	localHost "github.com/thewelshrich/schooner/internal/runtime/host"
 	sshRuntime "github.com/thewelshrich/schooner/internal/runtime/ssh"
 	"github.com/thewelshrich/schooner/internal/ui/prompts"
+	uitheme "github.com/thewelshrich/schooner/internal/ui/theme"
 )
 
 const (
@@ -94,7 +95,7 @@ func runWithHostRuntime(ctx context.Context, args []string, streams Streams, bui
 		if errors.As(err, &reported) {
 			return exitFailure
 		}
-		printError(streams.Err, err, options.output)
+		printError(streams.Err, err, options.output, terminalTheme(options, streams))
 		var failure executionError
 		if errors.As(err, &failure) {
 			return exitFailure
@@ -138,7 +139,10 @@ func newRootCommand(build BuildInfo, streams Streams, options *globalOptions) *c
 	root.PersistentFlags().StringVar(&options.color, "color", "auto", "color mode: auto, always, or never")
 	root.PersistentFlags().StringVar(&options.theme, "theme", "auto", "terminal theme: auto, light, or dark")
 	root.PersistentFlags().BoolVar(&options.accessible, "accessible", false, "use screen-reader-friendly prompts and progress")
-	root.AddCommand(newVersionCommand(build, options))
+	root.AddCommand(newVersionCommand(streams, build, options))
+	if defaultString(build.Version, "dev") == "dev" {
+		root.AddCommand(newDevelopmentCommand(options, artifact.BuildDevelopment))
+	}
 	root.AddCommand(newDoctorCommand(streams, options))
 	root.AddCommand(newHostCommand(streams, options))
 	root.AddCommand(newDatabaseCommand(streams, options))
@@ -258,7 +262,7 @@ func normalizedStreams(streams Streams) Streams {
 	return streams
 }
 
-func printError(w io.Writer, err error, output string) {
+func printError(w io.Writer, err error, output string, theme *uitheme.Theme) {
 	if output == "json" {
 		code := box.ErrorCode(err)
 		var usage usageError
@@ -282,17 +286,24 @@ func printError(w io.Writer, err error, output string) {
 		_ = json.NewEncoder(w).Encode(document)
 		return
 	}
-	printHumanError(w, err)
+	printHumanError(w, err, theme)
 	var domain *box.Error
 	if errors.As(err, &domain) {
 		if observed := domain.Context["last_observed_at"]; observed != "" {
-			_, _ = fmt.Fprintf(w, "Last known observation: %s (stale)\n", observed)
-			_, _ = fmt.Fprintf(w, "Last known capabilities: %s, %s; %s; %s\n", domain.Context["last_os"], domain.Context["last_architecture"], domain.Context["last_git"], domain.Context["last_tmux"])
+			_ = writeMutedNotice(w, theme, "Last known observation: "+observed+" (stale)")
+			_ = writeMutedNotice(w, theme, "Last known capabilities: "+domain.Context["last_os"]+", "+domain.Context["last_architecture"]+"; "+domain.Context["last_git"]+"; "+domain.Context["last_tmux"])
 		}
 	}
 }
 
-func printHumanError(w io.Writer, err error) { _, _ = fmt.Fprintf(w, "Error: %v\n", err) }
+func printHumanError(w io.Writer, err error, theme *uitheme.Theme) {
+	prefix, body := "Error:", err.Error()
+	if theme != nil && theme.HasColor() {
+		prefix = theme.Style(uitheme.Error).Render(prefix)
+		body = theme.Style(uitheme.Text).Render(body)
+	}
+	_, _ = fmt.Fprintf(w, "%s %s\n", prefix, body)
+}
 func defaultString(value, fallback string) string {
 	if value == "" {
 		return fallback

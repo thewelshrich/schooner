@@ -7,13 +7,13 @@ import (
 	"fmt"
 	"io"
 	"strconv"
-	"text/tabwriter"
 
 	"github.com/spf13/cobra"
 	"github.com/thewelshrich/schooner/internal/box"
 	"github.com/thewelshrich/schooner/internal/boxtarget"
 	"github.com/thewelshrich/schooner/internal/session"
 	"github.com/thewelshrich/schooner/internal/ui/prompts"
+	uitheme "github.com/thewelshrich/schooner/internal/ui/theme"
 )
 
 func newSessionCommands(streams Streams, global *globalOptions, targets *boxtarget.Resolver) []*cobra.Command {
@@ -115,7 +115,7 @@ func newSessionsCommand(streams Streams, global *globalOptions, targets *boxtarg
 		if err != nil {
 			return executionError{cause: err}
 		}
-		return writeSessions(cmd.OutOrStdout(), global.output, catalog)
+		return writeSessions(cmd.OutOrStdout(), global.output, catalog, terminalTheme(global, streams))
 	}}
 	command.Flags().StringVar(&explicitBox, "box", "", "box name (always uses OpenSSH)")
 	return command
@@ -186,7 +186,7 @@ func newStopSessionCommand(streams Streams, global *globalOptions, targets *boxt
 		if err != nil {
 			return executionError{cause: err}
 		}
-		return writeSessionStop(cmd.OutOrStdout(), global.output, result)
+		return writeSessionStop(cmd.OutOrStdout(), global.output, result, terminalTheme(global, streams))
 	}}
 	command.Flags().StringVar(&explicitBox, "box", "", "box name (always uses OpenSSH)")
 	return command
@@ -312,15 +312,14 @@ func chooseValue(ctx context.Context, streams Streams, global *globalOptions, ti
 	return value, nil
 }
 
-func writeSessions(writer io.Writer, output string, catalog session.Catalog) error {
+func writeSessions(writer io.Writer, output string, catalog session.Catalog, theme *uitheme.Theme) error {
 	if output == "json" {
 		return json.NewEncoder(writer).Encode(struct {
 			SchemaVersion string `json:"schema_version"`
 			session.Catalog
 		}{SchemaVersion: "1", Catalog: catalog})
 	}
-	table := tabwriter.NewWriter(writer, 0, 4, 2, ' ', 0)
-	_, _ = fmt.Fprintln(table, "SESSION\tNAME\tOWNERSHIP\tSTATE\tWORKTREE\tATTACHED")
+	rows := make([][]string, 0, len(catalog.Sessions))
 	for _, value := range catalog.Sessions {
 		identifier := value.ID
 		if identifier == "" {
@@ -334,9 +333,9 @@ func writeSessions(writer io.Writer, output string, catalog session.Catalog) err
 		if value.Ownership == session.Invalid {
 			name = strconv.QuoteToASCII(name)
 		}
-		_, _ = fmt.Fprintf(table, "%s\t%s\t%s\t%s\t%s\t%d\n", identifier, name, value.Ownership, value.Association, worktree, value.AttachedClients)
+		rows = append(rows, []string{identifier, name, string(value.Ownership), string(value.Association), worktree, strconv.Itoa(value.AttachedClients)})
 	}
-	return table.Flush()
+	return writeTable(writer, theme, []string{"SESSION", "NAME", "OWNERSHIP", "STATE", "WORKTREE", "ATTACHED"}, rows)
 }
 
 func writeSessionLogs(writer io.Writer, output string, result session.LogsResult) error {
@@ -350,15 +349,16 @@ func writeSessionLogs(writer io.Writer, output string, result session.LogsResult
 	return err
 }
 
-func writeSessionStop(writer io.Writer, output string, result session.StopResult) error {
+func writeSessionStop(writer io.Writer, output string, result session.StopResult, theme *uitheme.Theme) error {
 	if output == "json" {
 		return json.NewEncoder(writer).Encode(struct {
 			SchemaVersion string `json:"schema_version"`
 			session.StopResult
 		}{SchemaVersion: "1", StopResult: result})
 	}
-	_, err := fmt.Fprintf(writer, "Stopped Session %s. Its Worktree was not changed.\n", result.SessionID)
-	return err
+	return writeReadySummary(writer, theme, "Stopped Session "+result.SessionID, []summaryRow{
+		{Label: "Worktree", Value: "unchanged"},
+	})
 }
 
 func requireInteractiveTerminal(streams Streams, global *globalOptions, command string) error {

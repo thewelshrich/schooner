@@ -159,6 +159,63 @@ func TestResolveUsesVerifiedDevelopmentOverride(t *testing.T) {
 	}
 }
 
+func TestResolveUsesDevelopmentDirectoryWithoutOverride(t *testing.T) {
+	directory := t.TempDir()
+	name := "schooner_dev_linux_amd64"
+	contents := []byte("cached development binary")
+	if err := os.WriteFile(filepath.Join(directory, name), contents, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(directory, manifestName), []byte(fmt.Sprintf("%s  %s\n", checksum(contents), name)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	resolver, err := New(Config{CacheDir: t.TempDir(), DevelopmentDir: directory})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := resolver.Resolve(t.Context(), "dev", Platform{OS: "linux", Arch: "amd64"})
+	if err != nil || result.Path != filepath.Join(directory, name) {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+}
+
+func TestResolveExplainsHowToPrepareDefaultDevelopmentDirectory(t *testing.T) {
+	resolver, err := New(Config{CacheDir: t.TempDir(), DevelopmentDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = resolver.Resolve(t.Context(), "dev", Platform{OS: "linux", Arch: "amd64"})
+	if ErrorCode(err) != CodeUnavailable || !strings.Contains(err.Error(), "schooner dev artifacts") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestDeferredDefaultResolverUsesPreparedDevelopmentCache(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, "cache"))
+	t.Setenv("SCHOONER_ARTIFACT_DIR", "")
+	directory, err := DefaultDevelopmentDirectory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.MkdirAll(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	name := "schooner_dev_linux_arm64"
+	contents := []byte("default cached development binary")
+	if err = os.WriteFile(filepath.Join(directory, name), contents, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(filepath.Join(directory, manifestName), []byte(fmt.Sprintf("%s  %s\n", checksum(contents), name)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	result, err := NewDeferredDefault().Resolve(t.Context(), "dev", Platform{OS: "linux", Arch: "arm64"})
+	if err != nil || result.Path != filepath.Join(directory, name) {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+}
+
 func TestOverrideAndDeferredResolverDoNotRequireCacheHome(t *testing.T) {
 	t.Setenv("HOME", "")
 	t.Setenv("XDG_CACHE_HOME", "")

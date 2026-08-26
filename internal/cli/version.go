@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	uitheme "github.com/thewelshrich/schooner/internal/ui/theme"
 )
 
 const versionSchema = "1"
@@ -21,7 +22,7 @@ type versionDocument struct {
 	Arch          string  `json:"arch"`
 }
 
-func newVersionCommand(build BuildInfo, options *globalOptions) *cobra.Command {
+func newVersionCommand(streams Streams, build BuildInfo, options *globalOptions) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:          "version",
 		Short:        "Show Schooner build information",
@@ -35,7 +36,7 @@ func newVersionCommand(build BuildInfo, options *globalOptions) *cobra.Command {
 
 			switch options.output {
 			case "human":
-				if err := writeHumanVersion(cmd.OutOrStdout(), document); err != nil {
+				if err := writeHumanVersion(cmd.OutOrStdout(), document, terminalTheme(options, streams)); err != nil {
 					return executionError{cause: err}
 				}
 			case "json":
@@ -80,24 +81,17 @@ func makeVersionDocument(build BuildInfo) (versionDocument, error) {
 	return document, nil
 }
 
-func writeHumanVersion(w io.Writer, document versionDocument) error {
+func writeHumanVersion(w io.Writer, document versionDocument, theme *uitheme.Theme) error {
 	builtAt := "unknown"
 	if document.BuiltAt != nil {
 		builtAt = *document.BuiltAt
 	}
-
-	_, err := fmt.Fprintf(
-		w,
-		"Schooner %s\nCommit: %s\nBuilt: %s\nGo: %s\nPlatform: %s/%s\n",
-		document.Version,
-		document.Commit,
-		builtAt,
-		document.GoVersion,
-		document.OS,
-		document.Arch,
-	)
-
-	return err
+	return writeReadySummary(w, theme, "Schooner "+document.Version, []summaryRow{
+		{Label: "Commit", Value: document.Commit},
+		{Label: "Built", Value: builtAt},
+		{Label: "Go", Value: document.GoVersion},
+		{Label: "Platform", Value: document.OS + "/" + document.Arch},
+	})
 }
 
 func writeJSONVersion(w io.Writer, document versionDocument) error {
