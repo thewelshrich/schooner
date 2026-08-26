@@ -33,7 +33,7 @@ func newSessionCommands(streams Streams, global *globalOptions, targets *boxtarg
 
 func newStartSessionCommand(streams Streams, global *globalOptions, targets *boxtarget.Resolver) *cobra.Command {
 	var explicitBox string
-	command := &cobra.Command{Use: "start [worktree-path]", Short: "Start new work in a remote Repository", Long: "Start new work using the current local Repository as context.\n\nWith an explicit Worktree path, Schooner starts that exact Worktree. Without one, it uses a matching remote Repository or offers to clone the local origin.", Args: cobra.MaximumNArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	command := &cobra.Command{Use: "start [worktree-path]", Short: "Open persistent work for a Repository", Long: "Open persistent work for a Repository.\n\nSchooner uses the current local Repository as context. With an explicit Worktree path, it opens that exact Worktree. Without one, it uses a matching remote Repository or offers to clone the local origin. Starting is idempotent: if the Worktree already has a managed live Session, Schooner reuses it.", Args: cobra.MaximumNArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		if err := requireInteractiveTerminal(streams, global, "start"); err != nil {
 			return err
 		}
@@ -79,7 +79,7 @@ func newStartSessionCommand(streams Streams, global *globalOptions, targets *box
 
 func newResumeSessionCommand(streams Streams, global *globalOptions, targets *boxtarget.Resolver) *cobra.Command {
 	var explicitBox string
-	command := &cobra.Command{Use: "resume [worktree-path-or-session-id]", Short: "Resume the most relevant live Session", Long: "Resume active work using the current local Repository as context.\n\nWith an explicit Worktree path or Session ID, Schooner resumes that exact Session. Without one, it prefers the newest managed live Session for the matching remote Repository, then the newest managed live Session on the Box.", Args: cobra.MaximumNArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	command := &cobra.Command{Use: "resume [worktree-path-or-session-id]", Short: "Return to an existing live Session", Long: "Return to an existing live Session using the current local Repository as context.\n\nWith an explicit Worktree path or Session ID, Schooner resumes that exact Session. Without one, it resumes only a Session matching the current local Repository; outside a local Repository, it resumes the newest managed live Session on the Box. Resume never creates a Session.", Args: cobra.MaximumNArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		if err := requireInteractiveTerminal(streams, global, "resume"); err != nil {
 			return err
 		}
@@ -334,13 +334,18 @@ func resolveContextualResume(ctx context.Context, streams Streams, global *globa
 	if err != nil {
 		return "", executionError{cause: err}
 	}
+	if local != nil && local.OriginKey == "" {
+		return "", contextualUnavailable("this local Repository has no matchable network origin", "run `schooner start` to choose or create persistent work for this Repository")
+	}
 	var repositories repository.Catalog
 	var sessions session.Catalog
 	err = prompts.Wait(ctx, promptOptions(streams, global), "Finding live Sessions", func(waitCtx context.Context) error {
 		var listErr error
-		repositories, listErr = listWorktreesForContext(waitCtx, target)
-		if listErr != nil {
-			return listErr
+		if local != nil {
+			repositories, listErr = listWorktreesForContext(waitCtx, target)
+			if listErr != nil {
+				return listErr
+			}
 		}
 		sessions, listErr = target.ListSessions(waitCtx)
 		return listErr
@@ -353,13 +358,7 @@ func resolveContextualResume(ctx context.Context, streams Streams, global *globa
 	}
 	plan := workcontext.PlanResume(local, repositories, sessions)
 	if plan.Incomplete && plan.Mode != workcontext.ResumeUnavailable {
-		_ = writeMutedNotice(streams.Err, terminalTheme(global, streams), "Remote Repository discovery was incomplete; choose a known Session explicitly.")
-	} else if plan.Fallback && plan.Mode != workcontext.ResumeUnavailable {
-		message := "No managed live Session matches this local Repository; using activity on " + targetBoxLabel(target) + " instead."
-		if plan.Mode == workcontext.ResumeChoose {
-			message = "No unambiguous managed live Session matches this local Repository; choose a Session explicitly."
-		}
-		_ = writeMutedNotice(streams.Err, terminalTheme(global, streams), message)
+		_ = writeMutedNotice(streams.Err, terminalTheme(global, streams), "Remote Repository discovery was incomplete; choose a known matching Session explicitly.")
 	}
 	switch plan.Mode {
 	case workcontext.ResumeUse:
@@ -368,7 +367,16 @@ func resolveContextualResume(ctx context.Context, streams Streams, global *globa
 	case workcontext.ResumeChoose:
 		return pickSession(ctx, streams, global, plan.Choices, "Choose a Session to resume")
 	default:
-		return "", contextualUnavailable("no live Session is available to resume", "run `schooner start` to begin work")
+		if local != nil {
+			message := "no managed live Session matches this local Repository"
+			guidance := "run `schooner start` to open persistent work for this Repository"
+			if plan.Incomplete {
+				message = "no matching managed live Session could be selected because remote Repository discovery was incomplete"
+				guidance = "resolve the Box discovery warnings, or run `schooner start` to open persistent work for this Repository"
+			}
+			return "", contextualUnavailable(message, guidance)
+		}
+		return "", contextualUnavailable("no managed live Session is available to resume", "run `schooner start` to open persistent work for a Repository")
 	}
 }
 

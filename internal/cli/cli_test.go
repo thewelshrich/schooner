@@ -51,6 +51,32 @@ func TestHelp(t *testing.T) {
 	}
 }
 
+func TestWorkCommandHelpExplainsLifecycleSemantics(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		command string
+		want    []string
+	}{
+		{command: "start", want: []string{"Open persistent work for a Repository", "Starting is idempotent", "Schooner reuses it"}},
+		{command: "resume", want: []string{"Return to an existing live Session", "resumes only a Session matching", "outside a local Repository", "never creates a Session"}},
+		{command: "clone", want: []string{"Clone a Repository onto a Box", "normal primary Git Worktree"}},
+	} {
+		t.Run(tt.command, func(t *testing.T) {
+			t.Parallel()
+			code, stdout, stderr := run(t.Context(), []string{tt.command, "--help"}, testBuild(), nil)
+			if code != 0 || stderr != "" {
+				t.Fatalf("code=%d stderr=%q", code, stderr)
+			}
+			for _, want := range tt.want {
+				if !strings.Contains(stdout, want) {
+					t.Fatalf("help missing %q:\n%s", want, stdout)
+				}
+			}
+		})
+	}
+}
+
 func TestBoxHelpListsSelectionAndMaintenanceCommands(t *testing.T) {
 	code, stdout, stderr := run(t.Context(), []string{"box", "--help"}, testBuild(), nil)
 	if code != 0 || stderr != "" {

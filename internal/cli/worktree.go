@@ -91,7 +91,7 @@ func newCloneCommand(streams Streams, global *globalOptions, targets *boxtarget.
 	var explicitBox string
 	var branch string
 	command := &cobra.Command{
-		Use: "clone <repository>", Short: "Clone a normal primary Git Worktree", Args: cobra.ExactArgs(1),
+		Use: "clone <repository>", Short: "Clone a Repository onto a Box", Long: "Clone a Repository onto a Box as a normal primary Git Worktree.", Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			result, err := runClone(cmd.Context(), streams, global, targets, explicitBox, args[0], branch)
 			if err != nil {
