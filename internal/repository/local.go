@@ -2,9 +2,11 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -42,11 +44,15 @@ func inspectLocal(ctx context.Context, directory string, commands runner) (*Loca
 	if err != nil {
 		return nil, fmt.Errorf("resolve local working directory: %w", err)
 	}
+	marked, err := hasGitMarker(directory)
+	if err != nil {
+		return nil, fmt.Errorf("inspect local Git metadata: %w", err)
+	}
+	if !marked {
+		return nil, nil
+	}
 	topOutput, err := git(ctx, commands, directory, "rev-parse", "--path-format=absolute", "--show-toplevel")
 	if err != nil {
-		if exitCode(err) == 128 {
-			return nil, nil
-		}
 		return nil, fmt.Errorf("inspect local Git worktree: %w", err)
 	}
 	top := strings.TrimSuffix(string(topOutput), "\n")
@@ -77,7 +83,7 @@ func inspectLocal(ctx context.Context, directory string, commands runner) (*Loca
 	} else if exitCode(headErr) != 128 {
 		return nil, fmt.Errorf("read local HEAD: %w", headErr)
 	}
-	status, err := git(ctx, commands, top, "status", "--porcelain=v2", "-z", "--untracked-files=all", "--ignored=matching")
+	status, err := git(ctx, commands, top, "status", "--porcelain=v2", "-z", "--untracked-files=all")
 	if err != nil {
 		return nil, fmt.Errorf("read local status: %w", err)
 	}
@@ -126,6 +132,20 @@ func inspectLocal(ctx context.Context, directory string, commands runner) (*Loca
 	return checkout, nil
 }
 
+func hasGitMarker(directory string) (bool, error) {
+	for current := directory; ; current = filepath.Dir(current) {
+		if _, err := os.Lstat(filepath.Join(current, ".git")); err == nil {
+			return true, nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return false, err
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return false, nil
+		}
+	}
+}
+
 func sanitizeCloneSource(raw string) string {
 	if raw == "" || hasControl(raw) {
 		return ""
@@ -138,7 +158,7 @@ func sanitizeCloneSource(raw string) string {
 		if colon <= 0 || strings.ContainsRune(raw[:colon], '/') {
 			return ""
 		}
-		return boundedOrigin(strings.TrimSuffix(raw, ".git"))
+		return boundedOrigin(raw)
 	}
 	parsed, err := url.Parse(raw)
 	if err != nil || parsed.Scheme == "" || parsed.Opaque != "" {
@@ -155,7 +175,6 @@ func sanitizeCloneSource(raw string) string {
 	}
 	parsed.RawQuery = ""
 	parsed.Fragment = ""
-	parsed.Path = strings.TrimSuffix(parsed.Path, ".git")
 	return boundedOrigin(parsed.String())
 }
 

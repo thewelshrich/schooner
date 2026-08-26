@@ -32,7 +32,8 @@ func TestInspectLocalObservesContainingCheckoutWithoutPersistingState(t *testing
 	mustGitAt(t, repositoryPath, "config", "user.email", "test@example.com")
 	mustGitAt(t, repositoryPath, "config", "user.name", "Test")
 	mustWrite(t, filepath.Join(repositoryPath, "tracked"), "initial\n")
-	mustGitAt(t, repositoryPath, "add", "tracked")
+	mustWrite(t, filepath.Join(repositoryPath, ".gitignore"), "ignored/\n")
+	mustGitAt(t, repositoryPath, "add", "tracked", ".gitignore")
 	mustGitAt(t, repositoryPath, "commit", "-m", "initial")
 	mustGitAt(t, repositoryPath, "remote", "add", "origin", "https://user:token@example.com/owner/repo.git?credential=secret")
 	nested := filepath.Join(repositoryPath, "nested")
@@ -40,6 +41,10 @@ func TestInspectLocalObservesContainingCheckoutWithoutPersistingState(t *testing
 		t.Fatal(err)
 	}
 	mustWrite(t, filepath.Join(repositoryPath, "untracked"), "local\n")
+	if err := os.Mkdir(filepath.Join(repositoryPath, "ignored"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(repositoryPath, "ignored", "artifact"), "generated\n")
 
 	checkout, err := InspectLocal(t.Context(), nested)
 	if err != nil {
@@ -52,19 +57,19 @@ func TestInspectLocalObservesContainingCheckoutWithoutPersistingState(t *testing
 	if checkout == nil || checkout.TopLevel != wantTopLevel {
 		t.Fatalf("checkout = %+v", checkout)
 	}
-	if checkout.Origin != "https://example.com/owner/repo" || checkout.OriginKey != "example.com/owner/repo" || checkout.CloneSource != "https://example.com/owner/repo" {
+	if checkout.Origin != "https://example.com/owner/repo" || checkout.OriginKey != "example.com/owner/repo" || checkout.CloneSource != "https://example.com/owner/repo.git" {
 		t.Fatalf("origin = %q, key = %q, clone source = %q", checkout.Origin, checkout.OriginKey, checkout.CloneSource)
 	}
-	if checkout.Branch == "" || checkout.Detached || checkout.Upstream != "" || checkout.Status.Untracked != 1 {
+	if checkout.Branch == "" || checkout.Detached || checkout.Upstream != "" || checkout.Status.Untracked != 1 || checkout.Status.Ignored != 0 {
 		t.Fatalf("checkout = %+v", checkout)
 	}
 }
 
 func TestSanitizeCloneSourcePreservesOnlyRequiredSSHUsername(t *testing.T) {
 	cases := map[string]string{
-		"ssh://git:secret@example.com/owner/repo.git?token=secret#fragment": "ssh://git@example.com/owner/repo",
-		"git@example.com:owner/repo.git?token=secret":                       "git@example.com:owner/repo",
-		"https://user:secret@example.com/owner/repo.git?token=secret":       "https://example.com/owner/repo",
+		"ssh://git:secret@example.com/owner/repo.git?token=secret#fragment": "ssh://git@example.com/owner/repo.git",
+		"git@example.com:owner/repo.git?token=secret":                       "git@example.com:owner/repo.git",
+		"https://user:secret@example.com/owner/repo.git?token=secret":       "https://example.com/owner/repo.git",
 		"file:///tmp/repo": "",
 	}
 	for input, want := range cases {
@@ -81,5 +86,14 @@ func TestInspectLocalReturnsNilOutsideGit(t *testing.T) {
 	}
 	if checkout != nil {
 		t.Fatalf("checkout = %+v, want nil", checkout)
+	}
+}
+
+func TestInspectLocalSurfacesMalformedGitMetadata(t *testing.T) {
+	directory := t.TempDir()
+	mustWrite(t, filepath.Join(directory, ".git"), "not valid worktree metadata\n")
+	checkout, err := InspectLocal(t.Context(), directory)
+	if err == nil || checkout != nil {
+		t.Fatalf("checkout = %+v, error = %v", checkout, err)
 	}
 }

@@ -257,14 +257,14 @@ func resolveContextualStart(ctx context.Context, streams Streams, global *global
 	case workcontext.StartClone:
 		return confirmCloneForStart(ctx, streams, global, target, local, plan)
 	default:
-		return "", guidanceError{
-			cause:    box.NewError("not_found", "no remote Repository is available to start", nil),
-			guidance: "add a network origin to this local Repository, or run `schooner clone <origin> --box <box>`",
-		}
+		return "", contextualUnavailable("no remote Repository is available to start", "add a network origin to this local Repository, or run `schooner clone <origin> --box <box>`")
 	}
 }
 
 func confirmCloneForStart(ctx context.Context, streams Streams, global *globalOptions, target boxtarget.Target, local *repository.LocalCheckout, plan workcontext.StartPlan) (string, error) {
+	if !interactionAllowed(streams, global) {
+		return "", usageError{cause: fmt.Errorf("cloning a Repository during start requires confirmation; rerun without --no-input or run `schooner clone` explicitly")}
+	}
 	theme := terminalTheme(global, streams)
 	repositoryName := filepath.Base(local.TopLevel)
 	if err := writeActionSummary(streams.Err, theme, "Create remote checkout", []summaryRow{
@@ -356,10 +356,14 @@ func resolveContextualResume(ctx context.Context, streams Streams, global *globa
 	case workcontext.ResumeChoose:
 		return pickSession(ctx, streams, global, plan.Choices, "Choose a Session to resume")
 	default:
-		return "", guidanceError{
-			cause:    box.NewError("not_found", "no live Session is available to resume", nil),
-			guidance: "run `schooner start` to begin work",
-		}
+		return "", contextualUnavailable("no live Session is available to resume", "run `schooner start` to begin work")
+	}
+}
+
+func contextualUnavailable(message, guidance string) error {
+	return guidanceError{
+		cause:    executionError{cause: box.NewError("not_found", message, nil)},
+		guidance: guidance,
 	}
 }
 

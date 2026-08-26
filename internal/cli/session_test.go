@@ -2,15 +2,36 @@ package cli
 
 import (
 	"bytes"
+	"errors"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/thewelshrich/schooner/internal/boxtarget"
 	"github.com/thewelshrich/schooner/internal/repository"
 	hostruntime "github.com/thewelshrich/schooner/internal/runtime"
 	"github.com/thewelshrich/schooner/internal/runtime/host"
 	"github.com/thewelshrich/schooner/internal/session"
+	"github.com/thewelshrich/schooner/internal/workcontext"
 )
+
+func TestContextualCloneHonorsNoInput(t *testing.T) {
+	var output bytes.Buffer
+	_, err := confirmCloneForStart(t.Context(), Streams{Err: &output, InIsTerminal: true, OutIsTerminal: true, ErrIsTerminal: true}, &globalOptions{output: "human", noInput: true}, boxtarget.Target{}, &repository.LocalCheckout{TopLevel: "/repo"}, workcontext.StartPlan{Mode: workcontext.StartClone, CloneSource: "https://example.com/repo.git"})
+	var usage usageError
+	if !errors.As(err, &usage) || output.Len() != 0 {
+		t.Fatalf("error = %v, output = %q", err, output.String())
+	}
+}
+
+func TestContextualUnavailableIsAnExecutionFailureWithGuidance(t *testing.T) {
+	err := contextualUnavailable("nothing available", "start something")
+	var execution executionError
+	var guidance guidanceError
+	if !errors.As(err, &execution) || !errors.As(err, &guidance) || guidance.guidance != "start something" {
+		t.Fatalf("error = %#v", err)
+	}
+}
 
 func TestCloneStartWarningsExplainLocalOnlyState(t *testing.T) {
 	warnings := cloneStartWarnings(&repository.LocalCheckout{
