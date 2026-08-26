@@ -74,15 +74,16 @@ func newHostCommand(streams Streams, options *globalOptions) *cobra.Command {
 			Args:         cobra.NoArgs,
 			SilenceUsage: true,
 			RunE: func(cmd *cobra.Command, _ []string) error {
-				var request hostruntime.ConfigureRequest
-				if err := readRequiredHostRequest(streams, &request); err != nil {
+				operation := hostruntime.ConfigureOperation()
+				request, err := readHostOperationRequest(streams, operation)
+				if err != nil {
 					return executionError{cause: err}
 				}
 				result, err := runtime.Configure(request)
 				if err != nil {
 					return executionError{cause: err}
 				}
-				return encodeHostResult(cmd.OutOrStdout(), result)
+				return encodeHostOperationResult(cmd.OutOrStdout(), operation, request, result)
 			},
 		},
 	)
@@ -91,22 +92,24 @@ func newHostCommand(streams Streams, options *globalOptions) *cobra.Command {
 		&cobra.Command{
 			Use: "list", Args: cobra.NoArgs, SilenceUsage: true,
 			RunE: func(cmd *cobra.Command, _ []string) error {
-				var request hostruntime.WorktreeRequest
-				if err := readRequiredHostRequest(streams, &request); err != nil {
+				operation := hostruntime.WorktreeListOperation()
+				request, err := readHostOperationRequest(streams, operation)
+				if err != nil {
 					return executionError{cause: err}
 				}
 				result, err := runtime.ListWorktrees(cmd.Context(), request)
 				if err != nil {
 					return executionError{cause: err}
 				}
-				return encodeHostResult(cmd.OutOrStdout(), result)
+				return encodeHostOperationResult(cmd.OutOrStdout(), operation, request, result)
 			},
 		},
 		&cobra.Command{
 			Use: "inspect", Args: cobra.NoArgs, SilenceUsage: true,
 			RunE: func(cmd *cobra.Command, _ []string) error {
-				var request hostruntime.WorktreeRequest
-				if err := readRequiredHostRequest(streams, &request); err != nil {
+				operation := hostruntime.WorktreeInspectOperation()
+				request, err := readHostOperationRequest(streams, operation)
+				if err != nil {
 					return executionError{cause: err}
 				}
 				result, err := runtime.InspectWorktree(cmd.Context(), request)
@@ -122,7 +125,7 @@ func newHostCommand(streams Streams, options *globalOptions) *cobra.Command {
 					}
 					return executionError{cause: err}
 				}
-				return encodeHostResult(cmd.OutOrStdout(), result)
+				return encodeHostOperationResult(cmd.OutOrStdout(), operation, request, result)
 			},
 		},
 	)
@@ -146,48 +149,52 @@ func newHostCommand(streams Streams, options *globalOptions) *cobra.Command {
 	sessions := &cobra.Command{Use: "session", Hidden: true, Args: cobra.NoArgs, RunE: helpRun}
 	sessions.AddCommand(
 		&cobra.Command{Use: "list", Args: cobra.NoArgs, SilenceUsage: true, RunE: func(cmd *cobra.Command, _ []string) error {
-			var request hostruntime.SessionListRequest
-			if err := readRequiredHostRequest(streams, &request); err != nil {
+			operation := hostruntime.SessionListOperation()
+			request, err := readHostOperationRequest(streams, operation)
+			if err != nil {
 				return executionError{cause: err}
 			}
 			result, err := runtime.ListSessions(cmd.Context(), request)
 			if err != nil {
 				return encodeLifecycleError(cmd.OutOrStdout(), request.BoxIdentity, err)
 			}
-			return encodeHostResult(cmd.OutOrStdout(), result)
+			return encodeHostOperationResult(cmd.OutOrStdout(), operation, request, result)
 		}},
 		&cobra.Command{Use: "start", Args: cobra.NoArgs, SilenceUsage: true, RunE: func(cmd *cobra.Command, _ []string) error {
-			var request hostruntime.SessionStartRequest
-			if err := readRequiredHostRequest(streams, &request); err != nil {
+			operation := hostruntime.SessionStartOperation()
+			request, err := readHostOperationRequest(streams, operation)
+			if err != nil {
 				return executionError{cause: err}
 			}
 			result, err := runtime.StartSession(cmd.Context(), request)
 			if err != nil {
 				return encodeLifecycleError(cmd.OutOrStdout(), request.BoxIdentity, err)
 			}
-			return encodeHostResult(cmd.OutOrStdout(), result)
+			return encodeHostOperationResult(cmd.OutOrStdout(), operation, request, result)
 		}},
 		&cobra.Command{Use: "logs", Args: cobra.NoArgs, SilenceUsage: true, RunE: func(cmd *cobra.Command, _ []string) error {
-			var request hostruntime.SessionLogsRequest
-			if err := readRequiredHostRequest(streams, &request); err != nil {
+			operation := hostruntime.SessionLogsOperation()
+			request, err := readHostOperationRequest(streams, operation)
+			if err != nil {
 				return executionError{cause: err}
 			}
 			result, err := runtime.SessionLogs(cmd.Context(), request)
 			if err != nil {
 				return encodeLifecycleError(cmd.OutOrStdout(), request.BoxIdentity, err)
 			}
-			return encodeHostResult(cmd.OutOrStdout(), result)
+			return encodeHostOperationResult(cmd.OutOrStdout(), operation, request, result)
 		}},
 		&cobra.Command{Use: "stop", Args: cobra.NoArgs, SilenceUsage: true, RunE: func(cmd *cobra.Command, _ []string) error {
-			var request hostruntime.SessionTargetRequest
-			if err := readRequiredHostRequest(streams, &request); err != nil {
+			operation := hostruntime.SessionStopOperation()
+			request, err := readHostOperationRequest(streams, operation)
+			if err != nil {
 				return executionError{cause: err}
 			}
 			result, err := runtime.StopSession(cmd.Context(), request)
 			if err != nil {
 				return encodeLifecycleError(cmd.OutOrStdout(), request.BoxIdentity, err)
 			}
-			return encodeHostResult(cmd.OutOrStdout(), result)
+			return encodeHostOperationResult(cmd.OutOrStdout(), operation, request, result)
 		}},
 		&cobra.Command{Use: "resume <request>", Args: cobra.ExactArgs(1), SilenceUsage: true, RunE: func(cmd *cobra.Command, args []string) error {
 			var request hostruntime.SessionTargetRequest
@@ -210,8 +217,9 @@ func newHostCommand(streams Streams, options *globalOptions) *cobra.Command {
 	repositoryCommand.AddCommand(&cobra.Command{
 		Use: "clone", Args: cobra.NoArgs, SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			var request hostruntime.CloneRequest
-			if err := readRequiredHostRequest(streams, &request); err != nil {
+			operation := hostruntime.RepositoryCloneOperation()
+			request, err := readHostOperationRequest(streams, operation)
+			if err != nil {
 				return executionError{cause: err}
 			}
 			request.NonInteractive = options.noInput
@@ -219,7 +227,7 @@ func newHostCommand(streams Streams, options *globalOptions) *cobra.Command {
 			if err != nil {
 				return encodeLifecycleError(cmd.OutOrStdout(), request.BoxIdentity, err)
 			}
-			return encodeHostResult(cmd.OutOrStdout(), result)
+			return encodeHostOperationResult(cmd.OutOrStdout(), operation, request, result)
 		},
 	})
 	cmd.AddCommand(repositoryCommand)
@@ -227,8 +235,9 @@ func newHostCommand(streams Streams, options *globalOptions) *cobra.Command {
 		&cobra.Command{
 			Use: "add", Args: cobra.NoArgs, SilenceUsage: true,
 			RunE: func(cmd *cobra.Command, _ []string) error {
-				var request hostruntime.WorktreeMutationRequest
-				if err := readRequiredHostRequest(streams, &request); err != nil {
+				operation := hostruntime.WorktreeAddOperation()
+				request, err := readHostOperationRequest(streams, operation)
+				if err != nil {
 					return executionError{cause: err}
 				}
 				request.NonInteractive = options.noInput
@@ -236,14 +245,15 @@ func newHostCommand(streams Streams, options *globalOptions) *cobra.Command {
 				if err != nil {
 					return encodeLifecycleError(cmd.OutOrStdout(), request.BoxIdentity, err)
 				}
-				return encodeHostResult(cmd.OutOrStdout(), result)
+				return encodeHostOperationResult(cmd.OutOrStdout(), operation, request, result)
 			},
 		},
 		&cobra.Command{
 			Use: "remove", Args: cobra.NoArgs, SilenceUsage: true,
 			RunE: func(cmd *cobra.Command, _ []string) error {
-				var request hostruntime.WorktreeMutationRequest
-				if err := readRequiredHostRequest(streams, &request); err != nil {
+				operation := hostruntime.WorktreeRemoveOperation()
+				request, err := readHostOperationRequest(streams, operation)
+				if err != nil {
 					return executionError{cause: err}
 				}
 				request.NonInteractive = options.noInput
@@ -251,14 +261,15 @@ func newHostCommand(streams Streams, options *globalOptions) *cobra.Command {
 				if err != nil {
 					return encodeLifecycleError(cmd.OutOrStdout(), request.BoxIdentity, err)
 				}
-				return encodeHostResult(cmd.OutOrStdout(), result)
+				return encodeHostOperationResult(cmd.OutOrStdout(), operation, request, result)
 			},
 		},
 		&cobra.Command{
 			Use: "prune", Args: cobra.NoArgs, SilenceUsage: true,
 			RunE: func(cmd *cobra.Command, _ []string) error {
-				var request hostruntime.WorktreeMutationRequest
-				if err := readRequiredHostRequest(streams, &request); err != nil {
+				operation := hostruntime.WorktreePruneOperation()
+				request, err := readHostOperationRequest(streams, operation)
+				if err != nil {
 					return executionError{cause: err}
 				}
 				request.NonInteractive = options.noInput
@@ -266,7 +277,7 @@ func newHostCommand(streams Streams, options *globalOptions) *cobra.Command {
 				if err != nil {
 					return encodeLifecycleError(cmd.OutOrStdout(), request.BoxIdentity, err)
 				}
-				return encodeHostResult(cmd.OutOrStdout(), result)
+				return encodeHostOperationResult(cmd.OutOrStdout(), operation, request, result)
 			},
 		},
 	)
@@ -358,15 +369,23 @@ func readHostRequest(streams Streams, defaultWorktreeRoot string) (hostruntime.I
 	return request, nil
 }
 
-func readRequiredHostRequest(streams Streams, target any) error {
+func readHostOperationRequest[Request, Result any](streams Streams, operation hostruntime.Operation[Request, Result]) (Request, error) {
+	var zero Request
 	contents, err := io.ReadAll(io.LimitReader(streams.In, hostruntime.MaxMessageBytes+1))
 	if err != nil {
-		return fmt.Errorf("read host request: %w", err)
+		return zero, fmt.Errorf("read host request: %w", err)
 	}
 	if len(strings.TrimSpace(string(contents))) == 0 {
-		return fmt.Errorf("host request is required")
+		return zero, fmt.Errorf("host request is required")
 	}
-	return hostruntime.DecodeStrict(contents, target)
+	return operation.DecodeRequest(contents)
+}
+
+func encodeHostOperationResult[Request, Result any](writer io.Writer, operation hostruntime.Operation[Request, Result], request Request, result Result) error {
+	if err := operation.ValidateResult(request, result); err != nil {
+		return executionError{cause: err}
+	}
+	return encodeHostResult(writer, result)
 }
 
 func writeDoctorReport(w io.Writer, report hostruntime.DoctorReport) error {

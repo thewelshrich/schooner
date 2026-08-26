@@ -81,7 +81,7 @@ internal/repository/          live Git Repository and Worktree inspection
 internal/link/                Local Links and Sync Points
 internal/sync/                explicit push, pull, and sync behavior
 internal/session/             tmux-backed Sessions and optional Agents
-internal/runtime/             typed remote-operation interface
+internal/runtime/             typed remote-operation contracts
 internal/runtime/ssh/         system-OpenSSH transport adapter
 internal/artifact/            verified remote-application artifacts and cache
 internal/provider/            provider contracts and catalogue
@@ -160,6 +160,14 @@ There is no exported `Run(command string)` method and no user-facing
 operations; user input cannot select an arbitrary executable or shell program.
 An explicit `box ssh` remains a separate user-owned interactive handoff to
 OpenSSH and accepts no remote command.
+
+Each bounded JSON operation has one compiled-in typed contract in the runtime
+module. The contract owns its fixed command and capability, strict request
+validation, versioned result envelope, identity correlation, and
+operation-specific result invariants. The private host CLI and OpenSSH runtime
+remain explicit adapters at that seam. Interactive Worktree shell and Session
+resume operations retain their separate terminal-streaming path rather than
+being forced through the bounded JSON contract.
 
 Unknown hosts require explicit approval of the presented fingerprint. Known
 hosts must match, and changed host keys fail closed with recovery guidance.

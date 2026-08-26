@@ -209,7 +209,10 @@ type DoctorReport struct {
 }
 
 func Capabilities() []string {
-	result := []string{CapabilityConfigureV1, CapabilityDoctorV1, CapabilityHelloV1, CapabilityInspectV2, CapabilityRepositoryCloneV1, CapabilitySessionListV1, CapabilitySessionLogsV1, CapabilitySessionResumeV1, CapabilitySessionStartV1, CapabilitySessionStopV1, CapabilityWorktreeAddV1, CapabilityWorktreeInspectV1, CapabilityWorktreeListV1, CapabilityWorktreePruneV1, CapabilityWorktreeRemoveV1, CapabilityWorktreeShellV1}
+	result := []string{CapabilityDoctorV1, CapabilityHelloV1, CapabilityInspectV2, CapabilitySessionResumeV1, CapabilityWorktreeShellV1}
+	for _, operation := range boundedOperationContracts() {
+		result = append(result, operation.capabilityName())
+	}
 	slices.Sort(result)
 	return result
 }
