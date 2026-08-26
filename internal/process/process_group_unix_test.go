@@ -4,7 +4,9 @@ package process
 
 import (
 	"bufio"
+	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"slices"
 	"strconv"
@@ -13,6 +15,28 @@ import (
 	"testing"
 	"time"
 )
+
+func TestMain(m *testing.M) {
+	if os.Getenv("SCHOONER_PROCESS_TREE_CHILD") == "1" {
+		if err := syscall.Setpgid(0, 0); err != nil {
+			os.Exit(2)
+		}
+		fmt.Println(os.Getpid())
+		for {
+			time.Sleep(time.Hour)
+		}
+	}
+	if os.Getenv("SCHOONER_PROCESS_TREE_ROOT") == "1" {
+		child := exec.Command(os.Args[0], "-test.run=^$")
+		child.Env = append(os.Environ(), "SCHOONER_PROCESS_TREE_ROOT=", "SCHOONER_PROCESS_TREE_CHILD=1")
+		child.Stdout = os.Stdout
+		if err := child.Run(); err != nil {
+			os.Exit(2)
+		}
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
+}
 
 func TestContinueProcessGroupResumesStoppedChild(t *testing.T) {
 	command := exec.Command("/bin/sh", "-c", "trap 'printf resumed; exit 0' CONT; printf ready; while :; do :; done")
@@ -51,7 +75,8 @@ func TestContinueProcessGroupResumesStoppedChild(t *testing.T) {
 }
 
 func TestTerminateDescendantsFindsBackgroundProcessGroup(t *testing.T) {
-	command := exec.Command("/bin/sh", "-c", "set -m; sleep 10 & printf '%d\\n' $!; wait")
+	command := exec.Command(os.Args[0], "-test.run=^$")
+	command.Env = append(os.Environ(), "SCHOONER_PROCESS_TREE_ROOT=1", "SCHOONER_PROCESS_TREE_CHILD=")
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	stdout, err := command.StdoutPipe()
 	if err != nil {
@@ -61,6 +86,7 @@ func TestTerminateDescendantsFindsBackgroundProcessGroup(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() {
+		_ = terminateDescendants(command.Process.Pid)
 		_ = syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
 		_ = command.Wait()
 	}()
