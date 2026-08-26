@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "provenance": "Adapted from maintainer-owned legacy Schooner brand assets for the open-source CLI repository.",
+  "assets": [
+    {
+      "path": "schooner-readme-banner.png",
+      "use": "README masthead",
+      "width": 1200,
+      "height": 300,
+      "sha256": "1e4769099d5302ea02053610e55d0fda6bf37496c3df81f44ce9703c9079c613"
+    },
+    {
+      "path": "schooner-social-preview.png",
+      "use": "GitHub social preview",
+      "width": 1200,
+      "height": 630,
+      "sha256": "2adc08f96bfa5902ef5673cd7c5587f29e37e9c8a9abd14770d275fd89523d74"
+    }
+  ]
+}

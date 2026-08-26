@@ -1,0 +1,72 @@
+name: Bug report
+description: Report reproducible incorrect behavior in Schooner
+title: "bug: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve Schooner. Please remove secrets, tokens, hostnames, IP addresses, repository URLs, and usernames from diagnostic output before posting it.
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: Describe the behavior and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How can we reproduce it?
+      description: Include the smallest sequence of commands that demonstrates the problem.
+      placeholder: |
+        1. Run `schooner ...`
+        2. Select ...
+        3. See ...
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics
+      description: Paste redacted output from `schooner version` and `schooner doctor`.
+      render: shell
+    validations:
+      required: true
+  - type: dropdown
+    id: local_os
+    attributes:
+      label: Local operating system
+      options:
+        - macOS
+        - Linux
+        - Other or not applicable
+    validations:
+      required: true
+  - type: dropdown
+    id: remote_os
+    attributes:
+      label: Remote operating system
+      options:
+        - Ubuntu 24.04
+        - Ubuntu 26.04
+        - Other or not applicable
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Include redacted logs or screenshots if they help explain the problem.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues for this problem.
+          required: true
+        - label: I removed secrets and identifying infrastructure details from this report.
+          required: true
+        - label: This is not a security vulnerability.
+          required: true

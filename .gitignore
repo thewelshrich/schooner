@@ -31,4 +31,10 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# Local agent and design-review artifacts
 AGENTS.md
+.impeccable/
+
+# Working research is distilled into tracked documentation and decisions
+/docs/research/

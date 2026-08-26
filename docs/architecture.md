@@ -386,4 +386,4 @@ The repository enforces:
   fixtures before cloud tests;
 - narrowly scoped live-provider tests that are opt-in and resource-cleaning;
 - terminology checks that keep Repository, Worktree, Local Link, Session, Agent,
-  and Sync Point aligned with `DOMAIN.md`.
+  and Sync Point aligned with [`domain.md`](domain.md).

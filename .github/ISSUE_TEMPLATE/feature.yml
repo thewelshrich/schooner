@@ -1,0 +1,43 @@
+name: Feature request
+description: Describe a user problem or improvement for Schooner
+title: "feature: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Schooner has a deliberately focused initial scope. Starting with the user problem helps us decide whether a request belongs in the product and where its design seam should live.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+      description: Tell us who encounters the problem, what they are trying to do, and why the current workflow is insufficient.
+    validations:
+      required: true
+  - type: textarea
+    id: workflow
+    attributes:
+      label: What would a successful workflow feel like?
+      description: Describe the outcome or interaction without requiring a particular implementation.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What alternatives have you tried?
+      description: Include existing SSH, Git, tmux, shell, editor, or provider workflows where relevant.
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Add examples, constraints, or links that help explain the request.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and the product direction for related work.
+          required: true
+        - label: I described the user problem, not only a proposed implementation.
+          required: true

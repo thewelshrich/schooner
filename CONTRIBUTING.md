@@ -1,5 +1,46 @@
 # Contributing to Schooner
 
+Thank you for taking the time to improve Schooner. The project is still early,
+so opening an issue before beginning a large change is the best way to avoid
+duplicated or out-of-direction work.
+
+## Before you start
+
+- Use a bug report for reproducible incorrect behavior.
+- Use a feature request to describe a user problem before proposing a large
+  implementation.
+- Do not open a public issue for a suspected security vulnerability. Follow
+  the security policy once it is published.
+- Keep pull requests focused. Unrelated cleanup is easier to review separately.
+
+## Local setup
+
+Schooner requires Go 1.27.0. Clone the repository and run the local verification
+commands before making a change:
+
+```bash
+go build ./cmd/schooner
+go test ./...
+go vet ./...
+```
+
+See the [development guide](docs/development.md) for remote-runtime artifacts
+and the Ubuntu SSH smoke test.
+
+## Pull requests
+
+1. Create a focused branch from `main`.
+2. Add or update tests for observable behavior.
+3. Run formatting, tests, and vet locally.
+4. Update user documentation when command behavior changes.
+5. Use a conventional commit title, such as `feat:`, `fix:`, `docs:`, or
+   `refactor:`.
+6. Explain the user-visible outcome and important design choices in the pull
+   request description.
+
+By submitting a contribution, you agree that it is licensed under the
+[Apache License 2.0](LICENSE).
+
 ## Design standard
 
 Schooner favors deep modules: substantial behavior behind a small interface at
