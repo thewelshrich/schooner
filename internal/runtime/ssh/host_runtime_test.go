@@ -27,6 +27,29 @@ func TestInteractiveHostHandshakePreservesTransportError(t *testing.T) {
 	}
 }
 
+func TestInteractiveHostRequestUsesStandardPaddedBase64(t *testing.T) {
+	testRemoteShell(t)
+	target := filepath.Join(t.TempDir(), "host-runtime")
+	hello := fmt.Sprintf(`{"schema_version":"1","protocol_version":"1","schooner_version":"v1.2.3","commit":"abc123","box_identity":%q,"os":"linux","architecture":"amd64","capabilities":["worktree.shell.v1"]}`, hostTestIdentity)
+	contents := fmt.Sprintf("#!/bin/sh\ncase \"$1 $2 $3\" in\n  'host hello '*) printf '%%s\\n' '%s' ;;\n  'host worktree shell') printf '%%s\\n' \"$4\" ;;\n  *) exit 64 ;;\nesac\n", hello)
+	if err := os.WriteFile(target, []byte(contents), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runtime := NewHost(testSSHExecutable(t), nil, "v1.2.3", nil)
+	var stdout strings.Builder
+	result, err := runtime.OpenWorktreeShell(t.Context(), box.Connection{Destination: "trusted-host"}, box.HostRuntime{Path: target}, hostTestIdentity, "/home/alice/worktrees", "repo", TerminalIO{Out: &stdout})
+	if err != nil || result.ExitCode != 0 {
+		t.Fatalf("interactive shell = %+v, error = %v", result, err)
+	}
+	var request hostruntime.WorktreeShellRequest
+	if err = json.Unmarshal([]byte(strings.TrimSpace(stdout.String())), &request); err != nil {
+		t.Fatalf("decoded request %q: %v", stdout.String(), err)
+	}
+	if request.WorktreeRoot != "/home/alice/worktrees" || request.Worktree != "repo" {
+		t.Fatalf("request = %+v", request)
+	}
+}
+
 func TestCloneRepositoryUsesTypedHostLifecycleOperation(t *testing.T) {
 	testRemoteShell(t)
 	target := filepath.Join(t.TempDir(), "host-runtime")

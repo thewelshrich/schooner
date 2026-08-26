@@ -3,7 +3,6 @@ package ssh
 import (
 	"context"
 	"crypto/rand"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -463,12 +462,11 @@ func (r *Runtime) openHostInteractive(ctx context.Context, connection box.Connec
 	if err != nil {
 		return ShellResult{}, box.NewError("internal", "encode interactive host operation request", err)
 	}
-	encoded := base64.RawURLEncoding.EncodeToString(payload)
 	hostOperation := operation
 	if connection.BatchMode {
 		hostOperation = "--no-input " + hostOperation
 	}
-	command := fixedShellCommand(`runtime_path=$(printf %s "$1" | base64 -d) || exit 64; request=$(printf %s "$2" | base64 -d) || exit 64; exec "$runtime_path" `+hostOperation+` "$request"`, installed.Path, encoded)
+	command := fixedShellCommand(`runtime_path=$(printf %s "$1" | base64 -d) || exit 64; request=$(printf %s "$2" | base64 -d) || exit 64; exec "$runtime_path" `+hostOperation+` "$request"`, installed.Path, string(payload))
 	return r.openInteractiveCommand(ctx, connection, command, terminal)
 }
 

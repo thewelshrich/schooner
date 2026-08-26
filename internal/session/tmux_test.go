@@ -314,6 +314,41 @@ func TestServiceStartsReusesCapturesAndStopsManagedSession(t *testing.T) {
 	}
 }
 
+func TestStartReusesExactWorktreeOmittedFromBoundedDiscovery(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "worktrees")
+	worktree := filepath.Join(root, "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "repo")
+	if output, err := exec.Command("git", "init", worktree).CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, output)
+	}
+	canonicalRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonicalWorktree, err := filepath.EvalSymlinks(worktree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeTmux{
+		path: canonicalWorktree,
+		row:  "$4\tmanaged\t1720000000\t1720000000\t0\t" + SchemaVersion + "\t" + testSessionID + "\tshell\t2024-07-03T09:46:40Z\t" + canonicalWorktree + "\n",
+	}
+	manager, err := New(canonicalRoot, filepath.Join(t.TempDir(), "operations", "git"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.commands = fake
+
+	result, err := manager.Start(t.Context(), canonicalWorktree)
+	if err != nil || result.Created || result.Session.ID != testSessionID || result.Session.WorktreePath != canonicalWorktree {
+		t.Fatalf("start = %+v, error = %v", result, err)
+	}
+	for _, call := range fake.calls {
+		if len(call) > 1 && call[1] == "new-session" {
+			t.Fatalf("duplicate Session creation attempted: %v", call)
+		}
+	}
+}
+
 func TestLogsRetainNewestOutputWhenByteBoundIsExceeded(t *testing.T) {
 	root, worktree := initializeSessionWorktree(t)
 	fake := &fakeTmux{

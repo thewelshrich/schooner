@@ -181,6 +181,10 @@ func (use TmuxUse) ManagedSessions(ctx context.Context, worktreePath string) ([]
 }
 
 func (s *Service) List(ctx context.Context) (Catalog, error) {
+	return s.list(ctx, nil)
+}
+
+func (s *Service) list(ctx context.Context, exact *liveWorktree) (Catalog, error) {
 	rows, err := listRows(ctx, s.commands)
 	if err != nil {
 		return Catalog{}, err
@@ -194,6 +198,19 @@ func (s *Service) List(ctx context.Context) (Catalog, error) {
 		return Catalog{}, err
 	}
 	worktrees := flattenWorktrees(live)
+	if exact != nil {
+		found := false
+		for _, worktree := range worktrees {
+			if worktree.path == exact.path {
+				found = true
+				break
+			}
+		}
+		if !found {
+			worktrees = append(worktrees, *exact)
+			sort.Slice(worktrees, func(i, j int) bool { return len(worktrees[i].path) > len(worktrees[j].path) })
+		}
+	}
 	result := Catalog{WorktreeRoot: live.WorktreeRoot, Sessions: make([]Session, 0, len(rows))}
 	for _, row := range rows {
 		value := classifyRow(row)
@@ -233,7 +250,11 @@ func (s *Service) Start(ctx context.Context, selector string) (StartResult, erro
 	if err != nil {
 		return StartResult{}, err
 	}
-	catalog, err := s.List(ctx)
+	catalog, err := s.list(ctx, &liveWorktree{
+		path:     inspection.Worktree.Path,
+		relative: inspection.Worktree.RelativePath,
+		common:   inspection.Repository.CommonDirectory,
+	})
 	if err != nil {
 		return StartResult{}, err
 	}
