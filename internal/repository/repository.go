@@ -110,7 +110,6 @@ type Worktree struct {
 type Repository struct {
 	CommonDirectory string     `json:"common_directory"`
 	Origin          string     `json:"origin,omitempty"`
-	OriginKey       string     `json:"origin_key,omitempty"`
 	Primary         *Worktree  `json:"primary,omitempty"`
 	Linked          []Worktree `json:"linked"`
 }
@@ -160,7 +159,6 @@ func (commandRunner) Run(ctx context.Context, name string, arguments ...string) 
 type observation struct {
 	repository string
 	origin     string
-	originKey  string
 	worktree   Worktree
 }
 
@@ -187,12 +185,11 @@ func discover(ctx context.Context, root string, commands runner) (Catalog, error
 		}
 		group := groups[item.repository]
 		if group == nil {
-			group = &Repository{CommonDirectory: item.repository, Origin: item.origin, OriginKey: item.originKey, Linked: []Worktree{}}
+			group = &Repository{CommonDirectory: item.repository, Origin: item.origin, Linked: []Worktree{}}
 			groups[item.repository] = group
 		}
 		if group.Origin == "" {
 			group.Origin = item.origin
-			group.OriginKey = item.originKey
 		}
 		if item.worktree.Kind == Primary {
 			copy := item.worktree
@@ -244,7 +241,6 @@ func inspect(ctx context.Context, root, selector string, commands runner) (Inspe
 		repository = repositoryRelationship(catalog, latest)
 	}
 	repository.Origin = latest.origin
-	repository.OriginKey = latest.originKey
 	selectedPresent := false
 	if repository.Primary != nil && repository.Primary.Path == latest.worktree.Path {
 		copy := latest.worktree
@@ -275,7 +271,7 @@ func repositoryRelationship(catalog Catalog, item observation) Repository {
 			return candidate
 		}
 	}
-	repository := Repository{CommonDirectory: item.repository, Origin: item.origin, OriginKey: item.originKey, Linked: []Worktree{}}
+	repository := Repository{CommonDirectory: item.repository, Origin: item.origin, Linked: []Worktree{}}
 	if item.worktree.Kind == Primary {
 		copy := item.worktree
 		repository.Primary = &copy
@@ -496,15 +492,13 @@ func inspectCandidate(ctx context.Context, root, candidate string, commands runn
 		return observation{}, err
 	}
 	origin := ""
-	originKey := ""
 	if rawOrigin, originErr := git(ctx, commands, canonical, "remote", "get-url", "origin"); originErr == nil {
 		raw := strings.TrimSpace(string(rawOrigin))
 		origin = sanitizeOrigin(raw)
-		originKey = OriginKey(raw)
 	} else if exitCode(originErr) != 2 {
 		return observation{}, fmt.Errorf("read origin: %w", originErr)
 	}
-	return observation{repository: commonDirectory, origin: origin, originKey: originKey, worktree: worktree}, nil
+	return observation{repository: commonDirectory, origin: origin, worktree: worktree}, nil
 }
 
 type member struct {
@@ -722,7 +716,11 @@ func sanitizeOrigin(raw string) string {
 		if parsed.Opaque != "" {
 			return ""
 		}
-		parsed.User = nil
+		if strings.EqualFold(parsed.Scheme, "ssh") && parsed.User != nil {
+			parsed.User = url.User(parsed.User.Username())
+		} else {
+			parsed.User = nil
+		}
 		parsed.RawQuery = ""
 		parsed.Fragment = ""
 		parsed.Path = strings.TrimSuffix(parsed.Path, ".git")
@@ -736,8 +734,12 @@ func sanitizeOrigin(raw string) string {
 	}
 	if colon := scpPathSeparator(raw); colon > 0 && !strings.ContainsRune(raw[:colon], '/') {
 		if at := strings.LastIndexByte(raw[:colon], '@'); at >= 0 {
-			raw = raw[at+1:]
+			username := raw[:at]
+			if originIdentityUsername(username) == "" && username != "git" {
+				return ""
+			}
 		}
+		return boundedOrigin(strings.TrimSuffix(raw, ".git"))
 	}
 	return boundedOrigin(strings.TrimSuffix(raw, ".git"))
 }

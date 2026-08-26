@@ -67,6 +67,14 @@ func TestOriginKeyMatchesBracketedIPv6SCPAndSSHForms(t *testing.T) {
 	}
 }
 
+func TestOriginKeyDistinguishesAbsoluteAndRelativeSCPPaths(t *testing.T) {
+	absolute := OriginKey("git@example.com:/srv/repo.git")
+	relative := OriginKey("git@example.com:srv/repo.git")
+	if absolute != "example.com//srv/repo" || relative != "example.com/srv/repo" || absolute == relative {
+		t.Fatalf("absolute = %q, relative = %q", absolute, relative)
+	}
+}
+
 func TestInspectLocalObservesContainingCheckoutWithoutPersistingState(t *testing.T) {
 	repositoryPath := filepath.Join(t.TempDir(), "repo")
 	mustGit(t, "init", repositoryPath)
@@ -110,7 +118,7 @@ func TestInspectLocalObservesContainingCheckoutWithoutPersistingState(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if checkout.Origin != "ssh://example.com/owner/repo" || checkout.OriginKey != "alice@example.com/owner/repo" || checkout.CloneSource != "ssh://alice@example.com/owner/repo.git" {
+	if checkout.Origin != "ssh://alice@example.com/owner/repo" || checkout.OriginKey != "alice@example.com/owner/repo" || checkout.CloneSource != "ssh://alice@example.com/owner/repo.git" {
 		t.Fatalf("SSH origin = %q, key = %q, clone source = %q", checkout.Origin, checkout.OriginKey, checkout.CloneSource)
 	}
 }
@@ -120,6 +128,7 @@ func TestSanitizeCloneSourcePreservesOnlyRequiredSSHUsername(t *testing.T) {
 		"ssh://git:secret@example.com/owner/repo.git?token=secret#fragment": "ssh://git@example.com/owner/repo.git",
 		"git@example.com:owner/repo.git?token=secret":                       "git@example.com:owner/repo.git",
 		"https://user:secret@example.com/owner/repo.git?token=secret":       "https://example.com/owner/repo.git",
+		"alice:secret@example.com:owner/repo.git":                           "",
 		"file:///tmp/repo": "",
 	}
 	for input, want := range cases {

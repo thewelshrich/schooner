@@ -57,11 +57,8 @@ func TestDiscoverGroupsPrimaryAndLinkedWorktreesFromGit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := catalog.Repositories[0].Origin; got != "ssh://example.com/owner/repo" {
+	if got := catalog.Repositories[0].Origin; got != "ssh://alice@example.com/owner/repo" {
 		t.Fatalf("SSH origin = %q", got)
-	}
-	if got := catalog.Repositories[0].OriginKey; got != "alice@example.com/owner/repo" {
-		t.Fatalf("SSH origin key = %q", got)
 	}
 }
 
@@ -401,12 +398,18 @@ func TestRequiredWarningReplacesLastBoundedWarning(t *testing.T) {
 	}
 }
 
-func TestSanitizeOriginRemovesUserInfoFromEveryURI(t *testing.T) {
-	if got := sanitizeOrigin("ssh://alice:secret@example.com/owner/repo.git?token=x#fragment"); got != "ssh://example.com/owner/repo" {
+func TestSanitizeOriginRetainsOnlyRequiredSSHUserInfo(t *testing.T) {
+	if got := sanitizeOrigin("ssh://alice:secret@example.com/owner/repo.git?token=x#fragment"); got != "ssh://alice@example.com/owner/repo" {
 		t.Fatalf("origin = %q", got)
 	}
-	if got := sanitizeOrigin("alice@example.com:owner/repo.git?token=x#fragment"); got != "example.com:owner/repo" {
+	if got := sanitizeOrigin("alice@example.com:owner/repo.git?token=x#fragment"); got != "alice@example.com:owner/repo" {
 		t.Fatalf("SCP origin = %q", got)
+	}
+	if got := sanitizeOrigin("https://alice:secret@example.com/owner/repo.git?token=x#fragment"); got != "https://example.com/owner/repo" {
+		t.Fatalf("HTTPS origin = %q", got)
+	}
+	if got := sanitizeOrigin("alice:secret@example.com:owner/repo.git"); got != "" {
+		t.Fatalf("invalid SCP origin = %q", got)
 	}
 	if got := sanitizeOrigin("ssh://example.com/" + strings.Repeat("é", maxOriginBytes)); got != "" {
 		t.Fatalf("oversized origin length = %d", len(got))

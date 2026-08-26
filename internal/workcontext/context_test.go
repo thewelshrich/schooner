@@ -26,8 +26,8 @@ func TestPlanStartUsesMatchingPrimaryAsIs(t *testing.T) {
 func TestPlanStartMatchesNonDefaultSSHUsername(t *testing.T) {
 	primary := repository.Worktree{Path: "/remote/repo", RelativePath: "repo", Branch: "main"}
 	catalog := repository.Catalog{Repositories: []repository.Repository{
-		{Origin: "ssh://example.com/owner/repo", OriginKey: "bob@example.com/owner/repo", CommonDirectory: "/bob/.git", Primary: &repository.Worktree{Path: "/remote/bob", RelativePath: "bob"}},
-		{Origin: "ssh://example.com/owner/repo", OriginKey: "alice@example.com/owner/repo", CommonDirectory: "/alice/.git", Primary: &primary},
+		{Origin: "ssh://bob@example.com/owner/repo", CommonDirectory: "/bob/.git", Primary: &repository.Worktree{Path: "/remote/bob", RelativePath: "bob"}},
+		{Origin: "ssh://alice@example.com/owner/repo", CommonDirectory: "/alice/.git", Primary: &primary},
 	}}
 	local := &repository.LocalCheckout{OriginKey: "alice@example.com/owner/repo"}
 

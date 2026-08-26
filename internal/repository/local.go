@@ -154,9 +154,15 @@ func sanitizeCloneSource(raw string) string {
 		if index := strings.IndexAny(raw, "?#"); index >= 0 {
 			raw = raw[:index]
 		}
-		colon := strings.IndexByte(raw, ':')
+		colon := scpPathSeparator(raw)
 		if colon <= 0 || strings.ContainsRune(raw[:colon], '/') {
 			return ""
+		}
+		if at := strings.LastIndexByte(raw[:colon], '@'); at >= 0 {
+			username := raw[:at]
+			if originIdentityUsername(username) == "" && username != "git" {
+				return ""
+			}
 		}
 		return boundedOrigin(raw)
 	}
@@ -204,7 +210,7 @@ func OriginKey(origin string) string {
 			}
 		}
 		host = normalizeSCPHost(host)
-		path := cleanOriginPath(origin[colon+1:])
+		path := cleanSCPOriginPath(origin[colon+1:])
 		if host == "" || path == "" {
 			return ""
 		}
@@ -251,6 +257,15 @@ func cleanOriginPath(value string) string {
 	return value
 }
 
+func cleanSCPOriginPath(value string) string {
+	absolute := strings.HasPrefix(value, "/")
+	value = cleanOriginPath(value)
+	if absolute && value != "" {
+		return "/" + value
+	}
+	return value
+}
+
 func originIdentityUsername(username string) string {
 	// "git" is the conventional transport account used by hosted forges, so
 	// omitting it keeps their HTTPS and SSH clone forms equivalent. Other SSH
@@ -284,7 +299,11 @@ func scpPathSeparator(value string) int {
 		}
 		return end + 1
 	}
-	return strings.IndexByte(value, ':')
+	separator := strings.IndexByte(value[hostStart:], ':')
+	if separator < 0 {
+		return -1
+	}
+	return hostStart + separator
 }
 
 func normalizeSCPHost(host string) string {
