@@ -75,6 +75,7 @@ type Session struct {
 	Association               AssociationState `json:"association"`
 	SchoonerMetadata          bool             `json:"-"`
 	LegacyMetadata            bool             `json:"-"`
+	MetadataWorktreePath      string           `json:"-"`
 }
 
 type Catalog struct {
@@ -148,13 +149,17 @@ func (use TmuxUse) ManagedSessions(ctx context.Context, worktreePath string) ([]
 	if err != nil {
 		return nil, err
 	}
+	panes, err := listPanes(ctx, use.commands)
+	if err != nil {
+		return nil, err
+	}
 	result := make([]string, 0)
 	for _, row := range rows {
 		parsed := classifyRow(row)
 		if parsed.Ownership == Invalid && row.hasSchoonerMetadata() {
 			return nil, fmt.Errorf("tmux contains invalid Schooner Session metadata")
 		}
-		if parsed.Ownership == Managed && parsed.WorktreePath == worktreePath {
+		if parsed.Ownership == Managed && (parsed.WorktreePath == worktreePath || panesUsePath(panes[parsed.TmuxID], worktreePath)) {
 			result = append(result, parsed.ID)
 		}
 	}
@@ -180,7 +185,7 @@ func (s *Service) List(ctx context.Context) (Catalog, error) {
 		value := classifyRow(row)
 		switch value.Ownership {
 		case Managed:
-			associateManaged(&value, worktrees)
+			associateManaged(&value, panes[value.TmuxID], worktrees)
 		case Unmanaged:
 			associateUnmanaged(&value, panes[value.TmuxID], worktrees)
 		case Invalid:
@@ -264,7 +269,7 @@ func (s *Service) Start(ctx context.Context, selector string) (StartResult, erro
 			break
 		}
 	}
-	associateManaged(&value, flattenWorktrees(repository.Catalog{Repositories: []repository.Repository{inspection.Repository}}))
+	associateManaged(&value, nil, flattenWorktrees(repository.Catalog{Repositories: []repository.Repository{inspection.Repository}}))
 	if value.Ownership != Managed || value.ID != id || value.WorktreePath != inspection.Worktree.Path || value.Association != AssociationLive {
 		return StartResult{}, &repository.Error{Code: repository.CodeOutcomeUnknown, Message: "tmux Session metadata was not committed safely"}
 	}
@@ -364,7 +369,8 @@ func (s *Service) Logs(ctx context.Context, id string, lines int) (LogsResult, e
 		}
 		return LogsResult{}, &repository.Error{Code: repository.CodeNotFound, Message: "managed Session is no longer running", Cause: err}
 	}
-	return LogsResult{SessionID: id, Lines: lines, Truncated: result.Truncated, Content: string(result.Stdout)}, nil
+	content, lineTruncated := trimLastLines(string(result.Stdout), lines)
+	return LogsResult{SessionID: id, Lines: lines, Truncated: result.Truncated || lineTruncated, Content: content}, nil
 }
 
 func (s *Service) Stop(ctx context.Context, id string) (StopResult, error) {
@@ -435,12 +441,16 @@ func managedActionArguments(value Session, action, refusal string) []string {
 }
 
 func managedSessionCondition(value Session) string {
+	metadataWorktreePath := value.MetadataWorktreePath
+	if metadataWorktreePath == "" {
+		metadataWorktreePath = value.WorktreePath
+	}
 	checks := []string{
 		fmt.Sprintf("#{==:#{%s},%s}", SchemaOption, SchemaVersion),
 		fmt.Sprintf("#{==:#{%s},%s}", IDOption, tmuxFormatLiteral(value.ID)),
 		fmt.Sprintf("#{==:#{%s},%s}", KindOption, KindShell),
 		fmt.Sprintf("#{==:#{%s},%s}", CreatedAtOption, value.CreatedAt.UTC().Format(time.RFC3339)),
-		fmt.Sprintf("#{==:#{%s},%s}", WorktreePathOption, tmuxFormatLiteral(value.WorktreePath)),
+		fmt.Sprintf("#{==:#{%s},%s}", WorktreePathOption, tmuxFormatLiteral(metadataWorktreePath)),
 	}
 	if value.LegacyMetadata {
 		checks = []string{
@@ -448,7 +458,7 @@ func managedSessionCondition(value Session) string {
 			fmt.Sprintf("#{==:#{%s},%s}", IDOption, tmuxFormatLiteral(value.ID)),
 			fmt.Sprintf("#{==:#{%s},}", KindOption),
 			fmt.Sprintf("#{==:#{%s},}", CreatedAtOption),
-			fmt.Sprintf("#{==:#{%s},%s}", WorktreePathOption, tmuxFormatLiteral(value.WorktreePath)),
+			fmt.Sprintf("#{==:#{%s},%s}", WorktreePathOption, tmuxFormatLiteral(metadataWorktreePath)),
 		}
 	}
 	condition := checks[len(checks)-1]
@@ -489,23 +499,40 @@ func listRows(ctx context.Context, commands commandRunner) ([]tmuxRow, error) {
 }
 
 func sessionListFormat() string {
-	return strings.Join([]string{"#{session_id}", "#{session_name}", "#{session_created}", "#{session_activity}", "#{session_attached}", "#{" + SchemaOption + "}", "#{" + IDOption + "}", "#{" + KindOption + "}", "#{" + CreatedAtOption + "}", "#{" + WorktreePathOption + "}"}, "\t")
+	fields := []string{"session_id", "session_name", "session_created", "session_activity", "session_attached", SchemaOption, IDOption, KindOption, CreatedAtOption, WorktreePathOption}
+	framed := make([]string, 0, len(fields)*2)
+	for _, field := range fields {
+		framed = append(framed, "#{n:"+field+"}", "#{"+field+"}")
+	}
+	return strings.Join(framed, "\t")
 }
 
 func parseRows(output []byte) ([]tmuxRow, error) {
-	text := strings.TrimSuffix(strings.ReplaceAll(string(output), "\r\n", "\n"), "\n")
-	if text == "" {
-		return []tmuxRow{}, nil
-	}
-	lines := strings.Split(text, "\n")
-	if len(lines) > maxSessions {
-		return nil, &repository.Error{Code: repository.CodeOutcomeUnknown, Message: "tmux Session count exceeded 256"}
-	}
-	rows := make([]tmuxRow, 0, len(lines))
-	for _, line := range lines {
-		fields := strings.Split(line, "\t")
-		if len(fields) != 10 {
-			return nil, errors.New("tmux returned malformed Session metadata")
+	rows := make([]tmuxRow, 0)
+	for len(output) > 0 {
+		if len(rows) >= maxSessions {
+			return nil, &repository.Error{Code: repository.CodeOutcomeUnknown, Message: "tmux Session count exceeded 256"}
+		}
+		fields := make([]string, 10)
+		for index := range fields {
+			separator := bytes.IndexByte(output, '\t')
+			if separator < 0 {
+				return nil, errors.New("tmux returned malformed Session metadata")
+			}
+			length, err := strconv.Atoi(string(output[:separator]))
+			start := separator + 1
+			if err != nil || length < 0 || length > maxMetadataBytes || start+length >= len(output) {
+				return nil, errors.New("tmux returned malformed Session metadata")
+			}
+			fields[index] = string(output[start : start+length])
+			delimiter := byte('\t')
+			if index == len(fields)-1 {
+				delimiter = '\n'
+			}
+			if output[start+length] != delimiter {
+				return nil, errors.New("tmux returned malformed Session metadata")
+			}
+			output = output[start+length+1:]
 		}
 		rows = append(rows, tmuxRow{fields[0], fields[1], fields[2], fields[3], fields[4], fields[5], fields[6], fields[7], fields[8], fields[9]})
 	}
@@ -527,6 +554,7 @@ func classifyRow(row tmuxRow) Session {
 	}
 	if row.schema == LegacySchemaVersion && validLegacyID(row.id) && row.kind == "" && row.managedCreated == "" && canonicalAbsolute(row.worktree) {
 		value.Ownership, value.ID, value.Kind, value.WorktreePath = Managed, row.id, KindShell, row.worktree
+		value.MetadataWorktreePath = row.worktree
 		value.LegacyMetadata = true
 		return value
 	}
@@ -537,6 +565,7 @@ func classifyRow(row tmuxRow) Session {
 		return value
 	}
 	value.Ownership, value.ID, value.Kind, value.CreatedAt, value.WorktreePath = Managed, row.id, row.kind, managedCreated.UTC(), row.worktree
+	value.MetadataWorktreePath = row.worktree
 	return value
 }
 
@@ -604,7 +633,7 @@ func flattenWorktrees(catalog repository.Catalog) []liveWorktree {
 	return result
 }
 
-func associateManaged(value *Session, worktrees []liveWorktree) {
+func associateManaged(value *Session, panes []string, worktrees []liveWorktree) {
 	for _, worktree := range worktrees {
 		if value.WorktreePath == worktree.path {
 			value.WorktreeRelativePath = worktree.relative
@@ -613,7 +642,45 @@ func associateManaged(value *Session, worktrees []liveWorktree) {
 			return
 		}
 	}
+	if len(panes) != 0 {
+		moved := Session{Ownership: Managed}
+		associateUnmanaged(&moved, panes, worktrees)
+		if moved.Association == AssociationLive {
+			value.WorktreePath = moved.WorktreePath
+			value.WorktreeRelativePath = moved.WorktreeRelativePath
+			value.RepositoryCommonDirectory = moved.RepositoryCommonDirectory
+			value.Association = AssociationLive
+			return
+		}
+	}
 	value.Association = AssociationMissing
+}
+
+func panesUsePath(panes []string, worktreePath string) bool {
+	for _, pane := range panes {
+		relative, err := filepath.Rel(worktreePath, pane)
+		if err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
+}
+
+func trimLastLines(content string, maximum int) (string, bool) {
+	if content == "" {
+		return "", false
+	}
+	trailingNewline := strings.HasSuffix(content, "\n")
+	text := strings.TrimSuffix(content, "\n")
+	lines := strings.Split(text, "\n")
+	if len(lines) <= maximum {
+		return content, false
+	}
+	trimmed := strings.Join(lines[len(lines)-maximum:], "\n")
+	if trailingNewline {
+		trimmed += "\n"
+	}
+	return trimmed, true
 }
 
 func associateUnmanaged(value *Session, panes []string, worktrees []liveWorktree) {

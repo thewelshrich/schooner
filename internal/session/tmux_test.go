@@ -120,7 +120,7 @@ func (f *fakeTmux) Run(_ context.Context, _ int, name string, args ...string) (p
 	f.calls = append(f.calls, append([]string{name}, args...))
 	switch args[0] {
 	case "list-sessions":
-		return process.Result{Stdout: []byte(f.row)}, nil
+		return process.Result{Stdout: frameFakeRows(f.row)}, nil
 	case "list-panes":
 		if f.row == "" {
 			return process.Result{}, nil
@@ -153,6 +153,45 @@ func (f *fakeTmux) Run(_ context.Context, _ int, name string, args ...string) (p
 		return process.Result{}, &exec.ExitError{}
 	default:
 		return process.Result{}, &exec.ExitError{}
+	}
+}
+
+func frameFakeRows(rows string) []byte {
+	var output strings.Builder
+	for _, row := range strings.Split(strings.TrimSuffix(rows, "\n"), "\n") {
+		if row == "" {
+			continue
+		}
+		fields := strings.Split(row, "\t")
+		for index, field := range fields {
+			if index != 0 {
+				output.WriteByte('\t')
+			}
+			output.WriteString(strconv.Itoa(len(field)))
+			output.WriteByte('\t')
+			output.WriteString(field)
+		}
+		output.WriteByte('\n')
+	}
+	return []byte(output.String())
+}
+
+func TestParseRowsLengthFramesUnmanagedNames(t *testing.T) {
+	name := "external\tname\ncontinued"
+	fields := []string{"$8", name, "1720000000", "1720000300", "0", "", "", "", "", ""}
+	var framed strings.Builder
+	for index, field := range fields {
+		if index != 0 {
+			framed.WriteByte('\t')
+		}
+		framed.WriteString(strconv.Itoa(len(field)))
+		framed.WriteByte('\t')
+		framed.WriteString(field)
+	}
+	framed.WriteByte('\n')
+	rows, err := parseRows([]byte(framed.String()))
+	if err != nil || len(rows) != 1 || rows[0].name != name {
+		t.Fatalf("rows = %+v, error = %v", rows, err)
 	}
 }
 
@@ -210,7 +249,7 @@ func TestManagedActionsRefuseReusedUnmanagedTarget(t *testing.T) {
 
 func TestServiceStartsReusesCapturesAndStopsManagedSession(t *testing.T) {
 	canonicalRoot, canonicalWorktree := initializeSessionWorktree(t)
-	fake := &fakeTmux{path: canonicalWorktree, content: "one\ntwo\n"}
+	fake := &fakeTmux{path: canonicalWorktree, content: "zero\none\ntwo\n"}
 	manager, err := New(canonicalRoot, filepath.Join(t.TempDir(), "operations", "git"))
 	if err != nil {
 		t.Fatal(err)
@@ -232,7 +271,7 @@ func TestServiceStartsReusesCapturesAndStopsManagedSession(t *testing.T) {
 		t.Fatalf("attachment = %+v, %v", attachment, err)
 	}
 	logs, err := manager.Logs(t.Context(), testSessionID, 2)
-	if err != nil || logs.Content != "one\ntwo\n" || logs.Lines != 2 {
+	if err != nil || logs.Content != "one\ntwo\n" || logs.Lines != 2 || !logs.Truncated {
 		t.Fatalf("logs = %+v, %v", logs, err)
 	}
 	stopped, err := manager.Stop(t.Context(), testSessionID)
@@ -289,9 +328,25 @@ func initializeSessionWorktree(t *testing.T) (string, string) {
 }
 
 func TestTmuxUseFailsClosedOnMalformedSchoonerMetadata(t *testing.T) {
-	fake := &fakeTmux{row: "$4\tbroken\t1720000000\t1720000000\t0\t" + SchemaVersion + "\tbad\tshell\t2024-07-03T09:46:40Z\t/work/repo\n"}
+	fake := &fakeTmux{path: "/work/repo", row: "$4\tbroken\t1720000000\t1720000000\t0\t" + SchemaVersion + "\tbad\tshell\t2024-07-03T09:46:40Z\t/work/repo\n"}
 	_, err := (TmuxUse{commands: fake}).ManagedSessions(t.Context(), "/work/repo")
 	if err == nil || !strings.Contains(err.Error(), "invalid Schooner Session metadata") {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestMovedManagedSessionStillBlocksCurrentWorktreePath(t *testing.T) {
+	fake := &fakeTmux{
+		path: "/work/repo-moved",
+		row:  "$4\tmanaged\t1720000000\t1720000000\t0\t" + SchemaVersion + "\t" + testSessionID + "\tshell\t2024-07-03T09:46:40Z\t/work/repo-old\n",
+	}
+	sessions, err := (TmuxUse{commands: fake}).ManagedSessions(t.Context(), "/work/repo-moved")
+	if err != nil || len(sessions) != 1 || sessions[0] != testSessionID {
+		t.Fatalf("sessions = %v, error = %v", sessions, err)
+	}
+	value := classifyRow(tmuxRow{tmuxID: "$4", name: "managed", created: "1720000000", activity: "1720000000", attached: "0", schema: SchemaVersion, id: testSessionID, kind: KindShell, managedCreated: "2024-07-03T09:46:40Z", worktree: "/work/repo-old"})
+	associateManaged(&value, []string{"/work/repo-moved"}, []liveWorktree{{path: "/work/repo-moved", relative: "repo-moved", common: "/work/repo/.git"}})
+	if value.Association != AssociationLive || value.WorktreePath != "/work/repo-moved" || value.MetadataWorktreePath != "/work/repo-old" || !strings.Contains(managedSessionCondition(value), "/work/repo-old") {
+		t.Fatalf("moved Session = %+v", value)
 	}
 }

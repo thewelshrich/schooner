@@ -21,15 +21,21 @@ type lifecycleWorktreeUse struct {
 	err      error
 }
 
-func TestOperationStateDirectoryIgnoresInvocationXDGState(t *testing.T) {
+func TestOperationJournalsPreserveXDGWhileWorktreeLocksUseStableHome(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", "/custom/state")
-	got, err := OperationStateDirectory("/home/alice")
+	journal, err := OperationStateDirectory("/home/alice")
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "/home/alice/.local/state/schooner/operations/git"
-	if got != want {
-		t.Fatalf("state directory = %q, want %q", got, want)
+	if want := "/custom/state/schooner/operations/git"; journal != want {
+		t.Fatalf("journal directory = %q, want %q", journal, want)
+	}
+	locks, err := WorktreeLockStateDirectory("/home/alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "/home/alice/.local/state/schooner/operations/git"; locks != want {
+		t.Fatalf("lock directory = %q, want %q", locks, want)
 	}
 }
 

@@ -403,7 +403,7 @@ func (r *Runtime) OpenWorktreeShell(ctx context.Context, request hostruntime.Wor
 	if err != nil {
 		return InteractiveResult{}, err
 	}
-	stateDirectory, err := repository.OperationStateDirectory(home)
+	stateDirectory, err := repository.WorktreeLockStateDirectory(home)
 	if err != nil {
 		return InteractiveResult{}, err
 	}
@@ -442,7 +442,7 @@ func (r *Runtime) sessionManager(expectedIdentity, expectedWorktreeRoot string) 
 	if err != nil {
 		return nil, "", err
 	}
-	stateDirectory, err := repository.OperationStateDirectory(home)
+	stateDirectory, err := repository.WorktreeLockStateDirectory(home)
 	if err != nil {
 		return nil, "", err
 	}
@@ -475,7 +475,11 @@ func (r *Runtime) lifecycle(expectedIdentity, expectedWorktreeRoot string, nonIn
 	if err != nil {
 		return nil, "", err
 	}
-	lifecycle, err := repository.NewLifecycleWithOptions(configured.WorktreeRoot, stateDirectory, session.NewTmuxUse(), repository.LifecycleOptions{NonInteractive: nonInteractive})
+	lockStateDirectory, err := repository.WorktreeLockStateDirectory(home)
+	if err != nil {
+		return nil, "", err
+	}
+	lifecycle, err := repository.NewLifecycleWithOptions(configured.WorktreeRoot, stateDirectory, session.NewTmuxUse(), repository.LifecycleOptions{NonInteractive: nonInteractive, WorktreeLockStateDirectory: lockStateDirectory})
 	return lifecycle, identity, err
 }
 
