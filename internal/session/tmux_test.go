@@ -4,6 +4,7 @@ import (
 	"context"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -412,7 +413,7 @@ func TestManagedAssociationFailsClosedWhenMetadataPathIsReused(t *testing.T) {
 		{path: "/work/moved", relative: "moved", common: "/work/repo/.git"},
 	}
 	associateManaged(&value, []string{"/work/moved"}, worktrees)
-	if value.Association != AssociationAmbiguous || value.WorktreePath != "/work/reused" || value.ObservedWorktreePath != "/work/moved" || value.MetadataWorktreePath != "/work/reused" {
+	if value.Association != AssociationAmbiguous || value.WorktreePath != "/work/reused" || !slices.Equal(value.ObservedWorktreePaths, []string{"/work/moved"}) || value.MetadataWorktreePath != "/work/reused" {
 		t.Fatalf("reused metadata path association = %+v", value)
 	}
 	if !managedAssociationConflict([]Session{value}, "/work/reused") || !managedAssociationConflict([]Session{value}, "/work/moved") || len(managedForPath([]Session{value}, "/work/reused")) != 0 {
@@ -427,7 +428,24 @@ func TestManagedAssociationDoesNotMoveAfterOrdinaryDirectoryChange(t *testing.T)
 		{path: "/work/other", relative: "other", common: "/work/other/.git"},
 	}
 	associateManaged(&value, []string{"/work/other"}, worktrees)
-	if value.WorktreePath != "/work/original" || value.ObservedWorktreePath != "/work/other" || value.Association != AssociationAmbiguous {
+	if value.WorktreePath != "/work/original" || !slices.Equal(value.ObservedWorktreePaths, []string{"/work/other"}) || value.Association != AssociationAmbiguous {
 		t.Fatalf("directory change rewrote managed association: %+v", value)
+	}
+}
+
+func TestAmbiguousMovedAssociationRetainsEveryCandidatePath(t *testing.T) {
+	value := classifyRow(tmuxRow{tmuxID: "$4", name: "managed", created: "1720000000", activity: "1720000000", attached: "0", schema: SchemaVersion, id: testSessionID, kind: KindShell, managedCreated: "2024-07-03T09:46:40Z", worktree: "/work/missing"})
+	worktrees := []liveWorktree{
+		{path: "/work/moved", relative: "moved", common: "/work/repo/.git"},
+		{path: "/work/other", relative: "other", common: "/work/other/.git"},
+	}
+	associateManaged(&value, []string{"/work/moved", "/work/other"}, worktrees)
+	if value.Association != AssociationAmbiguous || !slices.Equal(value.ObservedWorktreePaths, []string{"/work/moved", "/work/other"}) {
+		t.Fatalf("ambiguous candidates = %+v", value)
+	}
+	for _, path := range value.ObservedWorktreePaths {
+		if !managedAssociationConflict([]Session{value}, path) {
+			t.Fatalf("candidate %q did not block duplicate start", path)
+		}
 	}
 }

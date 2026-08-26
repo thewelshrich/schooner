@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -76,7 +77,7 @@ type Session struct {
 	SchoonerMetadata          bool             `json:"-"`
 	LegacyMetadata            bool             `json:"-"`
 	MetadataWorktreePath      string           `json:"-"`
-	ObservedWorktreePath      string           `json:"-"`
+	ObservedWorktreePaths     []string         `json:"-"`
 }
 
 type Catalog struct {
@@ -676,6 +677,7 @@ func associateManaged(value *Session, panes []string, worktrees []liveWorktree) 
 		}
 	}
 	if len(panes) != 0 {
+		value.ObservedWorktreePaths = observedWorktreePaths(panes, worktrees)
 		observed := Session{Ownership: Managed}
 		associateUnmanaged(&observed, panes, worktrees)
 		if metadata != nil {
@@ -684,7 +686,6 @@ func associateManaged(value *Session, panes []string, worktrees []liveWorktree) 
 			value.RepositoryCommonDirectory = metadata.common
 			value.Association = AssociationLive
 			if observed.Association == AssociationLive && observed.WorktreePath != metadata.path {
-				value.ObservedWorktreePath = observed.WorktreePath
 				value.Association = AssociationAmbiguous
 			}
 			return
@@ -693,7 +694,6 @@ func associateManaged(value *Session, panes []string, worktrees []liveWorktree) 
 			value.WorktreePath = observed.WorktreePath
 			value.WorktreeRelativePath = observed.WorktreeRelativePath
 			value.RepositoryCommonDirectory = observed.RepositoryCommonDirectory
-			value.ObservedWorktreePath = observed.WorktreePath
 			value.Association = AssociationLive
 			return
 		}
@@ -708,6 +708,23 @@ func associateManaged(value *Session, panes []string, worktrees []liveWorktree) 
 		return
 	}
 	value.Association = AssociationMissing
+}
+
+func observedWorktreePaths(panes []string, worktrees []liveWorktree) []string {
+	seen := make(map[string]struct{})
+	result := make([]string, 0)
+	for _, pane := range panes {
+		worktree := worktreeForPath(pane, worktrees)
+		if worktree == nil {
+			continue
+		}
+		if _, exists := seen[worktree.path]; exists {
+			continue
+		}
+		seen[worktree.path] = struct{}{}
+		result = append(result, worktree.path)
+	}
+	return result
 }
 
 func managedUsesPath(value Session, panes []string, worktreePath string) bool {
@@ -789,7 +806,7 @@ func managedForPath(values []Session, path string) []Session {
 
 func managedAssociationConflict(values []Session, path string) bool {
 	for _, value := range values {
-		if value.Ownership == Managed && value.Association == AssociationAmbiguous && (value.MetadataWorktreePath == path || value.ObservedWorktreePath == path) {
+		if value.Ownership == Managed && value.Association == AssociationAmbiguous && (value.MetadataWorktreePath == path || slices.Contains(value.ObservedWorktreePaths, path)) {
 			return true
 		}
 	}

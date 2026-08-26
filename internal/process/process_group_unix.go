@@ -8,6 +8,8 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 
 	"golang.org/x/sys/unix"
@@ -26,21 +28,30 @@ func configureCommandCancellation(command *exec.Cmd) {
 func runInteractiveTerminal(command *exec.Cmd, terminal *os.File) (err error) {
 	parentGroup := syscall.Getpgrp()
 	configureCommandCancellation(command)
-	cancelCommandGroup := command.Cancel
 	command.Cancel = func() error {
+		if command.Process == nil {
+			return os.ErrProcessDone
+		}
 		foregroundGroup, foregroundErr := unix.IoctlGetInt(int(terminal.Fd()), unix.TIOCGPGRP)
 		var cancellationErrors []error
 		cancelled := false
-		if foregroundErr == nil && foregroundGroup != parentGroup && (command.Process == nil || foregroundGroup != command.Process.Pid) {
+		if foregroundErr == nil && foregroundGroup != parentGroup {
+			_ = stopProcessGroup(foregroundGroup)
+		} else if foregroundErr != nil {
+			cancellationErrors = append(cancellationErrors, foregroundErr)
+		}
+		_ = stopProcessGroup(command.Process.Pid)
+		if treeErr := terminateDescendants(command.Process.Pid); treeErr != nil {
+			cancellationErrors = append(cancellationErrors, treeErr)
+		}
+		if foregroundErr == nil && foregroundGroup != parentGroup {
 			if killErr := killProcessGroup(foregroundGroup); killErr == nil {
 				cancelled = true
 			} else {
 				cancellationErrors = append(cancellationErrors, killErr)
 			}
-		} else if foregroundErr != nil {
-			cancellationErrors = append(cancellationErrors, foregroundErr)
 		}
-		if commandKillErr := cancelCommandGroup(); commandKillErr == nil {
+		if commandKillErr := killProcessGroup(command.Process.Pid); commandKillErr == nil {
 			cancelled = true
 		} else {
 			cancellationErrors = append(cancellationErrors, commandKillErr)
@@ -53,6 +64,9 @@ func runInteractiveTerminal(command *exec.Cmd, terminal *os.File) (err error) {
 	if err := command.Start(); err != nil {
 		return err
 	}
+	childChanges := make(chan os.Signal, 1)
+	signal.Notify(childChanges, syscall.SIGCHLD)
+	defer signal.Stop(childChanges)
 	if err := setForegroundProcessGroup(terminal, command.Process.Pid); err != nil {
 		_ = command.Cancel()
 		_ = command.Wait()
@@ -75,11 +89,57 @@ func runInteractiveTerminal(command *exec.Cmd, terminal *os.File) (err error) {
 		_ = command.Wait()
 		return fmt.Errorf("resume interactive command after terminal handoff: %w", err)
 	}
-	return command.Wait()
+	waitDone := make(chan error, 1)
+	go func() { waitDone <- command.Wait() }()
+	for {
+		select {
+		case err := <-waitDone:
+			return err
+		case <-childChanges:
+			// Avoid feeding the SIGCHLD from the short-lived ps probe back into
+			// this channel and creating a probe loop.
+			signal.Stop(childChanges)
+			stopped, stateErr := processIsStopped(command.Process.Pid)
+			signal.Notify(childChanges, syscall.SIGCHLD)
+			if stateErr != nil || !stopped {
+				continue
+			}
+			if err := setForegroundProcessGroup(terminal, parentGroup); err != nil {
+				_ = command.Cancel()
+				<-waitDone
+				return fmt.Errorf("restore terminal for stopped interactive command: %w", err)
+			}
+			// Stop Schooner itself so the invoking shell can report and resume
+			// the job. SIGSTOP cannot be inherited as ignored.
+			if err := syscall.Kill(os.Getpid(), syscall.SIGSTOP); err != nil {
+				_ = command.Cancel()
+				<-waitDone
+				return fmt.Errorf("suspend for stopped interactive command: %w", err)
+			}
+			if err := setForegroundProcessGroup(terminal, command.Process.Pid); err != nil {
+				_ = command.Cancel()
+				<-waitDone
+				return fmt.Errorf("return terminal to stopped interactive command: %w", err)
+			}
+			if err := continueProcessGroup(command.Process.Pid); err != nil && !errors.Is(err, os.ErrProcessDone) {
+				_ = command.Cancel()
+				<-waitDone
+				return fmt.Errorf("resume stopped interactive command: %w", err)
+			}
+		}
+	}
 }
 
 func killProcessGroup(group int) error {
 	err := syscall.Kill(-group, syscall.SIGKILL)
+	if errors.Is(err, syscall.ESRCH) {
+		return os.ErrProcessDone
+	}
+	return err
+}
+
+func stopProcessGroup(group int) error {
+	err := syscall.Kill(-group, syscall.SIGSTOP)
 	if errors.Is(err, syscall.ESRCH) {
 		return os.ErrProcessDone
 	}
@@ -92,6 +152,77 @@ func continueProcessGroup(group int) error {
 		return os.ErrProcessDone
 	}
 	return err
+}
+
+func terminateDescendants(root int) error {
+	stopped := make(map[int]struct{})
+	var result error
+	for attempts := 0; attempts < 4; attempts++ {
+		descendants, err := descendantProcessIDs(root)
+		if err != nil {
+			return errors.Join(result, err)
+		}
+		added := false
+		for _, pid := range descendants {
+			if _, exists := stopped[pid]; exists {
+				continue
+			}
+			added = true
+			stopped[pid] = struct{}{}
+			if err := syscall.Kill(pid, syscall.SIGSTOP); err != nil && !errors.Is(err, syscall.ESRCH) {
+				result = errors.Join(result, err)
+			}
+		}
+		if !added {
+			break
+		}
+	}
+	for pid := range stopped {
+		if err := syscall.Kill(pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+			result = errors.Join(result, err)
+		}
+	}
+	return result
+}
+
+func descendantProcessIDs(root int) ([]int, error) {
+	output, err := exec.Command("/bin/ps", "-axo", "pid=,ppid=").Output()
+	if err != nil {
+		return nil, fmt.Errorf("inspect interactive descendants: %w", err)
+	}
+	children := make(map[int][]int)
+	for _, line := range strings.Split(string(output), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 2 {
+			continue
+		}
+		pid, pidErr := strconv.Atoi(fields[0])
+		parent, parentErr := strconv.Atoi(fields[1])
+		if pidErr == nil && parentErr == nil && pid > 0 && parent >= 0 {
+			children[parent] = append(children[parent], pid)
+		}
+	}
+	result := make([]int, 0)
+	queue := append([]int(nil), children[root]...)
+	for len(queue) != 0 {
+		pid := queue[0]
+		queue = queue[1:]
+		result = append(result, pid)
+		queue = append(queue, children[pid]...)
+	}
+	return result, nil
+}
+
+func processIsStopped(pid int) (bool, error) {
+	output, err := exec.Command("/bin/ps", "-o", "state=", "-p", strconv.Itoa(pid)).Output()
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			return false, nil
+		}
+		return false, fmt.Errorf("inspect interactive command state: %w", err)
+	}
+	return strings.Contains(strings.TrimSpace(string(output)), "T"), nil
 }
 
 func setForegroundProcessGroup(terminal *os.File, group int) error {
