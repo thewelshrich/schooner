@@ -76,6 +76,7 @@ type Session struct {
 	SchoonerMetadata          bool             `json:"-"`
 	LegacyMetadata            bool             `json:"-"`
 	MetadataWorktreePath      string           `json:"-"`
+	ObservedWorktreePath      string           `json:"-"`
 }
 
 type Catalog struct {
@@ -241,6 +242,9 @@ func (s *Service) Start(ctx context.Context, selector string) (StartResult, erro
 		}
 	}
 	existing := managedForPath(catalog.Sessions, inspection.Worktree.Path)
+	if managedAssociationConflict(catalog.Sessions, inspection.Worktree.Path) {
+		return StartResult{}, &repository.Error{Code: repository.CodeConflict, Message: fmt.Sprintf("Worktree %q has an ambiguously associated managed Session", inspection.Worktree.RelativePath)}
+	}
 	if len(existing) > 1 {
 		return StartResult{}, &repository.Error{Code: repository.CodeConflict, Message: fmt.Sprintf("Worktree %q has multiple managed Sessions", inspection.Worktree.RelativePath)}
 	}
@@ -666,35 +670,50 @@ func flattenWorktrees(catalog repository.Catalog) []liveWorktree {
 }
 
 func associateManaged(value *Session, panes []string, worktrees []liveWorktree) {
+	var metadata *liveWorktree
+	for index := range worktrees {
+		if value.MetadataWorktreePath == worktrees[index].path {
+			metadata = &worktrees[index]
+			break
+		}
+	}
 	if len(panes) != 0 {
 		observed := Session{Ownership: Managed}
 		associateUnmanaged(&observed, panes, worktrees)
+		if metadata != nil {
+			value.WorktreePath = metadata.path
+			value.WorktreeRelativePath = metadata.relative
+			value.RepositoryCommonDirectory = metadata.common
+			value.Association = AssociationLive
+			if observed.Association == AssociationLive && observed.WorktreePath != metadata.path {
+				value.ObservedWorktreePath = observed.WorktreePath
+				value.Association = AssociationAmbiguous
+			}
+			return
+		}
 		if observed.Association == AssociationLive {
 			value.WorktreePath = observed.WorktreePath
 			value.WorktreeRelativePath = observed.WorktreeRelativePath
 			value.RepositoryCommonDirectory = observed.RepositoryCommonDirectory
+			value.ObservedWorktreePath = observed.WorktreePath
 			value.Association = AssociationLive
 			return
 		}
 		value.Association = observed.Association
 		return
 	}
-	for _, worktree := range worktrees {
-		if value.WorktreePath == worktree.path {
-			value.WorktreeRelativePath = worktree.relative
-			value.RepositoryCommonDirectory = worktree.common
-			value.Association = AssociationLive
-			return
-		}
+	if metadata != nil {
+		value.WorktreePath = metadata.path
+		value.WorktreeRelativePath = metadata.relative
+		value.RepositoryCommonDirectory = metadata.common
+		value.Association = AssociationLive
+		return
 	}
 	value.Association = AssociationMissing
 }
 
 func managedUsesPath(value Session, panes []string, worktreePath string) bool {
-	if len(panes) != 0 {
-		return panesUsePath(panes, worktreePath)
-	}
-	return value.WorktreePath == worktreePath
+	return value.MetadataWorktreePath == worktreePath || panesUsePath(panes, worktreePath)
 }
 
 func panesUsePath(panes []string, worktreePath string) bool {
@@ -763,11 +782,20 @@ func worktreeForPath(path string, worktrees []liveWorktree) *liveWorktree {
 func managedForPath(values []Session, path string) []Session {
 	result := make([]Session, 0)
 	for _, value := range values {
-		if value.Ownership == Managed && value.WorktreePath == path {
+		if value.Ownership == Managed && value.Association == AssociationLive && value.WorktreePath == path {
 			result = append(result, value)
 		}
 	}
 	return result
+}
+
+func managedAssociationConflict(values []Session, path string) bool {
+	for _, value := range values {
+		if value.Ownership == Managed && value.Association == AssociationAmbiguous && (value.MetadataWorktreePath == path || value.ObservedWorktreePath == path) {
+			return true
+		}
+	}
+	return false
 }
 
 func ownershipOrder(value Ownership) int {
