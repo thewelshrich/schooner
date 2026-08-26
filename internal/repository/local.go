@@ -94,7 +94,7 @@ func inspectLocal(ctx context.Context, directory string, commands runner) (*Loca
 	if rawOrigin, originErr := git(ctx, commands, top, "remote", "get-url", "origin"); originErr == nil {
 		raw := strings.TrimSpace(string(rawOrigin))
 		checkout.Origin = sanitizeOrigin(raw)
-		checkout.OriginKey = OriginKey(checkout.Origin)
+		checkout.OriginKey = OriginKey(raw)
 		checkout.CloneSource = sanitizeCloneSource(raw)
 	} else if exitCode(originErr) != 2 && exitCode(originErr) != 128 {
 		return nil, fmt.Errorf("read local origin: %w", originErr)
@@ -182,24 +182,36 @@ func sanitizeCloneSource(raw string) string {
 // network repository reached through common HTTPS, SSH, Git, or SCP syntax.
 // Local filesystem origins intentionally have no cross-machine identity.
 func OriginKey(origin string) string {
-	origin = sanitizeOrigin(origin)
-	if origin == "" {
+	if origin == "" || len(origin) > maxOriginBytes || hasControl(origin) {
 		return ""
 	}
 	if !strings.Contains(origin, "://") {
+		if index := strings.IndexAny(origin, "?#"); index >= 0 {
+			origin = origin[:index]
+		}
 		colon := strings.IndexByte(origin, ':')
 		if colon <= 0 || strings.ContainsRune(origin[:colon], '/') {
 			return ""
 		}
-		host := strings.ToLower(origin[:colon])
+		authority := origin[:colon]
+		username := ""
+		host := authority
+		if at := strings.LastIndexByte(authority, '@'); at >= 0 {
+			username = originIdentityUsername(authority[:at])
+			host = authority[at+1:]
+			if username == "" && authority[:at] != "git" {
+				return ""
+			}
+		}
+		host = strings.ToLower(host)
 		path := cleanOriginPath(origin[colon+1:])
 		if host == "" || path == "" {
 			return ""
 		}
-		return host + "/" + path
+		return originIdentityAuthority(username, host) + "/" + path
 	}
 	parsed, err := url.Parse(origin)
-	if err == nil && parsed.Scheme != "" {
+	if err == nil && parsed.Scheme != "" && parsed.Opaque == "" {
 		scheme := strings.ToLower(parsed.Scheme)
 		if scheme != "https" && scheme != "http" && scheme != "ssh" && scheme != "git" {
 			return ""
@@ -213,13 +225,21 @@ func OriginKey(origin string) string {
 		if port != "" && !defaultOriginPort(scheme, port) {
 			host = net.JoinHostPort(host, port)
 		}
-		return host + "/" + path
+		username := ""
+		if scheme == "ssh" && parsed.User != nil {
+			username = originIdentityUsername(parsed.User.Username())
+			if username == "" && parsed.User.Username() != "git" {
+				return ""
+			}
+		}
+		return originIdentityAuthority(username, host) + "/" + path
 	}
 	return ""
 }
 
 func cleanOriginPath(value string) string {
-	value = strings.Trim(strings.TrimSuffix(value, ".git"), "/")
+	value = strings.Trim(value, "/")
+	value = strings.TrimSuffix(value, ".git")
 	if value == "" || value == "." || value == ".." || hasControl(value) {
 		return ""
 	}
@@ -229,6 +249,23 @@ func cleanOriginPath(value string) string {
 		}
 	}
 	return value
+}
+
+func originIdentityUsername(username string) string {
+	// "git" is the conventional transport account used by hosted forges, so
+	// omitting it keeps their HTTPS and SSH clone forms equivalent. Other SSH
+	// usernames can select different repositories and remain part of identity.
+	if username == "" || username == "git" || len(username) > 128 || hasControl(username) || strings.ContainsAny(username, "/@:") {
+		return ""
+	}
+	return username
+}
+
+func originIdentityAuthority(username, host string) string {
+	if username == "" {
+		return host
+	}
+	return username + "@" + host
 }
 
 func defaultOriginPort(scheme, port string) bool {

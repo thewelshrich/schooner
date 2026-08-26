@@ -26,6 +26,35 @@ func TestOriginKeyMatchesCommonNetworkForms(t *testing.T) {
 	}
 }
 
+func TestOriginKeyRetainsNonDefaultSSHUsername(t *testing.T) {
+	alice := "alice@example.com/owner/repo"
+	for _, value := range []string{
+		"alice@example.com:owner/repo.git",
+		"alice@example.com:owner/repo.git/",
+		"ssh://alice@example.com/owner/repo.git",
+		"ssh://alice:secret@example.com:22/owner/repo.git/",
+	} {
+		if got := OriginKey(value); got != alice {
+			t.Errorf("OriginKey(%q) = %q, want %q", value, got, alice)
+		}
+	}
+	if got := OriginKey("bob@example.com:owner/repo.git"); got == alice {
+		t.Errorf("OriginKey for a different SSH user = %q, want an independent identity", got)
+	}
+}
+
+func TestOriginKeyNormalizesGitSuffixBeforeTrailingSlash(t *testing.T) {
+	want := "example.com/owner/repo"
+	for _, value := range []string{
+		"https://example.com/owner/repo.git/",
+		"git@example.com:owner/repo.git/",
+	} {
+		if got := OriginKey(value); got != want {
+			t.Errorf("OriginKey(%q) = %q, want %q", value, got, want)
+		}
+	}
+}
+
 func TestInspectLocalObservesContainingCheckoutWithoutPersistingState(t *testing.T) {
 	repositoryPath := filepath.Join(t.TempDir(), "repo")
 	mustGit(t, "init", repositoryPath)
@@ -62,6 +91,15 @@ func TestInspectLocalObservesContainingCheckoutWithoutPersistingState(t *testing
 	}
 	if checkout.Branch == "" || checkout.Detached || checkout.Upstream != "" || checkout.Status.Untracked != 1 || checkout.Status.Ignored != 0 {
 		t.Fatalf("checkout = %+v", checkout)
+	}
+
+	mustGitAt(t, repositoryPath, "remote", "set-url", "origin", "ssh://alice:secret@example.com/owner/repo.git")
+	checkout, err = InspectLocal(t.Context(), nested)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if checkout.Origin != "ssh://example.com/owner/repo" || checkout.OriginKey != "alice@example.com/owner/repo" || checkout.CloneSource != "ssh://alice@example.com/owner/repo.git" {
+		t.Fatalf("SSH origin = %q, key = %q, clone source = %q", checkout.Origin, checkout.OriginKey, checkout.CloneSource)
 	}
 }
 
