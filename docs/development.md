@@ -56,26 +56,23 @@ status, stable session ID, and tmux process state.
 ## Local remote-runtime artifacts
 
 Remote bootstrap resolves a platform-specific executable by version and
-verifies it against a `SHA256SUMS` manifest. To use a locally built executable,
-place both files in one directory and set `SCHOONER_ARTIFACT_DIR`:
+verifies it against a `SHA256SUMS` manifest. From the Schooner source directory,
+build verified development runtimes for both supported Linux architectures:
 
 ```bash
-artifact_dir="$(mktemp -d)"
-remote_arch="arm64" # or amd64, matching the Box
-artifact="schooner_dev_linux_${remote_arch}"
-CGO_ENABLED=0 GOOS=linux GOARCH="${remote_arch}" go build -trimpath \
-  -o "${artifact_dir}/${artifact}" ./cmd/schooner
-
-# Linux:
-(cd "${artifact_dir}" && sha256sum "${artifact}" > SHA256SUMS)
-# macOS alternative:
-# (cd "${artifact_dir}" && shasum -a 256 "${artifact}" > SHA256SUMS)
-
-export SCHOONER_ARTIFACT_DIR="${artifact_dir}"
+go run ./cmd/schooner dev artifacts
 ```
 
-The override supports development and release versions but never bypasses
-checksum verification. Without it, release artifacts are read from the
+The command publishes `schooner_dev_linux_amd64`,
+`schooner_dev_linux_arm64`, and `SHA256SUMS` as one atomic generation in
+Schooner's development artifact cache. When `SCHOONER_ARTIFACT_DIR` is set, it
+publishes to that override instead. Development builds find the active
+directory automatically. Re-run the command after changing code that must run
+on a Box.
+
+`SCHOONER_ARTIFACT_DIR` remains available as an explicit override for a custom
+artifact directory. Overrides support development and release versions but
+never bypass checksum verification. Release artifacts are read from the
 verified local cache or downloaded from the matching GitHub Release.
 
 Bootstrap streams the verified bytes through system OpenSSH into a unique file

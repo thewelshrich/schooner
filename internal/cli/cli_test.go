@@ -291,16 +291,44 @@ func TestVersionHuman(t *testing.T) {
 		t.Fatalf("exit status = %d, want 0", code)
 	}
 
-	want := "Schooner v0.1.0-test\n" +
-		"Commit: abc1234\n" +
-		"Built: 2026-08-24T12:34:56Z\n" +
-		"Go: go1.27.0\n" +
-		"Platform: linux/arm64\n"
+	want := "\n✓ Schooner v0.1.0-test\n" +
+		"  Commit    abc1234\n" +
+		"  Built     2026-08-24T12:34:56Z\n" +
+		"  Go        go1.27.0\n" +
+		"  Platform  linux/arm64\n"
 	if stdout != want {
 		t.Errorf("stdout mismatch\n--- want ---\n%s\n--- got ---\n%s", want, stdout)
 	}
 	if stderr != "" {
 		t.Errorf("stderr = %q, want empty", stderr)
+	}
+}
+
+func TestVersionAutoColorUsesStdoutTerminalState(t *testing.T) {
+	t.Setenv("NO_COLOR", "")
+	t.Setenv("TERM", "xterm-256color")
+	for _, test := range []struct {
+		name        string
+		outTerminal bool
+		errTerminal bool
+		wantColor   bool
+	}{
+		{name: "redirected stdout", outTerminal: false, errTerminal: true, wantColor: false},
+		{name: "terminal stdout", outTerminal: true, errTerminal: false, wantColor: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			code := cli.RunAtHostHome(t.Context(), []string{"version"}, cli.Streams{
+				In: strings.NewReader(""), Out: &stdout, Err: &stderr,
+				OutIsTerminal: test.outTerminal, ErrIsTerminal: test.errTerminal,
+			}, testBuild(), t.TempDir())
+			if code != 0 || stderr.Len() != 0 {
+				t.Fatalf("code=%d stderr=%q", code, stderr.String())
+			}
+			if hasColor := strings.Contains(stdout.String(), "\x1b["); hasColor != test.wantColor {
+				t.Fatalf("stdout color = %t, want %t: %q", hasColor, test.wantColor, stdout.String())
+			}
+		})
 	}
 }
 
@@ -742,7 +770,7 @@ func TestBoxUseMarksListAndResolvesDefault(t *testing.T) {
 		t.Fatalf("use json: code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 	code, stdout, stderr = run(t.Context(), []string{"box", "use", "beta"}, testBuild(), nil)
-	if code != 0 || stdout != "Default box: beta\n" || stderr != "" {
+	if code != 0 || stdout != "\n✓ Default box: beta\n" || stderr != "" {
 		t.Fatalf("use: code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 	code, stdout, stderr = run(t.Context(), []string{"box", "list", "--output", "json"}, testBuild(), nil)

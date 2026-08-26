@@ -10,6 +10,7 @@ import (
 	"github.com/thewelshrich/schooner/internal/credentials"
 	"github.com/thewelshrich/schooner/internal/provider"
 	"github.com/thewelshrich/schooner/internal/ui/prompts"
+	uitheme "github.com/thewelshrich/schooner/internal/ui/theme"
 )
 
 func newProviderCommand(streams Streams, global *globalOptions) *cobra.Command {
@@ -59,9 +60,9 @@ func newProviderConnectCommand(streams Streams, global *globalOptions) *cobra.Co
 				return executionError{cause: err}
 			}
 			if profile.Warning != "" {
-				_, _ = fmt.Fprintln(streams.Err, "Warning:", profile.Warning)
+				_ = writeWarningLine(streams.Err, terminalTheme(global, streams), profile.Warning)
 			}
-			return writeCredentialProfile(streams.Out, global.output, profile)
+			return writeCredentialProfile(streams.Out, global.output, profile, outputTheme(global, streams))
 		},
 	}
 	cmd.Flags().BoolVar(&makeDefault, "default", false, "make this the default DigitalOcean profile")
@@ -92,18 +93,24 @@ func newProviderListCommand(streams Streams, global *globalOptions) *cobra.Comma
 			}
 			return nil
 		}
+		theme := outputTheme(global, streams)
 		if len(profiles) == 0 {
-			_, err = fmt.Fprintln(streams.Out, "No provider credential profiles connected.")
-			return err
+			return writeMutedNotice(streams.Out, theme, "No provider credential profiles connected.")
 		}
+		rows := make([][]string, 0, len(profiles))
 		for _, profile := range profiles {
-			marker := ""
+			defaultMarker := ""
 			if profile.Default {
-				marker = " (default)"
+				defaultMarker = "yes"
 			}
-			_, _ = fmt.Fprintf(streams.Out, "%s%s  %s  %s\n", profile.Ref, marker, profile.Status, firstNonEmpty(profile.AccountName, profile.AccountEmail, profile.ExternalID))
+			rows = append(rows, []string{
+				string(profile.Ref),
+				defaultMarker,
+				string(profile.Status),
+				firstNonEmpty(profile.AccountName, profile.AccountEmail, profile.ExternalID),
+			})
 		}
-		return nil
+		return writeTable(streams.Out, theme, []string{"PROFILE", "DEFAULT", "STATUS", "ACCOUNT"}, rows)
 	}}
 }
 
@@ -127,7 +134,7 @@ func newProviderDisconnectCommand(streams Streams, global *globalOptions) *cobra
 				return executionError{cause: confirmErr}
 			}
 			if !confirmed {
-				_, _ = fmt.Fprintln(streams.Out, "Cancelled. No changes made.")
+				writeCancelled(streams.Out)
 				return nil
 			}
 		}
@@ -140,7 +147,7 @@ func newProviderDisconnectCommand(streams Streams, global *globalOptions) *cobra
 		if err != nil {
 			return executionError{cause: err}
 		}
-		return writeCredentialProfile(streams.Out, global.output, profile)
+		return writeCredentialProfile(streams.Out, global.output, profile, outputTheme(global, streams))
 	}}
 	cmd.Flags().BoolVar(&yes, "yes", false, "confirm local credential removal")
 	return cmd
@@ -158,15 +165,18 @@ type profileDocument struct {
 func documentProfile(profile credentials.Profile) profileDocument {
 	return profileDocument{Ref: string(profile.Ref), Provider: string(profile.Provider), AccountName: profile.AccountName, AccountEmail: profile.AccountEmail, Status: string(profile.Status), Default: profile.Default}
 }
-func writeCredentialProfile(w interface{ Write([]byte) (int, error) }, output string, profile credentials.Profile) error {
+func writeCredentialProfile(w interface{ Write([]byte) (int, error) }, output string, profile credentials.Profile, theme *uitheme.Theme) error {
 	if output == "json" {
 		return json.NewEncoder(w).Encode(struct {
 			SchemaVersion string          `json:"schema_version"`
 			Profile       profileDocument `json:"profile"`
 		}{SchemaVersion: "1", Profile: documentProfile(profile)})
 	}
-	_, err := fmt.Fprintf(w, "Credential profile %s\nAccount: %s\nStatus: %s\n", profile.Ref, firstNonEmpty(profile.AccountName, profile.AccountEmail, profile.ExternalID), profile.Status)
-	return err
+	return writeReadySummary(w, theme, "Credential profile "+string(profile.Ref), []summaryRow{
+		{Label: "Account", Value: firstNonEmpty(profile.AccountName, profile.AccountEmail, profile.ExternalID)},
+		{Label: "Status", Value: string(profile.Status)},
+		{Label: "Default", Value: yesNoValue(profile.Default)},
+	})
 }
 func firstNonEmpty(values ...string) string {
 	for _, value := range values {

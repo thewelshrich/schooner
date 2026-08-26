@@ -52,7 +52,7 @@ func TestSessionOutputDistinguishesOwnershipAndAssociation(t *testing.T) {
 		{TmuxID: "$2", Name: "external", Ownership: session.Unmanaged, Association: session.AssociationUnassociated, CreatedAt: now, ActivityAt: now},
 	}}
 	var human bytes.Buffer
-	if err := writeSessions(&human, "human", catalog); err != nil {
+	if err := writeSessions(&human, "human", catalog, nil); err != nil {
 		t.Fatal(err)
 	}
 	for _, expected := range []string{"11111111-1111-4111-8111-111111111111", "tmux:$2", "managed", "unmanaged", "unassociated"} {
@@ -61,7 +61,7 @@ func TestSessionOutputDistinguishesOwnershipAndAssociation(t *testing.T) {
 		}
 	}
 	var jsonOutput bytes.Buffer
-	if err := writeSessions(&jsonOutput, "json", catalog); err != nil {
+	if err := writeSessions(&jsonOutput, "json", catalog, nil); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(jsonOutput.String(), `"schema_version":"1"`) || !strings.Contains(jsonOutput.String(), `"ownership":"unmanaged"`) {
@@ -72,7 +72,7 @@ func TestSessionOutputDistinguishesOwnershipAndAssociation(t *testing.T) {
 func TestSessionOutputQuotesInvalidNames(t *testing.T) {
 	catalog := session.Catalog{Sessions: []session.Session{{TmuxID: "$2", Name: "forged\tcolumn\n\x1b[31m", Ownership: session.Invalid, Association: session.AssociationUnassociated}}}
 	var output bytes.Buffer
-	if err := writeSessions(&output, "human", catalog); err != nil {
+	if err := writeSessions(&output, "human", catalog, nil); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(output.String(), "forged\tcolumn") || strings.Contains(output.String(), "\x1b[31m") || !strings.Contains(output.String(), `"forged\tcolumn\n\x1b[31m"`) {

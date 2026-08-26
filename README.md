@@ -73,10 +73,14 @@ You need:
 - the system OpenSSH client; and
 - Go 1.27 or later.
 
-Install the current development version:
+Install the current development version from a source checkout and prepare its
+Linux host runtimes:
 
 ```bash
-go install github.com/thewelshrich/schooner/cmd/schooner@main
+git clone https://github.com/thewelshrich/schooner.git
+cd schooner
+go install ./cmd/schooner
+schooner dev artifacts
 schooner version
 schooner doctor
 ```

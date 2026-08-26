@@ -31,7 +31,7 @@ func TestWriteDoctorResultReturnsFailureAfterUnhealthyReport(t *testing.T) {
 		t.Run(output, func(t *testing.T) {
 			var destination bytes.Buffer
 			report := hostruntime.DoctorReport{SchemaVersion: hostruntime.SchemaVersion, ProtocolVersion: hostruntime.ProtocolVersion, Healthy: false}
-			err := writeDoctorResult(&destination, output, report)
+			err := writeDoctorResult(&destination, output, report, nil)
 			var status exitStatusError
 			if !errors.As(err, &status) || status.code != exitFailure {
 				t.Fatalf("error=%v status=%+v", err, status)
@@ -46,7 +46,7 @@ func TestWriteDoctorResultReturnsFailureAfterUnhealthyReport(t *testing.T) {
 func TestWriteDoctorResultReturnsSuccessForHealthyReport(t *testing.T) {
 	var destination bytes.Buffer
 	report := hostruntime.DoctorReport{SchemaVersion: hostruntime.SchemaVersion, ProtocolVersion: hostruntime.ProtocolVersion, Healthy: true}
-	if err := writeDoctorResult(&destination, "human", report); err != nil {
+	if err := writeDoctorResult(&destination, "human", report, nil); err != nil {
 		t.Fatal(err)
 	}
 }

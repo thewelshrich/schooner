@@ -23,7 +23,7 @@ func TestWriteWorktreeListEscapesHostileWarnings(t *testing.T) {
 			Message: "failed\rmessage\x1b[0m",
 		}},
 	}
-	if err := writeWorktreeList(&output, "human", catalog); err != nil {
+	if err := writeWorktreeList(&output, "human", catalog, nil); err != nil {
 		t.Fatal(err)
 	}
 	result := output.String()
@@ -41,10 +41,10 @@ func TestWorktreeHumanOutputEscapesGitDerivedFormattingCharacters(t *testing.T) 
 	relation := repository.Repository{CommonDirectory: "/root/" + unsafe + "/.git", Origin: "ssh://" + unsafe + "/repo", Primary: &worktree, Linked: []repository.Worktree{}}
 	for name, write := range map[string]func(*bytes.Buffer) error{
 		"list": func(output *bytes.Buffer) error {
-			return writeWorktreeList(output, "human", repository.Catalog{WorktreeRoot: "/root", Repositories: []repository.Repository{relation}, Warnings: []repository.Warning{}})
+			return writeWorktreeList(output, "human", repository.Catalog{WorktreeRoot: "/root", Repositories: []repository.Repository{relation}, Warnings: []repository.Warning{}}, nil)
 		},
 		"inspect": func(output *bytes.Buffer) error {
-			return writeWorktreeInspection(output, "human", repository.Inspection{WorktreeRoot: "/root", Repository: relation, Worktree: worktree, Warnings: []repository.Warning{{Path: unsafe, Message: unsafe}}})
+			return writeWorktreeInspection(output, "human", repository.Inspection{WorktreeRoot: "/root", Repository: relation, Worktree: worktree, Warnings: []repository.Warning{{Path: unsafe, Message: unsafe}}}, nil)
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -62,7 +62,7 @@ func TestWorktreeHumanOutputEscapesGitDerivedFormattingCharacters(t *testing.T) 
 func TestWorktreeInspectionJSONCarriesWarnings(t *testing.T) {
 	var output bytes.Buffer
 	inspection := repository.Inspection{WorktreeRoot: "/root", Repository: repository.Repository{Linked: []repository.Worktree{}}, Warnings: []repository.Warning{{Path: "/root", Message: "partial"}}}
-	if err := writeWorktreeInspection(&output, "json", inspection); err != nil {
+	if err := writeWorktreeInspection(&output, "json", inspection, nil); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(output.String(), `"warnings":[{"path":"/root","message":"partial"}]`) {
@@ -74,7 +74,7 @@ func TestLifecycleJSONOutputUsesDedicatedVersionedDocument(t *testing.T) {
 	worktree := repository.Worktree{Path: "/root/repo", RelativePath: "repo", GitDirectory: "/root/repo/.git", Kind: repository.Primary, Branch: "main"}
 	inspection := repository.Inspection{WorktreeRoot: "/root", Repository: repository.Repository{CommonDirectory: "/root/repo/.git", Primary: &worktree, Linked: []repository.Worktree{}}, Worktree: worktree}
 	var output bytes.Buffer
-	if err := writeLifecycleResult(&output, "json", repository.MutationResult{Action: "clone", Recovered: true, WorktreeRoot: "/root", Path: worktree.Path, Inspection: &inspection}); err != nil {
+	if err := writeLifecycleResult(&output, "json", repository.MutationResult{Action: "clone", Recovered: true, WorktreeRoot: "/root", Path: worktree.Path, Inspection: &inspection}, nil); err != nil {
 		t.Fatal(err)
 	}
 	result := output.String()
@@ -87,7 +87,7 @@ func TestLifecycleJSONOutputUsesDedicatedVersionedDocument(t *testing.T) {
 
 func TestLifecycleHumanOutputReturnsWriteFailure(t *testing.T) {
 	want := errors.New("write failed")
-	if err := writeLifecycleResult(lifecycleFailingWriter{err: want}, "human", repository.MutationResult{Action: "clone", Path: "/root/repo"}); !errors.Is(err, want) {
+	if err := writeLifecycleResult(lifecycleFailingWriter{err: want}, "human", repository.MutationResult{Action: "clone", Path: "/root/repo"}, nil); !errors.Is(err, want) {
 		t.Fatalf("write error = %v", err)
 	}
 }
