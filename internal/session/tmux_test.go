@@ -230,6 +230,23 @@ func TestLegacyManagedSessionCanBeCapturedAndStopped(t *testing.T) {
 	}
 }
 
+func TestLegacyManagedIDOutranksUnmanagedSelectorNamespace(t *testing.T) {
+	root, worktree := initializeSessionWorktree(t)
+	fake := &fakeTmux{
+		path: worktree,
+		row:  "$4\tlegacy\t1720000000\t1720000000\t0\t" + LegacySchemaVersion + "\ttmux:$3\t\t\t" + worktree + "\n",
+	}
+	manager, err := New(root, filepath.Join(t.TempDir(), "operations", "git"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.commands = fake
+	value, err := manager.Resolve(t.Context(), "tmux:$3")
+	if err != nil || value.Ownership != Managed || value.ID != "tmux:$3" || value.TmuxID != "$4" {
+		t.Fatalf("resolved = %+v, error = %v", value, err)
+	}
+}
+
 func TestManagedActionsRefuseReusedUnmanagedTarget(t *testing.T) {
 	root, worktree := initializeSessionWorktree(t)
 	for _, operation := range []string{"logs", "stop"} {

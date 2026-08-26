@@ -301,7 +301,12 @@ func (s *Service) Resolve(ctx context.Context, selector string) (Session, error)
 		return Session{}, err
 	}
 	var matches []Session
-	if strings.HasPrefix(selector, "tmux:") {
+	for _, value := range catalog.Sessions {
+		if value.ID == selector && value.Ownership == Managed {
+			matches = append(matches, value)
+		}
+	}
+	if len(matches) == 0 && strings.HasPrefix(selector, "tmux:") {
 		tmuxID := strings.TrimPrefix(selector, "tmux:")
 		if !validTmuxID(tmuxID) {
 			return Session{}, &repository.Error{Code: repository.CodeInvalidInput, Message: "unmanaged Session selector is invalid"}
@@ -311,21 +316,14 @@ func (s *Service) Resolve(ctx context.Context, selector string) (Session, error)
 				matches = append(matches, value)
 			}
 		}
-	} else {
-		for _, value := range catalog.Sessions {
-			if value.ID == selector && value.Ownership == Managed {
-				matches = append(matches, value)
-			}
+	} else if len(matches) == 0 {
+		inspection, inspectErr := repository.Inspect(ctx, s.root, selector)
+		if inspectErr != nil {
+			return Session{}, inspectErr
 		}
-		if len(matches) == 0 {
-			inspection, inspectErr := repository.Inspect(ctx, s.root, selector)
-			if inspectErr != nil {
-				return Session{}, inspectErr
-			}
-			for _, value := range catalog.Sessions {
-				if value.Ownership == Managed && value.Association == AssociationLive && value.WorktreePath == inspection.Worktree.Path {
-					matches = append(matches, value)
-				}
+		for _, value := range catalog.Sessions {
+			if value.Ownership == Managed && value.Association == AssociationLive && value.WorktreePath == inspection.Worktree.Path {
+				matches = append(matches, value)
 			}
 		}
 	}
