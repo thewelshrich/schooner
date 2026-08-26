@@ -6,10 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/thewelshrich/schooner/internal/box"
-	"github.com/thewelshrich/schooner/internal/config"
 	"github.com/thewelshrich/schooner/internal/repository"
-	hostruntime "github.com/thewelshrich/schooner/internal/runtime"
 )
 
 type lifecycleFailingWriter struct{ err error }
@@ -92,51 +89,5 @@ func TestLifecycleHumanOutputReturnsWriteFailure(t *testing.T) {
 	want := errors.New("write failed")
 	if err := writeLifecycleResult(lifecycleFailingWriter{err: want}, "human", repository.MutationResult{Action: "clone", Path: "/root/repo"}); !errors.Is(err, want) {
 		t.Fatalf("write error = %v", err)
-	}
-}
-
-func TestValidateRemoteWorktreeRootRejectsDrift(t *testing.T) {
-	record := box.Record{Name: "work", WorktreeRoot: "/home/alice/schooner"}
-	if err := validateRemoteWorktreeRoot(record, record.WorktreeRoot); err != nil {
-		t.Fatal(err)
-	}
-	err := validateRemoteWorktreeRoot(record, "/home/alice/other")
-	if box.ErrorCode(err) != "conflict" || !strings.Contains(err.Error(), "box setup work") {
-		t.Fatalf("error = %v", err)
-	}
-}
-
-func TestValidateDirectWorktreeRootRejectsCanonicalDrift(t *testing.T) {
-	target := worktreeTarget{configured: config.Host{WorktreeRoot: "/home/alice/schooner"}, record: box.Record{Name: "work", WorktreeRoot: "/home/alice/schooner"}}
-	if err := validateDirectWorktreeRoot(target, target.configured.WorktreeRoot); err != nil {
-		t.Fatal(err)
-	}
-	err := validateDirectWorktreeRoot(target, "/home/alice/other")
-	if box.ErrorCode(err) != "conflict" || !strings.Contains(err.Error(), "box setup work") {
-		t.Fatalf("error = %v", err)
-	}
-}
-
-func TestPublicRepositoryErrorMapsNotFound(t *testing.T) {
-	cause := &repository.Error{Code: repository.CodeNotFound, Message: `worktree "missing" was not found`}
-	err := publicRepositoryError(cause)
-	if box.ErrorCode(err) != "not_found" || !strings.Contains(err.Error(), "missing") {
-		t.Fatalf("error = %v, code = %s", err, box.ErrorCode(err))
-	}
-}
-
-func TestPublicRepositoryErrorMapsInvalidInput(t *testing.T) {
-	cause := &repository.Error{Code: repository.CodeInvalidInput, Message: "worktree selector must be canonical"}
-	err := publicRepositoryError(cause)
-	if box.ErrorCode(err) != "invalid_input" {
-		t.Fatalf("error = %v, code = %s", err, box.ErrorCode(err))
-	}
-}
-
-func TestPublicRepositoryErrorMapsProtocolInvalidInput(t *testing.T) {
-	cause := &hostruntime.Error{Code: hostruntime.CodeInvalidInput, Message: "worktree request selector is invalid"}
-	err := publicRepositoryError(cause)
-	if box.ErrorCode(err) != "invalid_input" {
-		t.Fatalf("error = %v, code = %s", err, box.ErrorCode(err))
 	}
 }

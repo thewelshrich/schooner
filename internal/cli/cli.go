@@ -14,6 +14,7 @@ import (
 	"github.com/thewelshrich/schooner/internal/acquisition"
 	"github.com/thewelshrich/schooner/internal/artifact"
 	"github.com/thewelshrich/schooner/internal/box"
+	"github.com/thewelshrich/schooner/internal/boxtarget"
 	"github.com/thewelshrich/schooner/internal/credentials"
 	invsqlite "github.com/thewelshrich/schooner/internal/inventory/sqlite"
 	digitalOcean "github.com/thewelshrich/schooner/internal/provider/digitalocean"
@@ -104,6 +105,7 @@ func runWithHostRuntime(ctx context.Context, args []string, streams Streams, bui
 }
 
 func newRootCommand(build BuildInfo, streams Streams, options *globalOptions) *cobra.Command {
+	targets := newBoxTargetResolver(streams, options)
 	root := &cobra.Command{
 		Use:           "schooner",
 		Short:         "Create and operate persistent development machines",
@@ -142,10 +144,38 @@ func newRootCommand(build BuildInfo, streams Streams, options *globalOptions) *c
 	root.AddCommand(newDatabaseCommand(streams, options))
 	root.AddCommand(newProviderCommand(streams, options))
 	root.AddCommand(newBoxCommand(streams, options))
-	root.AddCommand(newCloneCommand(streams, options))
-	root.AddCommand(newWorktreeCommand(streams, options))
-	root.AddCommand(newSessionCommands(streams, options)...)
+	root.AddCommand(newCloneCommand(streams, options, targets))
+	root.AddCommand(newWorktreeCommand(streams, options, targets))
+	root.AddCommand(newSessionCommands(streams, options, targets)...)
 	return root
+}
+
+func newBoxTargetResolver(streams Streams, options *globalOptions) *boxtarget.Resolver {
+	remote := sshRuntime.NewHost("", streams.Err, defaultString(options.build.Version, "dev"), artifact.NewDeferredDefault())
+	return boxtarget.NewResolver(boxtarget.Options{
+		Direct: options.hostRuntime,
+		Remote: remote,
+		OpenInventory: func(ctx context.Context) (boxtarget.Inventory, error) {
+			path, err := invsqlite.DefaultPath()
+			if err != nil {
+				return nil, err
+			}
+			return invsqlite.Open(ctx, path)
+		},
+		OpenExistingInventory: func(ctx context.Context) (boxtarget.Inventory, bool, error) {
+			path, err := invsqlite.DefaultPath()
+			if err != nil {
+				return nil, false, err
+			}
+			if _, err = os.Stat(path); errors.Is(err, os.ErrNotExist) {
+				return nil, false, nil
+			} else if err != nil {
+				return nil, false, err
+			}
+			store, err := invsqlite.Open(ctx, path)
+			return store, err == nil, err
+		},
+	})
 }
 
 func openBoxService(ctx context.Context, streams Streams, build BuildInfo) (*box.Service, func(), error) {
