@@ -1,11 +1,13 @@
 package artifact
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestBuildDevelopmentBuildsAndVerifiesBothLinuxArchitectures(t *testing.T) {
@@ -200,5 +202,21 @@ chmod 0755 "$output"
 	}
 	if _, err = os.Stat(filepath.Dir(third.Artifacts[0].Path)); err != nil {
 		t.Fatalf("active generation is unavailable: %v", err)
+	}
+}
+
+func TestBuildDevelopmentStopsWaitingForBuildLockWhenContextEnds(t *testing.T) {
+	output := t.TempDir()
+	lock, err := acquireDevelopmentBuildLock(t.Context(), output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Release()
+
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer cancel()
+	_, err = BuildDevelopment(ctx, DevelopmentBuildOptions{SourceDir: t.TempDir(), OutputDir: output})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error = %v, want context deadline exceeded", err)
 	}
 }

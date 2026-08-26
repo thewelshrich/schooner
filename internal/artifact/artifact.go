@@ -204,11 +204,14 @@ func (r *Resolver) Resolve(ctx context.Context, version string, platform Platfor
 				return resolveDirectory(activeDirectory, version, platform, name)
 			}
 
-			lease, lockErr := acquireDevelopmentGenerationLease(activeDirectory, false)
+			lease, lockErr := acquireDevelopmentGenerationLease(ctx, activeDirectory)
 			if errors.Is(lockErr, os.ErrNotExist) {
 				continue
 			}
 			if lockErr != nil {
+				if ctx.Err() != nil {
+					return Result{}, ctx.Err()
+				}
 				return Result{}, &Error{Code: CodeCacheFailure, Message: "protect the active development artifact generation", Cause: lockErr}
 			}
 			confirmedDirectory, stillPublished, confirmErr := activeDevelopmentDirectory(directory)

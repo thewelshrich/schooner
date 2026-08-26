@@ -11,9 +11,13 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 )
 
-const developmentLockName = ".generation.lock"
+const (
+	developmentLockName          = ".generation.lock"
+	developmentLockRetryInterval = 25 * time.Millisecond
+)
 
 type DevelopmentBuildOptions struct {
 	SourceDir string
@@ -48,7 +52,7 @@ func BuildDevelopment(ctx context.Context, options DevelopmentBuildOptions) (Dev
 	if err = os.MkdirAll(outputDir, 0o700); err != nil {
 		return DevelopmentBuild{}, fmt.Errorf("create development artifact directory: %w", err)
 	}
-	buildLock, err := acquireDevelopmentBuildLock(outputDir)
+	buildLock, err := acquireDevelopmentBuildLock(ctx, outputDir)
 	if err != nil {
 		return DevelopmentBuild{}, fmt.Errorf("lock development artifact directory: %w", err)
 	}
@@ -166,16 +170,35 @@ func (l *developmentLease) Release() error {
 	return l.err
 }
 
-func acquireDevelopmentBuildLock(outputDir string) (*developmentLease, error) {
-	return acquireDevelopmentLease(filepath.Join(outputDir, developmentLockName), syscall.LOCK_EX)
+func acquireDevelopmentBuildLock(ctx context.Context, outputDir string) (*developmentLease, error) {
+	return acquireDevelopmentLeaseContext(ctx, filepath.Join(outputDir, developmentLockName), syscall.LOCK_EX)
 }
 
-func acquireDevelopmentGenerationLease(generationDir string, nonBlocking bool) (*developmentLease, error) {
-	operation := syscall.LOCK_SH
-	if nonBlocking {
-		operation = syscall.LOCK_EX | syscall.LOCK_NB
+func acquireDevelopmentGenerationLease(ctx context.Context, generationDir string) (*developmentLease, error) {
+	return acquireDevelopmentLeaseContext(ctx, filepath.Join(generationDir, developmentLockName), syscall.LOCK_SH)
+}
+
+func tryAcquireDevelopmentGenerationLease(generationDir string) (*developmentLease, error) {
+	return acquireDevelopmentLease(filepath.Join(generationDir, developmentLockName), syscall.LOCK_EX|syscall.LOCK_NB)
+}
+
+func acquireDevelopmentLeaseContext(ctx context.Context, path string, operation int) (*developmentLease, error) {
+	ticker := time.NewTicker(developmentLockRetryInterval)
+	defer ticker.Stop()
+	for {
+		lease, err := acquireDevelopmentLease(path, operation|syscall.LOCK_NB)
+		if err == nil {
+			return lease, nil
+		}
+		if !developmentLockBusy(err) {
+			return nil, err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-ticker.C:
+		}
 	}
-	return acquireDevelopmentLease(filepath.Join(generationDir, developmentLockName), operation)
 }
 
 func acquireDevelopmentLease(path string, operation int) (*developmentLease, error) {
@@ -190,6 +213,10 @@ func acquireDevelopmentLease(path string, operation int) (*developmentLease, err
 	return &developmentLease{file: file}, nil
 }
 
+func developmentLockBusy(err error) bool {
+	return errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN)
+}
+
 func cleanupDevelopmentGenerations(outputDir, activeGeneration string) error {
 	entries, err := os.ReadDir(outputDir)
 	if err != nil {
@@ -201,8 +228,8 @@ func cleanupDevelopmentGenerations(outputDir, activeGeneration string) error {
 			continue
 		}
 		generationDir := filepath.Join(outputDir, name)
-		lease, lockErr := acquireDevelopmentGenerationLease(generationDir, true)
-		if errors.Is(lockErr, syscall.EWOULDBLOCK) || errors.Is(lockErr, syscall.EAGAIN) {
+		lease, lockErr := tryAcquireDevelopmentGenerationLease(generationDir)
+		if developmentLockBusy(lockErr) {
 			continue
 		}
 		if errors.Is(lockErr, os.ErrNotExist) {
