@@ -63,6 +63,37 @@ func TestEnsureCreatesAndRecoversBoxOwnedIdentity(t *testing.T) {
 	}
 }
 
+func TestInspectTreatsMalformedManagedTrustAsUnconfigured(t *testing.T) {
+	if _, err := exec.LookPath("ssh-keygen"); err != nil {
+		t.Skip("ssh-keygen is required")
+	}
+	manager, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = manager.Ensure(t.Context(), testEnsureRequest(t)); err != nil {
+		t.Fatal(err)
+	}
+	validLine := "github.com " + boxGitTestHostKey + "\n"
+	for name, contents := range map[string]string{
+		"empty":           "",
+		"invalid key":     "github.com ssh-ed25519 invalid\n",
+		"wrong host":      "example.com " + boxGitTestHostKey + "\n",
+		"missing newline": strings.TrimSuffix(validLine, "\n"),
+		"duplicate key":   validLine + validLine,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := os.WriteFile(manager.paths().knownHosts, []byte(contents), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			identity, inspectErr := manager.Inspect(t.Context(), source.GitHub)
+			if inspectErr != nil || !identity.Exists || identity.TrustConfigured {
+				t.Fatalf("identity=%+v err=%v", identity, inspectErr)
+			}
+		})
+	}
+}
+
 func TestEnsureRejectsKnownHostsSymlink(t *testing.T) {
 	if _, err := exec.LookPath("ssh-keygen"); err != nil {
 		t.Skip("ssh-keygen is required")

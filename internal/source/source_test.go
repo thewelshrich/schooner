@@ -549,6 +549,67 @@ func TestFormerBoxNameCanRevokeBeforeMachineIsReadopted(t *testing.T) {
 	}
 }
 
+func TestReusedBoxNameFallsBackToRetainedBindingWithoutTouchingReplacement(t *testing.T) {
+	manager, store, _, github, target := testManager(t)
+	if _, err := manager.Connect(t.Context(), ConnectRequest{Target: target, AllowAuthorization: true}); err != nil {
+		t.Fatal(err)
+	}
+	replacement := &fakeTarget{
+		boxName:     target.boxName,
+		boxIdentity: "22222222-2222-4222-8222-222222222222",
+		identity:    target.identity,
+	}
+
+	status, err := manager.Status(t.Context(), StatusRequest{Target: replacement, BoxName: replacement.boxName})
+	if err != nil || status.State != StatusUnknown || status.BoxIdentity != target.boxIdentity || status.Box.State != "unknown" {
+		t.Fatalf("status=%+v err=%v", status, err)
+	}
+	result, err := manager.Disconnect(t.Context(), DisconnectRequest{Target: replacement, BoxName: replacement.boxName})
+	if err != nil || !result.Revoked || !result.CleanupPending || result.BoxFilesRemoved || github.deleteCalls != 1 {
+		t.Fatalf("result=%+v deleteCalls=%d err=%v", result, github.deleteCalls, err)
+	}
+	if !replacement.identity.Exists || store.identities[target.boxIdentity].State != StateCleanupPending {
+		t.Fatalf("replacement=%+v binding=%+v", replacement.identity, store.identities[target.boxIdentity])
+	}
+}
+
+func TestConnectRejectsReusedBoxNameBeforeCreatingAReplacementIdentity(t *testing.T) {
+	manager, store, _, github, target := testManager(t)
+	if _, err := manager.Connect(t.Context(), ConnectRequest{Target: target, AllowAuthorization: true}); err != nil {
+		t.Fatal(err)
+	}
+	replacement := &fakeTarget{
+		boxName:     target.boxName,
+		boxIdentity: "22222222-2222-4222-8222-222222222222",
+		identity:    target.identity,
+	}
+
+	_, err := manager.Connect(t.Context(), ConnectRequest{Target: replacement})
+	if ErrorCode(err) != "conflict" || replacement.ensureCalls != 0 || github.createCalls != 1 || len(store.identities) != 1 {
+		t.Fatalf("err=%v ensureCalls=%d createCalls=%d identities=%+v", err, replacement.ensureCalls, github.createCalls, store.identities)
+	}
+}
+
+func TestDuplicateBindingsForReusedBoxNameReturnConflict(t *testing.T) {
+	manager, store, _, _, target := testManager(t)
+	if _, err := manager.Connect(t.Context(), ConnectRequest{Target: target, AllowAuthorization: true}); err != nil {
+		t.Fatal(err)
+	}
+	replacement := &fakeTarget{
+		boxName:     target.boxName,
+		boxIdentity: "22222222-2222-4222-8222-222222222222",
+		identity:    target.identity,
+	}
+	duplicate := store.identities[target.boxIdentity]
+	duplicate.BoxIdentity = replacement.boxIdentity
+	store.identities[replacement.boxIdentity] = duplicate
+
+	_, err := manager.Status(t.Context(), StatusRequest{Target: replacement, BoxName: replacement.boxName})
+	if ErrorCode(err) != "conflict" {
+		t.Fatalf("err=%v", err)
+	}
+}
+
 func testManager(t *testing.T) (*Manager, *memorySourceStore, *memorySecrets, *fakeGitHub, *fakeTarget) {
 	t.Helper()
 	publicKey := testPublicKey + " schooner:test"
@@ -609,10 +670,19 @@ func (s *memorySourceStore) FindBoxSourceIdentity(_ context.Context, identity, _
 	return value, nil
 }
 func (s *memorySourceStore) FindBoxSourceIdentityByName(_ context.Context, name, _ string) (BoxIdentity, error) {
+	var result BoxIdentity
+	matches := 0
 	for _, value := range s.identities {
 		if value.BoxName == name {
-			return value, nil
+			result = value
+			matches++
 		}
+	}
+	if matches > 1 {
+		return BoxIdentity{}, NewError("conflict", "multiple retained Box source identities use the former name", nil)
+	}
+	if matches == 1 {
+		return result, nil
 	}
 	return BoxIdentity{}, NewError("not_found", "missing", nil)
 }
@@ -753,6 +823,7 @@ type fakeTarget struct {
 	boxName           string
 	boxIdentity       string
 	identity          HostIdentity
+	ensureCalls       int
 	removeErr         error
 	removeUnconfirmed bool
 	verifyErr         error
@@ -765,6 +836,7 @@ func (f *fakeTarget) InspectSourceIdentity(context.Context, string) (HostIdentit
 	return f.identity, nil
 }
 func (f *fakeTarget) EnsureSourceIdentity(context.Context, EnsureIdentityRequest) (HostIdentity, error) {
+	f.ensureCalls++
 	return f.identity, nil
 }
 func (f *fakeTarget) RemoveSourceIdentity(_ context.Context, request RemoveIdentityRequest) (RemoveIdentityResult, error) {

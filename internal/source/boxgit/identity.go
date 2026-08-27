@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -79,8 +80,12 @@ func (m *Manager) Inspect(ctx context.Context, provider string) (result source.H
 	if err != nil {
 		return source.HostIdentity{}, err
 	}
+	trustConfigured, err := inspectKnownHosts(paths.knownHosts, trustPresent)
+	if err != nil {
+		return source.HostIdentity{}, err
+	}
 	if !privatePresent && !publicPresent {
-		return source.HostIdentity{Provider: provider, TrustConfigured: trustPresent}, nil
+		return source.HostIdentity{Provider: provider, TrustConfigured: trustConfigured}, nil
 	}
 	if !privatePresent || !publicPresent {
 		return source.HostIdentity{}, source.NewError("outcome_unknown", "the Box GitHub source identity is incomplete", nil)
@@ -92,7 +97,7 @@ func (m *Manager) Inspect(ctx context.Context, provider string) (result source.H
 	if err != nil {
 		return source.HostIdentity{}, err
 	}
-	return source.HostIdentity{Provider: provider, Exists: true, PublicKey: publicKey, Fingerprint: fingerprint, TrustConfigured: trustPresent}, nil
+	return source.HostIdentity{Provider: provider, Exists: true, PublicKey: publicKey, Fingerprint: fingerprint, TrustConfigured: trustConfigured}, nil
 }
 
 func (m *Manager) Ensure(ctx context.Context, request source.EnsureIdentityRequest) (result source.HostIdentity, err error) {
@@ -376,6 +381,48 @@ func writeKnownHosts(path string, keys []source.HostKey) error {
 		contents.WriteByte('\n')
 	}
 	return writeAtomic(path, []byte(contents.String()), 0o644)
+}
+
+func inspectKnownHosts(path string, present bool) (bool, error) {
+	if !present {
+		return false, nil
+	}
+	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return false, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return false, err
+	}
+	if !info.Mode().IsRegular() {
+		return false, source.NewError("conflict", "Box source identity contains a non-regular file", nil)
+	}
+	contents, err := io.ReadAll(io.LimitReader(file, int64(outputLimit)+1))
+	if err != nil {
+		return false, err
+	}
+	if len(contents) == 0 || len(contents) > outputLimit || !strings.HasSuffix(string(contents), "\n") {
+		return false, nil
+	}
+	lines := strings.Split(strings.TrimSuffix(string(contents), "\n"), "\n")
+	if len(lines) == 0 || len(lines) > 16 {
+		return false, nil
+	}
+	seen := map[string]bool{}
+	for _, line := range lines {
+		fields := strings.Fields(line)
+		if len(fields) != 3 || line != "github.com "+fields[1]+" "+fields[2] {
+			return false, nil
+		}
+		fingerprint, fingerprintErr := source.PublicKeyFingerprint(fields[1] + " " + fields[2])
+		if fingerprintErr != nil || seen[fingerprint] {
+			return false, nil
+		}
+		seen[fingerprint] = true
+	}
+	return true, nil
 }
 
 func writeAtomic(path string, contents []byte, mode os.FileMode) error {

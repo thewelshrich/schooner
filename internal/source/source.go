@@ -279,6 +279,17 @@ func (m *Manager) Connect(ctx context.Context, request ConnectRequest) (result C
 		return ConnectResult{}, err
 	}
 	defer lock.Close()
+	boxName := request.Target.BoxName()
+	if boxName == "" {
+		suffix := request.Target.BoxIdentity()
+		if len(suffix) > 8 {
+			suffix = suffix[:8]
+		}
+		boxName = "box-" + suffix
+	}
+	if err = m.ensureBoxNameAvailable(ctx, boxName, request.Target.BoxIdentity()); err != nil {
+		return ConnectResult{}, err
+	}
 
 	_, accountErr := m.store.FindSourceAccount(ctx, GitHub)
 	if accountErr != nil && !IsNotFound(accountErr) {
@@ -336,14 +347,7 @@ func (m *Manager) Connect(ctx context.Context, request ConnectRequest) (result C
 		return ConnectResult{}, NewError("conflict", "the Box GitHub key differs from the recorded source identity", nil)
 	}
 	binding.BoxIdentity = request.Target.BoxIdentity()
-	binding.BoxName = request.Target.BoxName()
-	if binding.BoxName == "" {
-		suffix := binding.BoxIdentity
-		if len(suffix) > 8 {
-			suffix = suffix[:8]
-		}
-		binding.BoxName = "box-" + suffix
-	}
+	binding.BoxName = boxName
 	binding.Provider = GitHub
 	binding.AccountExternalID = account.ID
 	binding.Fingerprint = hostIdentity.Fingerprint
@@ -739,15 +743,62 @@ func findRemoteKey(keys []RemoteKey, binding BoxIdentity) (RemoteKey, bool, bool
 }
 
 func (m *Manager) resolveBinding(ctx context.Context, target Target, boxName string) (BoxIdentity, Target, error) {
-	if target != nil && target.BoxIdentity() != "" {
-		binding, err := m.store.FindBoxSourceIdentity(ctx, target.BoxIdentity(), GitHub)
-		return binding, target, err
+	resolvedName := boxName
+	if resolvedName == "" && target != nil {
+		resolvedName = target.BoxName()
 	}
-	if boxName == "" {
+	if target != nil && target.BoxIdentity() != "" {
+		binding, identityErr := m.store.FindBoxSourceIdentity(ctx, target.BoxIdentity(), GitHub)
+		if identityErr == nil {
+			if resolvedName == "" {
+				return binding, target, nil
+			}
+			named, nameErr := m.store.FindBoxSourceIdentityByName(ctx, resolvedName, GitHub)
+			if IsNotFound(nameErr) {
+				return binding, target, nil
+			}
+			if nameErr != nil {
+				return BoxIdentity{}, nil, nameErr
+			}
+			if named.BoxIdentity != binding.BoxIdentity {
+				return BoxIdentity{}, nil, NewError("conflict", "the Box name refers to a different retained source identity", nil)
+			}
+			return binding, target, nil
+		}
+		if !IsNotFound(identityErr) || resolvedName == "" {
+			return BoxIdentity{}, nil, identityErr
+		}
+		binding, nameErr := m.store.FindBoxSourceIdentityByName(ctx, resolvedName, GitHub)
+		if nameErr == nil {
+			// The inventory name was reused by another machine. The retained
+			// binding remains authoritative, but that new target must never be
+			// used to inspect or remove the former machine's files.
+			return binding, nil, nil
+		}
+		if IsNotFound(nameErr) {
+			return BoxIdentity{}, nil, identityErr
+		}
+		return BoxIdentity{}, nil, nameErr
+	}
+	if resolvedName == "" {
 		return BoxIdentity{}, nil, NewError("invalid_input", "a Box is required", nil)
 	}
-	binding, err := m.store.FindBoxSourceIdentityByName(ctx, boxName, GitHub)
+	binding, err := m.store.FindBoxSourceIdentityByName(ctx, resolvedName, GitHub)
 	return binding, nil, err
+}
+
+func (m *Manager) ensureBoxNameAvailable(ctx context.Context, boxName, boxIdentity string) error {
+	binding, err := m.store.FindBoxSourceIdentityByName(ctx, boxName, GitHub)
+	if IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if binding.BoxIdentity != boxIdentity {
+		return NewError("conflict", "disconnect the retained source identity using this Box name before connecting its replacement", nil)
+	}
+	return nil
 }
 
 func (m *Manager) resolveAccount(ctx context.Context, allowAuthorization bool) (Token, RemoteAccount, string, error) {
