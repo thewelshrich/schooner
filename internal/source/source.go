@@ -10,7 +10,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -850,7 +849,13 @@ func (m *Manager) resolveAccount(ctx context.Context, allowAuthorization bool) (
 		return m.authorize(ctx, Account{})
 	}
 	token, persisted, tokenErr := m.loadToken(account)
-	if tokenErr != nil || token.AccessToken == "" {
+	if tokenErr != nil {
+		if ErrorCode(tokenErr) != "authentication_required" || !allowAuthorization {
+			return Token{}, RemoteAccount{}, "", tokenErr
+		}
+		return m.authorize(ctx, account)
+	}
+	if token.AccessToken == "" {
 		if !allowAuthorization {
 			return Token{}, RemoteAccount{}, "", authenticationRequired("the GitHub Source Account needs to be reconnected")
 		}
@@ -938,7 +943,7 @@ func (m *Manager) loadToken(account Account) (Token, bool, error) {
 	}
 	value, err := m.secrets.Get(account.CredentialKey)
 	if err != nil {
-		return Token{}, false, err
+		return Token{}, false, NewError(CodeSourceUnavailable, "operating-system credential storage is unavailable", err)
 	}
 	if value == "" {
 		return Token{}, false, nil
@@ -949,7 +954,7 @@ func (m *Manager) loadToken(account Account) (Token, bool, error) {
 		Token
 	}
 	if err = json.Unmarshal([]byte(value), &envelope); err != nil || envelope.SchemaVersion != "1" || envelope.Generation != account.CredentialGeneration || !validCredentialToken(envelope.Token) {
-		return Token{}, false, fmt.Errorf("stored GitHub credential is invalid")
+		return Token{}, false, authenticationRequired("the stored GitHub credential is invalid")
 	}
 	return envelope.Token, true, nil
 }

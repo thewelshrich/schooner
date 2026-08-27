@@ -60,6 +60,24 @@ func TestUnavailableKeyringUsesInvocationMemoryOnly(t *testing.T) {
 	}
 }
 
+func TestCredentialStoreReadFailureNeverReauthorizes(t *testing.T) {
+	manager, store, secrets, github, target := testManager(t)
+	if _, err := manager.Connect(t.Context(), ConnectRequest{Target: target, AllowAuthorization: true}); err != nil {
+		t.Fatal(err)
+	}
+	generation := store.account.CredentialGeneration
+	secrets.getErr = errors.New("keyring locked")
+
+	_, _, _, err := manager.resolveAccount(t.Context(), true)
+	if ErrorCode(err) != CodeSourceUnavailable || github.authorizeCalls != 1 || store.account.CredentialGeneration != generation {
+		t.Fatalf("err=%v authorizeCalls=%d account=%+v", err, github.authorizeCalls, store.account)
+	}
+	status, err := manager.Status(t.Context(), StatusRequest{Target: target})
+	if err != nil || status.State != StatusUnknown || len(status.Warnings) == 0 || github.authorizeCalls != 1 {
+		t.Fatalf("status=%+v authorizeCalls=%d err=%v", status, github.authorizeCalls, err)
+	}
+}
+
 func TestConnectRemovesNewAuthorizationWhenNoBindingCanBeCheckpointed(t *testing.T) {
 	manager, store, secrets, github, target := testManager(t)
 	github.hostKeysErr = NewError(CodeSourceUnavailable, "GitHub metadata unavailable", nil)
@@ -724,11 +742,17 @@ func (s *memorySourceStore) DeleteBoxSourceIdentity(_ context.Context, identity,
 
 type memorySecrets struct {
 	values    map[string]string
+	getErr    error
 	setErr    error
 	deleteErr error
 }
 
-func (s *memorySecrets) Get(key string) (string, error) { return s.values[key], nil }
+func (s *memorySecrets) Get(key string) (string, error) {
+	if s.getErr != nil {
+		return "", s.getErr
+	}
+	return s.values[key], nil
+}
 func (s *memorySecrets) Set(key, value string) error {
 	if s.setErr != nil {
 		return s.setErr
