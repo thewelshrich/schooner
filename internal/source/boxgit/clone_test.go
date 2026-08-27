@@ -3,6 +3,7 @@ package boxgit
 import (
 	"context"
 	"errors"
+	"os/exec"
 	"slices"
 	"strings"
 	"testing"
@@ -94,6 +95,31 @@ func TestCloneStopsImmediatelyForNetworkFailure(t *testing.T) {
 }
 
 func TestCloneRetainsSAMLClassificationAcrossFallbacks(t *testing.T) {
+	if _, err := exec.LookPath("ssh-keygen"); err != nil {
+		t.Skip("ssh-keygen is required")
+	}
+	manager, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = manager.Ensure(t.Context(), testEnsureRequest(t)); err != nil {
+		t.Fatal(err)
+	}
+	failure := errors.New("exit 128")
+	manager.run = &cloneScriptRunner{delegate: osRunner{}, responses: []cloneResponse{
+		{result: process.Result{Stderr: []byte("Authentication failed")}, err: failure},
+		{result: process.Result{Stderr: []byte("Permission denied (publickey)")}, err: failure},
+		{result: process.Result{Stderr: []byte("The 'acme-tools' organization has enabled SAML single sign-on")}, err: failure},
+		{result: process.Result{Stderr: []byte("Repository not found")}, err: failure},
+	}}
+	err = manager.Clone(t.Context(), cloneExecution(t, "https://github.com/owner/repo.git"), func() error { return nil })
+	var domain *source.Error
+	if !errors.As(err, &domain) || domain.Code != "authentication_required" || domain.Context["reason"] != "github_saml_sso" || domain.Context["organization"] != "acme-tools" {
+		t.Fatalf("error = %#v", err)
+	}
+}
+
+func TestCloneDoesNotAttributeAmbientSAMLToManagedKey(t *testing.T) {
 	manager, err := New(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -106,7 +132,7 @@ func TestCloneRetainsSAMLClassificationAcrossFallbacks(t *testing.T) {
 	}}
 	err = manager.Clone(t.Context(), cloneExecution(t, "https://github.com/owner/repo.git"), func() error { return nil })
 	var domain *source.Error
-	if !errors.As(err, &domain) || domain.Code != "authentication_required" || domain.Context["reason"] != "github_saml_sso" || domain.Context["organization"] != "acme-tools" {
+	if !errors.As(err, &domain) || domain.Code != "authentication_required" || domain.Context["reason"] != "credentials_missing" {
 		t.Fatalf("error = %#v", err)
 	}
 }

@@ -71,7 +71,7 @@ func (m *Manager) Clone(ctx context.Context, request source.CloneExecution, prep
 		}
 		lastAuthentication = classified
 		var domain *source.Error
-		if errors.As(classified, &domain) && domain.Context["reason"] == "github_saml_sso" {
+		if candidate.managed && errors.As(classified, &domain) && domain.Context["reason"] == "github_saml_sso" {
 			samlAuthentication = classified
 		}
 	}

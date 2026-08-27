@@ -104,7 +104,10 @@ func RepositoryIdentityFor(raw string) (identity RepositoryIdentity, network boo
 
 func normalizedRepositoryIdentity(host, explicitPort, repositoryPath string) (RepositoryIdentity, bool, error) {
 	host = strings.ToLower(strings.TrimSpace(host))
-	repositoryPath = strings.Trim(strings.ReplaceAll(repositoryPath, "\\", "/"), "/")
+	if strings.ContainsRune(repositoryPath, '\\') {
+		return RepositoryIdentity{}, true, NewError("invalid_input", "repository source has an invalid identity", nil)
+	}
+	repositoryPath = strings.Trim(repositoryPath, "/")
 	repositoryPath = strings.TrimSuffix(repositoryPath, ".git")
 	cleaned := path.Clean(repositoryPath)
 	if host == "" || repositoryPath == "" || cleaned != repositoryPath || cleaned == "." || strings.HasPrefix(cleaned, "../") || containsControl(cleaned) {

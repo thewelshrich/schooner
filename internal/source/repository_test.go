@@ -27,6 +27,9 @@ func TestRepositoryIdentityRejectsCredentialBearingAndMalformedSources(t *testin
 		"http://github.com/openai/codex.git",
 		"ssh://git@github.com:2222/openai/codex.git",
 		"git@github.com:openai/codex/extra.git",
+		`git@github.com:openai\codex.git`,
+		`https://github.com/openai\codex.git`,
+		"https://github.com/openai%5Ccodex.git",
 		"https://github.com/openai/../codex.git",
 	} {
 		if _, network, err := RepositoryIdentityFor(value); !network || err == nil {
