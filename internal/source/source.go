@@ -270,7 +270,7 @@ func NewManager(store Store, secrets secretstore.Store, github GitHubClient, loc
 	return &Manager{store: store, secrets: secrets, github: github, locks: lockDirectory, now: time.Now, ephemeral: map[string]Token{}}, nil
 }
 
-func (m *Manager) Connect(ctx context.Context, request ConnectRequest) (ConnectResult, error) {
+func (m *Manager) Connect(ctx context.Context, request ConnectRequest) (result ConnectResult, returnErr error) {
 	if request.Target == nil || request.Target.BoxIdentity() == "" {
 		return ConnectResult{}, NewError("invalid_input", "a Box is required to connect a source", nil)
 	}
@@ -280,9 +280,29 @@ func (m *Manager) Connect(ctx context.Context, request ConnectRequest) (ConnectR
 	}
 	defer lock.Close()
 
+	_, accountErr := m.store.FindSourceAccount(ctx, GitHub)
+	if accountErr != nil && !IsNotFound(accountErr) {
+		return ConnectResult{}, accountErr
+	}
+	newAccount := IsNotFound(accountErr)
 	token, account, warning, err := m.resolveAccount(ctx, request.AllowAuthorization)
 	if err != nil {
 		return ConnectResult{}, err
+	}
+	bindingCheckpointed := false
+	if newAccount {
+		defer func() {
+			if returnErr == nil || bindingCheckpointed {
+				return
+			}
+			if _, cleanupErr := m.cleanupUnboundAccount(ctx); cleanupErr != nil {
+				returnErr = NewError(
+					"outcome_unknown",
+					"GitHub connection failed before a recoverable Box binding was saved, and the new Source Account could not be removed",
+					errors.Join(returnErr, cleanupErr),
+				)
+			}
+		}()
 	}
 	hostKeys, err := m.github.HostKeys(ctx)
 	if err != nil {
@@ -332,6 +352,7 @@ func (m *Manager) Connect(ctx context.Context, request ConnectRequest) (ConnectR
 	if err = m.store.SaveBoxSourceIdentity(ctx, binding); err != nil {
 		return ConnectResult{}, err
 	}
+	bindingCheckpointed = true
 
 	remoteKey, err := m.reconcileKey(ctx, token.AccessToken, binding, hostIdentity.PublicKey)
 	if err != nil {
@@ -339,12 +360,20 @@ func (m *Manager) Connect(ctx context.Context, request ConnectRequest) (ConnectR
 	}
 	binding.RemoteKeyID = remoteKey.ID
 	binding.RemoteKeyTitle = remoteKey.Title
-	binding.State = StateConnected
 	binding.UpdatedAt = m.now().UTC()
 	if err = m.store.SaveBoxSourceIdentity(ctx, binding); err != nil {
 		return ConnectResult{}, err
 	}
-	if _, err = request.Target.VerifySourceRepository(ctx, VerifyRequest{Provider: GitHub, Repository: request.Repository}); err != nil {
+	verification, err := request.Target.VerifySourceRepository(ctx, VerifyRequest{Provider: GitHub, Repository: request.Repository})
+	if err != nil {
+		return ConnectResult{}, err
+	}
+	if !verification.Authenticated {
+		return ConnectResult{}, NewError("outcome_unknown", "the Box did not confirm GitHub source access", nil)
+	}
+	binding.State = StateConnected
+	binding.UpdatedAt = m.now().UTC()
+	if err = m.store.SaveBoxSourceIdentity(ctx, binding); err != nil {
 		return ConnectResult{}, err
 	}
 	return ConnectResult{
@@ -479,16 +508,18 @@ func (m *Manager) Status(ctx context.Context, request StatusRequest) (StatusResu
 			result.State = StatusUnknown
 			return result, nil
 		}
-		binding.RemoteKeyID = remote.ID
-		binding.RemoteKeyTitle = remote.Title
-		binding.State = StateConnected
-		binding.UpdatedAt = m.now().UTC()
-		if err = m.store.SaveBoxSourceIdentity(ctx, binding); err != nil {
-			return StatusResult{}, err
+		if binding.RemoteKeyID != remote.ID || binding.RemoteKeyTitle != remote.Title {
+			binding.RemoteKeyID = remote.ID
+			binding.RemoteKeyTitle = remote.Title
+			binding.UpdatedAt = m.now().UTC()
+			if err = m.store.SaveBoxSourceIdentity(ctx, binding); err != nil {
+				return StatusResult{}, err
+			}
+			result.RemoteKeyID = remote.ID
+			result.RemoteKeyTitle = remote.Title
 		}
-		result.Local.State = string(StateConnected)
-		result.State = StatusConnected
-		result.Warnings = append(result.Warnings, "Recovered an interrupted GitHub source connection.")
+		result.State = StatusActionRequired
+		result.Warnings = append(result.Warnings, "GitHub key registration is present, but SSH verification is pending; run source connect again.")
 		return result, nil
 	}
 	if mismatch || (result.Box.State == "present" && result.Box.Fingerprint != binding.Fingerprint) || (result.Box.State != "present" && result.Box.State != "unknown") || !present {
@@ -534,7 +565,20 @@ func (m *Manager) resumeCleanup(ctx context.Context, target Target, binding BoxI
 func (m *Manager) Disconnect(ctx context.Context, request DisconnectRequest) (DisconnectResult, error) {
 	binding, target, err := m.resolveBinding(ctx, request.Target, request.BoxName)
 	if IsNotFound(err) {
-		return DisconnectResult{Provider: GitHub, BoxName: request.BoxName, State: StatusNotConnected, Local: LayerObservation{State: "absent"}, Box: LayerObservation{State: "unknown"}, Remote: LayerObservation{State: "unknown"}, Revoked: true}, nil
+		operationIdentity := request.BoxName
+		if target != nil && target.BoxIdentity() != "" {
+			operationIdentity = target.BoxIdentity()
+		}
+		lock, lockErr := m.acquireOperation(operationIdentity, GitHub)
+		if lockErr != nil {
+			return DisconnectResult{}, lockErr
+		}
+		defer lock.Close()
+		accountRemoved, cleanupErr := m.cleanupUnboundAccount(ctx)
+		if cleanupErr != nil {
+			return DisconnectResult{}, cleanupErr
+		}
+		return DisconnectResult{Provider: GitHub, BoxName: request.BoxName, State: StatusNotConnected, Local: LayerObservation{State: "absent"}, Box: LayerObservation{State: "unknown"}, Remote: LayerObservation{State: "unknown"}, Revoked: true, AccountRemoved: accountRemoved}, nil
 	}
 	if err != nil {
 		return DisconnectResult{}, err
@@ -899,6 +943,38 @@ func validRemoteAccount(account RemoteAccount) bool {
 		}
 	}
 	return nonzeroID
+}
+
+func (m *Manager) cleanupUnboundAccount(ctx context.Context) (bool, error) {
+	bindings, err := m.store.ListBoxSourceIdentities(ctx, GitHub)
+	if err != nil {
+		return false, err
+	}
+	if len(bindings) != 0 {
+		return false, nil
+	}
+	account, err := m.store.FindSourceAccount(ctx, GitHub)
+	if err != nil && !IsNotFound(err) {
+		return false, err
+	}
+	if IsNotFound(err) {
+		m.mu.Lock()
+		delete(m.ephemeral, GitHub)
+		m.mu.Unlock()
+		return false, nil
+	}
+	if account.CredentialKey != "" {
+		if err = m.secrets.Delete(account.CredentialKey); err != nil {
+			return false, NewError("internal", "could not remove the unbound GitHub credential from operating-system storage", err)
+		}
+	}
+	m.mu.Lock()
+	delete(m.ephemeral, GitHub)
+	m.mu.Unlock()
+	if err = m.store.DeleteSourceAccount(ctx, GitHub); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func (m *Manager) finishCleanup(ctx context.Context, binding BoxIdentity) (bool, error) {

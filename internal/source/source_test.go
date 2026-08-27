@@ -60,6 +60,36 @@ func TestUnavailableKeyringUsesInvocationMemoryOnly(t *testing.T) {
 	}
 }
 
+func TestConnectRemovesNewAuthorizationWhenNoBindingCanBeCheckpointed(t *testing.T) {
+	manager, store, secrets, github, target := testManager(t)
+	github.hostKeysErr = NewError(CodeSourceUnavailable, "GitHub metadata unavailable", nil)
+
+	_, err := manager.Connect(t.Context(), ConnectRequest{Target: target, AllowAuthorization: true})
+	if ErrorCode(err) != CodeSourceUnavailable {
+		t.Fatalf("err=%v", err)
+	}
+	if store.account.Provider != "" || len(store.identities) != 0 || len(secrets.values) != 0 {
+		t.Fatalf("account=%+v identities=%+v stored secret count=%d", store.account, store.identities, len(secrets.values))
+	}
+}
+
+func TestDisconnectRetriesUnboundAuthorizationCleanup(t *testing.T) {
+	manager, store, secrets, github, target := testManager(t)
+	github.hostKeysErr = NewError(CodeSourceUnavailable, "GitHub metadata unavailable", nil)
+	secrets.deleteErr = errors.New("keyring locked")
+
+	_, err := manager.Connect(t.Context(), ConnectRequest{Target: target, AllowAuthorization: true})
+	if ErrorCode(err) != "outcome_unknown" || store.account.Provider == "" || len(secrets.values) != 1 || len(store.identities) != 0 {
+		t.Fatalf("err=%v account=%+v stored secret count=%d identities=%+v", err, store.account, len(secrets.values), store.identities)
+	}
+
+	secrets.deleteErr = nil
+	result, err := manager.Disconnect(t.Context(), DisconnectRequest{Target: target})
+	if err != nil || !result.AccountRemoved || result.State != StatusNotConnected || store.account.Provider != "" || len(secrets.values) != 0 {
+		t.Fatalf("result=%+v account=%+v stored secret count=%d err=%v", result, store.account, len(secrets.values), err)
+	}
+}
+
 func TestDisconnectRevokesBeforeRecoverableBoxCleanup(t *testing.T) {
 	manager, store, _, github, target := testManager(t)
 	if _, err := manager.Connect(t.Context(), ConnectRequest{Target: target, AllowAuthorization: true}); err != nil {
@@ -161,7 +191,7 @@ func TestConnectIgnoresDuplicateTitlesAndMatchesOnlyFingerprint(t *testing.T) {
 	}
 }
 
-func TestStatusRecoversInterruptedConnectingCheckpoint(t *testing.T) {
+func TestConnectingCheckpointRequiresConnectToRepeatSSHVerification(t *testing.T) {
 	manager, store, _, _, target := testManager(t)
 	if _, err := manager.Connect(t.Context(), ConnectRequest{Target: target, AllowAuthorization: true}); err != nil {
 		t.Fatal(err)
@@ -173,9 +203,39 @@ func TestStatusRecoversInterruptedConnectingCheckpoint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	recovered := store.identities[target.boxIdentity]
-	if result.State != StatusConnected || recovered.State != StateConnected || recovered.RemoteKeyID == 0 || len(result.Warnings) == 0 {
-		t.Fatalf("result=%+v binding=%+v", result, recovered)
+	pending := store.identities[target.boxIdentity]
+	if result.State != StatusActionRequired || pending.State != StateConnecting || pending.RemoteKeyID == 0 || len(result.Warnings) == 0 {
+		t.Fatalf("result=%+v binding=%+v", result, pending)
+	}
+	recovered, err := manager.Connect(t.Context(), ConnectRequest{Target: target})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovered.State != StateConnected || store.identities[target.boxIdentity].State != StateConnected || target.verifyCalls != 2 {
+		t.Fatalf("result=%+v binding=%+v verifyCalls=%d", recovered, store.identities[target.boxIdentity], target.verifyCalls)
+	}
+}
+
+func TestFailedSSHVerificationKeepsARecoverableConnectingCheckpoint(t *testing.T) {
+	manager, store, _, github, target := testManager(t)
+	target.verifyErr = NewError("authentication_required", "SSH key propagation is pending", nil)
+
+	_, err := manager.Connect(t.Context(), ConnectRequest{Target: target, AllowAuthorization: true})
+	if ErrorCode(err) != "authentication_required" {
+		t.Fatalf("err=%v", err)
+	}
+	binding := store.identities[target.boxIdentity]
+	if binding.State != StateConnecting || binding.RemoteKeyID == 0 || len(github.keys) != 1 {
+		t.Fatalf("binding=%+v keys=%+v", binding, github.keys)
+	}
+	status, err := manager.Status(t.Context(), StatusRequest{Target: target})
+	if err != nil || status.State != StatusActionRequired || store.identities[target.boxIdentity].State != StateConnecting || target.verifyCalls != 1 {
+		t.Fatalf("status=%+v binding=%+v verifyCalls=%d err=%v", status, store.identities[target.boxIdentity], target.verifyCalls, err)
+	}
+	target.verifyErr = nil
+	result, err := manager.Connect(t.Context(), ConnectRequest{Target: target})
+	if err != nil || result.State != StateConnected || github.createCalls != 1 || target.verifyCalls != 2 {
+		t.Fatalf("result=%+v createCalls=%d verifyCalls=%d err=%v", result, github.createCalls, target.verifyCalls, err)
 	}
 }
 
@@ -565,6 +625,7 @@ type fakeGitHub struct {
 	token                  Token
 	account                RemoteAccount
 	hostKeys               []HostKey
+	hostKeysErr            error
 	keys                   []RemoteKey
 	listErr                error
 	refreshToken           Token
@@ -603,7 +664,12 @@ func (f *fakeGitHub) Refresh(context.Context, string) (Token, error) {
 	return f.token, nil
 }
 func (f *fakeGitHub) Account(context.Context, string) (RemoteAccount, error) { return f.account, nil }
-func (f *fakeGitHub) HostKeys(context.Context) ([]HostKey, error)            { return f.hostKeys, nil }
+func (f *fakeGitHub) HostKeys(context.Context) ([]HostKey, error) {
+	if f.hostKeysErr != nil {
+		return nil, f.hostKeysErr
+	}
+	return f.hostKeys, nil
+}
 func (f *fakeGitHub) ListKeys(context.Context, string) ([]RemoteKey, error) {
 	f.listCalls++
 	if f.listErr != nil {
@@ -649,6 +715,8 @@ type fakeTarget struct {
 	identity          HostIdentity
 	removeErr         error
 	removeUnconfirmed bool
+	verifyErr         error
+	verifyCalls       int
 }
 
 func (f *fakeTarget) BoxName() string     { return f.boxName }
@@ -672,6 +740,10 @@ func (f *fakeTarget) RemoveSourceIdentity(_ context.Context, request RemoveIdent
 	f.identity = HostIdentity{Provider: GitHub}
 	return RemoveIdentityResult{Provider: GitHub, Removed: true}, nil
 }
-func (*fakeTarget) VerifySourceRepository(context.Context, VerifyRequest) (VerifyResult, error) {
+func (f *fakeTarget) VerifySourceRepository(context.Context, VerifyRequest) (VerifyResult, error) {
+	f.verifyCalls++
+	if f.verifyErr != nil {
+		return VerifyResult{}, f.verifyErr
+	}
 	return VerifyResult{Provider: GitHub, Authenticated: true}, nil
 }

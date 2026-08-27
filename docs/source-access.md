@@ -42,7 +42,14 @@ SHA-256 fingerprint.
 GitHub receives a public key titled `Schooner / <box-name>`. The title is for
 display only; Schooner reconciles and revokes by fingerprint and verified key
 ID. Duplicate titles are harmless, and a lost create response is recovered by
-listing keys before retrying.
+listing keys before retrying. The binding remains `connecting` until the Box
+successfully verifies SSH access; status never promotes an unverified key, and
+a later `source connect` safely repeats verification.
+
+If first-time authorization succeeds but setup fails before Schooner can save a
+recoverable Box binding, the new Source Account and credential are removed. If
+the credential store prevents that cleanup, a later `source disconnect` with
+no binding retries it once Schooner confirms that no other Box is connected.
 
 ## Non-interactive use
 

@@ -44,9 +44,12 @@ options.
 SQLite stores safe account and key-correlation metadata plus lifecycle states
 `connecting`, `connected`, `disconnecting`, and `cleanup_pending`. Fingerprints,
 not display titles, establish identity. Connect reconciles ambiguous creation
-by listing before retrying. Disconnect verifies and revokes GitHub authority
-before deleting Box files; interrupted cleanup remains recoverable. Box removal
-and destruction retain source metadata and make no GitHub calls.
+by listing before retrying, and `connecting` remains verification-pending until
+the Box confirms SSH access. A first authorization that cannot checkpoint any
+Box binding is removed; zero-binding disconnect retries that cleanup after a
+secure-store failure. Disconnect verifies and revokes GitHub authority before
+deleting Box files; interrupted cleanup remains recoverable. Box removal and
+destruction retain source metadata and make no GitHub calls.
 
 Repository Identity is normalized host/owner/repository. HTTPS and SSH are
 operation-scoped Transports and never define durable identity.
