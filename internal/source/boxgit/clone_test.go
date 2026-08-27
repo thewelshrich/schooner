@@ -205,6 +205,7 @@ func TestCloneFailureClassificationStopsForNonAuthenticationCauses(t *testing.T)
 	}{
 		{name: "filesystem", message: "fatal: could not create work tree dir: Permission denied", code: "permission_denied"},
 		{name: "filesystem path containing tls", message: "fatal: could not create work tree dir '/worktrees/tls-client': Permission denied", code: "permission_denied"},
+		{name: "filesystem path containing network diagnostic", message: "fatal: could not create work tree dir '/worktrees/failed to connect': Permission denied", code: "permission_denied"},
 		{name: "invalid branch", message: "fatal: Remote branch missing not found in upstream origin", code: "invalid_input"},
 		{name: "host key", message: "WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!", code: "conflict", reason: "host_key_changed", managed: true},
 		{name: "TLS handshake", message: "fatal: unable to access source: TLS handshake timeout", code: source.CodeSourceUnavailable},

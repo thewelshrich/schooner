@@ -151,11 +151,11 @@ func classifyCloneFailure(result process.Result, cause error, github, managed bo
 	if authenticationShaped(message, github) {
 		return source.NewError("authentication_required", "repository authentication failed using available Box credentials", cause)
 	}
-	if networkShaped(message) {
-		return source.NewError(source.CodeSourceUnavailable, "repository source could not be reached", cause)
-	}
 	if filesystemShaped(message) {
 		return source.NewError("permission_denied", "Git clone was denied by the Box filesystem", cause)
+	}
+	if networkShaped(message) {
+		return source.NewError(source.CodeSourceUnavailable, "repository source could not be reached", cause)
 	}
 	if result.Truncated {
 		return source.NewError("outcome_unknown", "Git clone failed after producing bounded diagnostics; retry to reconcile it", cause)

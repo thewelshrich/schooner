@@ -240,10 +240,15 @@ func (l *Lifecycle) CloneV2(ctx context.Context, request CloneRequest) (Mutation
 		return MutationResult{}, err
 	}
 	if identity.IsGitHub() {
-		if equivalent, _, found, findErr := l.findEquivalentVersion1Clone(ctx, "", request.Branch, identity); findErr != nil {
-			return MutationResult{}, findErr
-		} else if found {
-			legacyTarget = equivalent.TargetPath
+		exactIntent := fingerprint("clone", legacyTarget, cloneSource, request.Branch)
+		if _, exact, loadErr := l.load(exactIntent); loadErr != nil {
+			return MutationResult{}, loadErr
+		} else if !exact {
+			if equivalent, _, found, findErr := l.findEquivalentVersion1Clone(ctx, "", request.Branch, identity); findErr != nil {
+				return MutationResult{}, findErr
+			} else if found {
+				legacyTarget = equivalent.TargetPath
+			}
 		}
 	}
 	legacyLock, lockErr := acquireMutationLock(l.state, legacyTarget)
@@ -527,7 +532,11 @@ func (l *Lifecycle) version1CloneBranchMatches(ctx context.Context, checkoutPath
 		if filepath.Clean(checkoutPath) != checkoutPath || !within(l.root, checkoutPath) {
 			return false, &Error{Code: CodeOutcomeUnknown, Message: "version-1 clone checkpoint has an invalid checkout path"}
 		}
-		tag, err := l.runGit(ctx, "-C", checkoutPath, "rev-parse", "--verify", "refs/tags/"+requested+"^{commit}")
+		ref := "refs/tags/" + requested
+		if _, err := l.runGit(ctx, "-C", checkoutPath, "show-ref", "--verify", "--quiet", ref); err != nil {
+			return false, nil
+		}
+		tag, err := l.runGit(ctx, "-C", checkoutPath, "rev-parse", "--verify", ref+"^{commit}")
 		if err != nil {
 			return false, nil
 		}
