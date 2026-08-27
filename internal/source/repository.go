@@ -17,12 +17,20 @@ type RepositoryIdentity struct {
 	Account    string
 	Owner      string
 	Repository string
+	Absolute   bool
 }
 
 func (identity RepositoryIdentity) Key() string {
 	host := identity.Host
 	if identity.Account != "" {
 		host = identity.Account + "@" + host
+	}
+	if !identity.IsGitHub() {
+		root := "relative"
+		if identity.Absolute {
+			root = "absolute"
+		}
+		host += "/" + root
 	}
 	return host + "/" + identity.Owner + "/" + identity.Repository
 }
@@ -128,6 +136,7 @@ func normalizedRepositoryIdentity(host, account, explicitPort, repositoryPath st
 	if strings.ContainsRune(repositoryPath, '\\') {
 		return RepositoryIdentity{}, true, NewError("invalid_input", "repository source has an invalid identity", nil)
 	}
+	absolute := strings.HasPrefix(repositoryPath, "/")
 	repositoryPath = strings.Trim(repositoryPath, "/")
 	repositoryPath = strings.TrimSuffix(repositoryPath, ".git")
 	cleaned := path.Clean(repositoryPath)
@@ -149,7 +158,7 @@ func normalizedRepositoryIdentity(host, account, explicitPort, repositoryPath st
 		}
 		return RepositoryIdentity{Host: host, Owner: strings.ToLower(parts[0]), Repository: strings.ToLower(parts[1])}, true, nil
 	}
-	return RepositoryIdentity{Host: host, Account: account, Owner: strings.Join(parts[:len(parts)-1], "/"), Repository: parts[len(parts)-1]}, true, nil
+	return RepositoryIdentity{Host: host, Account: account, Owner: strings.Join(parts[:len(parts)-1], "/"), Repository: parts[len(parts)-1], Absolute: absolute}, true, nil
 }
 
 func splitAuthority(authority string) (username, host string) {

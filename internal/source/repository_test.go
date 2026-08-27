@@ -45,8 +45,16 @@ func TestRepositoryIdentityRejectsCredentialBearingAndMalformedSources(t *testin
 
 func TestRepositoryIdentityPreservesGenericNestedNamespace(t *testing.T) {
 	identity, network, err := RepositoryIdentityFor("ssh://alice@gitlab.example.com/team/platform/tool.git")
-	if err != nil || !network || identity.Key() != "alice@gitlab.example.com/team/platform/tool" || identity.CanonicalSSH() != "" {
+	if err != nil || !network || identity.Key() != "alice@gitlab.example.com/absolute/team/platform/tool" || identity.CanonicalSSH() != "" {
 		t.Fatalf("RepositoryIdentityFor() = %+v, %t, %v", identity, network, err)
+	}
+}
+
+func TestRepositoryIdentityDistinguishesGenericSSHPathRoots(t *testing.T) {
+	relative, relativeNetwork, relativeErr := RepositoryIdentityFor("alice@git.example:team/repo.git")
+	absolute, absoluteNetwork, absoluteErr := RepositoryIdentityFor("ssh://alice@git.example/team/repo.git")
+	if relativeErr != nil || absoluteErr != nil || !relativeNetwork || !absoluteNetwork || relative.Key() == absolute.Key() || relative.Absolute || !absolute.Absolute {
+		t.Fatalf("relative=%+v network=%t err=%v, absolute=%+v network=%t err=%v", relative, relativeNetwork, relativeErr, absolute, absoluteNetwork, absoluteErr)
 	}
 }
 
