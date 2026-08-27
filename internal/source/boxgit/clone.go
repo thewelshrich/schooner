@@ -148,6 +148,9 @@ func classifyCloneFailure(result process.Result, cause error, github, managed bo
 	if strings.Contains(message, "remote branch") && strings.Contains(message, "not found") || strings.Contains(message, "invalid refspec") {
 		return source.NewError("invalid_input", "Git branch or tag was not found at the source", cause)
 	}
+	if localCloneFilesystemShaped(message) {
+		return source.NewError("permission_denied", "Git clone was denied by the Box filesystem", cause)
+	}
 	if authenticationShaped(message, github) {
 		return source.NewError("authentication_required", "repository authentication failed using available Box credentials", cause)
 	}
@@ -195,4 +198,8 @@ func filesystemShaped(message string) bool {
 		}
 	}
 	return false
+}
+
+func localCloneFilesystemShaped(message string) bool {
+	return filesystemShaped(message) && (strings.Contains(message, "could not create work tree dir") || strings.Contains(message, "unable to create directory"))
 }

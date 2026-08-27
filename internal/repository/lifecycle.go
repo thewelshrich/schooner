@@ -241,9 +241,10 @@ func (l *Lifecycle) CloneV2(ctx context.Context, request CloneRequest) (Mutation
 	}
 	if identity.IsGitHub() {
 		exactIntent := fingerprint("clone", legacyTarget, cloneSource, request.Branch)
-		if _, exact, loadErr := l.load(exactIntent); loadErr != nil {
+		exactRecord, exact, loadErr := l.load(exactIntent)
+		if loadErr != nil {
 			return MutationResult{}, loadErr
-		} else if !exact {
+		} else if !exact || exactRecord.Checkpoint == "aborted" {
 			if equivalent, _, found, findErr := l.findEquivalentVersion1Clone(ctx, "", request.Branch, identity); findErr != nil {
 				return MutationResult{}, findErr
 			} else if found {
