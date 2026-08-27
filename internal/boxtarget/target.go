@@ -120,7 +120,7 @@ func normalizeSourceError(err error) error {
 		switch code {
 		case "not_found", "invalid_input", "conflict", "authentication_required", "permission_denied", "operation_in_progress", "outcome_unknown":
 			return &source.Error{Code: code, Message: boxDomain.Message, Context: boxDomain.Context, Cause: err}
-		case "host_runtime_missing", "host_runtime_incompatible", "host_runtime_install_failed", "unsupported":
+		case "host_runtime_missing", "host_runtime_incompatible", "host_runtime_install_failed", "capability_unavailable", "unsupported":
 			return source.NewError("unsupported", "the Box runtime does not support this source operation", err)
 		}
 	}

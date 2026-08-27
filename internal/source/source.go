@@ -295,7 +295,9 @@ func (m *Manager) Connect(ctx context.Context, request ConnectRequest) (result C
 			if returnErr == nil || bindingCheckpointed {
 				return
 			}
-			if _, cleanupErr := m.cleanupUnboundAccount(ctx); cleanupErr != nil {
+			cleanupCtx, cancelCleanup := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			defer cancelCleanup()
+			if _, cleanupErr := m.cleanupUnboundAccount(cleanupCtx); cleanupErr != nil {
 				returnErr = NewError(
 					"outcome_unknown",
 					"GitHub connection failed before a recoverable Box binding was saved, and the new Source Account could not be removed",
@@ -323,6 +325,7 @@ func (m *Manager) Connect(ctx context.Context, request ConnectRequest) (result C
 	now := m.now().UTC()
 	binding, findErr := m.store.FindBoxSourceIdentity(ctx, request.Target.BoxIdentity(), GitHub)
 	recovered := findErr == nil
+	wasConnected := findErr == nil && binding.State == StateConnected
 	if findErr != nil && !IsNotFound(findErr) {
 		return ConnectResult{}, findErr
 	}
@@ -344,7 +347,9 @@ func (m *Manager) Connect(ctx context.Context, request ConnectRequest) (result C
 	binding.Provider = GitHub
 	binding.AccountExternalID = account.ID
 	binding.Fingerprint = hostIdentity.Fingerprint
-	binding.State = StateConnecting
+	if !wasConnected {
+		binding.State = StateConnecting
+	}
 	binding.UpdatedAt = now
 	if binding.CreatedAt.IsZero() {
 		binding.CreatedAt = now

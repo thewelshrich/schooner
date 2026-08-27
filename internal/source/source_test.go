@@ -73,6 +73,22 @@ func TestConnectRemovesNewAuthorizationWhenNoBindingCanBeCheckpointed(t *testing
 	}
 }
 
+func TestConnectRollbackSurvivesRequestCancellation(t *testing.T) {
+	manager, store, secrets, github, target := testManager(t)
+	ctx, cancel := context.WithCancel(t.Context())
+	store.rejectCanceledContexts = true
+	github.hostKeysHook = cancel
+	github.hostKeysErr = context.Canceled
+
+	_, err := manager.Connect(ctx, ConnectRequest{Target: target, AllowAuthorization: true})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err=%v", err)
+	}
+	if store.account.Provider != "" || len(store.identities) != 0 || len(secrets.values) != 0 {
+		t.Fatalf("account=%+v identities=%+v stored secret count=%d", store.account, store.identities, len(secrets.values))
+	}
+}
+
 func TestDisconnectRetriesUnboundAuthorizationCleanup(t *testing.T) {
 	manager, store, secrets, github, target := testManager(t)
 	github.hostKeysErr = NewError(CodeSourceUnavailable, "GitHub metadata unavailable", nil)
@@ -236,6 +252,22 @@ func TestFailedSSHVerificationKeepsARecoverableConnectingCheckpoint(t *testing.T
 	result, err := manager.Connect(t.Context(), ConnectRequest{Target: target})
 	if err != nil || result.State != StateConnected || github.createCalls != 1 || target.verifyCalls != 2 {
 		t.Fatalf("result=%+v createCalls=%d verifyCalls=%d err=%v", result, github.createCalls, target.verifyCalls, err)
+	}
+}
+
+func TestRepositoryVerificationFailurePreservesConnectedBinding(t *testing.T) {
+	manager, store, _, github, target := testManager(t)
+	if _, err := manager.Connect(t.Context(), ConnectRequest{Target: target, AllowAuthorization: true}); err != nil {
+		t.Fatal(err)
+	}
+	target.verifyErr = NewError("authentication_required", "repository access was denied", nil)
+
+	_, err := manager.Connect(t.Context(), ConnectRequest{Target: target, Repository: "git@github.com:owner/missing.git"})
+	if ErrorCode(err) != "authentication_required" {
+		t.Fatalf("err=%v", err)
+	}
+	if binding := store.identities[target.boxIdentity]; binding.State != StateConnected || github.createCalls != 1 || target.verifyCalls != 2 {
+		t.Fatalf("binding=%+v createCalls=%d verifyCalls=%d", binding, github.createCalls, target.verifyCalls)
 	}
 }
 
@@ -544,10 +576,11 @@ func testManager(t *testing.T) (*Manager, *memorySourceStore, *memorySecrets, *f
 }
 
 type memorySourceStore struct {
-	account          Account
-	identities       map[string]BoxIdentity
-	saveAccountCalls int
-	saveAccountErrAt int
+	account                Account
+	identities             map[string]BoxIdentity
+	saveAccountCalls       int
+	saveAccountErrAt       int
+	rejectCanceledContexts bool
 }
 
 func (s *memorySourceStore) FindSourceAccount(context.Context, string) (Account, error) {
@@ -583,7 +616,10 @@ func (s *memorySourceStore) FindBoxSourceIdentityByName(_ context.Context, name,
 	}
 	return BoxIdentity{}, NewError("not_found", "missing", nil)
 }
-func (s *memorySourceStore) ListBoxSourceIdentities(context.Context, string) ([]BoxIdentity, error) {
+func (s *memorySourceStore) ListBoxSourceIdentities(ctx context.Context, _ string) ([]BoxIdentity, error) {
+	if s.rejectCanceledContexts && ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
 	result := make([]BoxIdentity, 0, len(s.identities))
 	for _, value := range s.identities {
 		result = append(result, value)
@@ -626,6 +662,7 @@ type fakeGitHub struct {
 	account                RemoteAccount
 	hostKeys               []HostKey
 	hostKeysErr            error
+	hostKeysHook           func()
 	keys                   []RemoteKey
 	listErr                error
 	refreshToken           Token
@@ -665,6 +702,9 @@ func (f *fakeGitHub) Refresh(context.Context, string) (Token, error) {
 }
 func (f *fakeGitHub) Account(context.Context, string) (RemoteAccount, error) { return f.account, nil }
 func (f *fakeGitHub) HostKeys(context.Context) ([]HostKey, error) {
+	if f.hostKeysHook != nil {
+		f.hostKeysHook()
+	}
 	if f.hostKeysErr != nil {
 		return nil, f.hostKeysErr
 	}

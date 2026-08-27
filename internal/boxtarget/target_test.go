@@ -99,6 +99,13 @@ func TestTargetValidatesRootsAndNormalizesAdapterErrors(t *testing.T) {
 	}
 }
 
+func TestSourceCapabilityUnavailableNormalizesToUnsupported(t *testing.T) {
+	err := normalizeSourceError(&box.Error{Code: "capability_unavailable", Message: "ssh-keygen is unavailable"})
+	if source.ErrorCode(err) != "unsupported" || !strings.Contains(err.Error(), "does not support") {
+		t.Fatalf("normalized error = %v", err)
+	}
+}
+
 func writeIdentity(t *testing.T, home, identity string) {
 	t.Helper()
 	path := filepath.Join(home, ".local", "state", "schooner", "identity")
