@@ -299,8 +299,8 @@ func TestLifecycleCloneV2RecoversCompletedVersion1CheckoutAcrossGitHubTransports
 	if err != nil {
 		t.Fatal(err)
 	}
-	origin := "https://github.com/owner/repo.git"
-	legacyTarget := filepath.Join(lifecycle.root, "repo")
+	origin := "https://github.com/Owner/Repo.git"
+	legacyTarget := filepath.Join(lifecycle.root, "Repo")
 	if output, cloneErr := exec.Command("git", "clone", executor.localSource, legacyTarget).CombinedOutput(); cloneErr != nil {
 		t.Fatalf("git clone: %v\n%s", cloneErr, output)
 	}
@@ -384,6 +384,49 @@ func TestLifecycleCloneV2ResumesPostCloneVersion1Checkpoints(t *testing.T) {
 				t.Fatalf("legacy=%+v found=%t err=%v", final, found, loadErr)
 			}
 		})
+	}
+}
+
+func TestFindEquivalentVersion1ClonePreservesBranchIntent(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "worktrees")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	state := filepath.Join(t.TempDir(), "state")
+	localSource := createLifecycleSource(t)
+	runLifecycleGit(t, localSource, "branch", "feature", "main")
+	lifecycle, err := NewLifecycleWithOptions(root, state, nil, LifecycleOptions{CloneExecutor: &lifecycleCloneExecutor{localSource: localSource}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	origin := "https://github.com/owner/repo.git"
+	target := filepath.Join(lifecycle.root, "repo")
+	if output, cloneErr := exec.Command("git", "clone", "--branch", "feature", localSource, target).CombinedOutput(); cloneErr != nil {
+		t.Fatalf("git clone: %v\n%s", cloneErr, output)
+	}
+	runLifecycleGit(t, target, "remote", "set-url", "origin", origin)
+	inspected, err := Inspect(t.Context(), lifecycle.root, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyIntent := fingerprint("clone", target, origin, "feature")
+	legacy := operationRecord{
+		SchemaVersion: operationSchemaVersion, ID: legacyIntent[:24], Kind: "clone", IntentSHA256: legacyIntent,
+		TargetPath: target, Checkpoint: "complete", OwnershipToken: strings.Repeat("a", 64),
+	}
+	recordSnapshot(&legacy, inspected)
+	if err = lifecycle.save(&legacy); err != nil {
+		t.Fatal(err)
+	}
+	identity, network, identityErr := source.RepositoryIdentityFor("git@github.com:owner/repo.git")
+	if identityErr != nil || !network {
+		t.Fatalf("identity=%+v network=%t err=%v", identity, network, identityErr)
+	}
+	if _, _, found, findErr := lifecycle.findEquivalentVersion1Clone(t.Context(), "", "", identity); findErr != nil || found {
+		t.Fatalf("default-branch match found=%t err=%v", found, findErr)
+	}
+	if matched, _, found, findErr := lifecycle.findEquivalentVersion1Clone(t.Context(), "", "feature", identity); findErr != nil || !found || matched.IntentSHA256 != legacyIntent {
+		t.Fatalf("feature match=%+v found=%t err=%v", matched, found, findErr)
 	}
 }
 

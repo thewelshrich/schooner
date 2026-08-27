@@ -239,6 +239,13 @@ func (l *Lifecycle) CloneV2(ctx context.Context, request CloneRequest) (Mutation
 	if err != nil {
 		return MutationResult{}, err
 	}
+	if identity.IsGitHub() {
+		if equivalent, _, found, findErr := l.findEquivalentVersion1Clone(ctx, "", request.Branch, identity); findErr != nil {
+			return MutationResult{}, findErr
+		} else if found {
+			legacyTarget = equivalent.TargetPath
+		}
+	}
 	legacyLock, lockErr := acquireMutationLock(l.state, legacyTarget)
 	if lockErr != nil {
 		return MutationResult{}, lockErr
@@ -467,11 +474,15 @@ func (l *Lifecycle) findEquivalentVersion1Clone(ctx context.Context, target, bra
 		if loadErr != nil {
 			return operationRecord{}, "", false, loadErr
 		}
-		if !present || record.Kind != "clone" || record.TargetPath != target || record.Checkpoint == "aborted" || record.SuppliedOrigin != "" {
+		if !present || record.Kind != "clone" || target != "" && record.TargetPath != target || record.Checkpoint == "aborted" || record.SuppliedOrigin != "" {
 			continue
+		}
+		if filepath.Dir(record.TargetPath) != l.root || filepath.Clean(record.TargetPath) != record.TargetPath {
+			return operationRecord{}, "", false, &Error{Code: CodeOutcomeUnknown, Message: "version-1 clone checkpoint has an invalid target"}
 		}
 		origin := record.Origin
 		observedBranch := record.Branch
+		checkoutPath := record.TargetPath
 		if origin == "" && record.Checkpoint == "clone_finished" && record.StagingPath != "" {
 			inspected, inspectErr := Inspect(ctx, l.root, record.StagingPath)
 			if inspectErr != nil {
@@ -479,12 +490,22 @@ func (l *Lifecycle) findEquivalentVersion1Clone(ctx context.Context, target, bra
 			}
 			origin = inspected.Repository.Origin
 			observedBranch = inspected.Worktree.Branch
+			checkoutPath = record.StagingPath
+		} else if record.Checkpoint != "complete" {
+			checkoutPath = record.StagingPath
 		}
-		if origin == "" || (branch != "" && observedBranch != branch) {
+		if origin == "" {
 			continue
 		}
 		candidate, network, identityErr := source.RepositoryIdentityFor(origin)
 		if identityErr != nil || !network || candidate.Key() != identity.Key() {
+			continue
+		}
+		branchMatches, branchErr := l.version1CloneBranchMatches(ctx, checkoutPath, branch, observedBranch)
+		if branchErr != nil {
+			return operationRecord{}, "", false, branchErr
+		}
+		if !branchMatches {
 			continue
 		}
 		if found {
@@ -493,6 +514,23 @@ func (l *Lifecycle) findEquivalentVersion1Clone(ctx context.Context, target, bra
 		matched, matchedSource, found = record, origin, true
 	}
 	return matched, matchedSource, found, nil
+}
+
+func (l *Lifecycle) version1CloneBranchMatches(ctx context.Context, checkoutPath, requested, observed string) (bool, error) {
+	if requested != "" {
+		return observed == requested, nil
+	}
+	if checkoutPath == "" || observed == "" {
+		return false, nil
+	}
+	if filepath.Clean(checkoutPath) != checkoutPath || !within(l.root, checkoutPath) {
+		return false, &Error{Code: CodeOutcomeUnknown, Message: "version-1 clone checkpoint has an invalid checkout path"}
+	}
+	result, err := l.runGit(ctx, "-C", checkoutPath, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD")
+	if err != nil {
+		return false, nil
+	}
+	return strings.TrimSpace(string(result.Stdout)) == "origin/"+observed, nil
 }
 
 func (l *Lifecycle) Add(ctx context.Context, request AddRequest) (MutationResult, error) {

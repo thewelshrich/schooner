@@ -79,9 +79,6 @@ func RepositoryIdentityFor(raw string) (identity RepositoryIdentity, network boo
 		if separator < 1 || strings.ContainsRune(raw[:separator], '/') {
 			return RepositoryIdentity{}, false, nil
 		}
-		if strings.ContainsAny(raw, "?#") {
-			return RepositoryIdentity{}, true, NewError("invalid_input", "repository source must not contain query parameters or fragments", nil)
-		}
 		authority, repositoryPath := raw[:separator], raw[separator+1:]
 		username, host := splitAuthority(authority)
 		if (strings.ContainsRune(authority, '@') && username == "") || !validTransportUsername(username) {

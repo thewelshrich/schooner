@@ -130,6 +130,15 @@ func TestRepositoryIdentityAllowsURLSafePunctuationInGenericPaths(t *testing.T) 
 	}
 }
 
+func TestRepositoryIdentityAllowsLiteralPunctuationInGenericSCPPaths(t *testing.T) {
+	for _, repository := range []string{"repo#archive.git", "repo?archive.git"} {
+		identity, network, err := RepositoryIdentityFor("git@git.example:team/" + repository)
+		if err != nil || !network || identity.Repository != repository {
+			t.Fatalf("repository=%q identity=%+v network=%t err=%v", repository, identity, network, err)
+		}
+	}
+}
+
 func TestRepositoryIdentityPreservesRepeatedGenericLeadingSlashes(t *testing.T) {
 	single, singleNetwork, singleErr := RepositoryIdentityFor("ssh://alice@git.example/team/repo.git")
 	repeated, repeatedNetwork, repeatedErr := RepositoryIdentityFor("ssh://alice@git.example//team/repo.git")
