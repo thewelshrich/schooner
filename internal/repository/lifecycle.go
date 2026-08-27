@@ -239,7 +239,18 @@ func (l *Lifecycle) CloneV2(ctx context.Context, request CloneRequest) (Mutation
 
 func (l *Lifecycle) clone(ctx context.Context, request CloneRequest, cloneSource, target, intent string, identity source.RepositoryIdentity) (MutationResult, error) {
 	var err error
-	return l.withOperation(ctx, "clone", target, intent, func(record *operationRecord, recovered bool) (MutationResult, error) {
+	lock, err := acquireMutationLock(l.state, target)
+	if err != nil {
+		return MutationResult{}, err
+	}
+	defer func() { _ = lock.Close() }()
+	if identity.Host != "" {
+		cloneSource, err = l.reconcileVersion1Clone(target, cloneSource, request.Branch)
+		if err != nil {
+			return MutationResult{}, err
+		}
+	}
+	return l.withOperationLocked(ctx, "clone", target, intent, func(record *operationRecord, recovered bool) (MutationResult, error) {
 		if identity.Host != "" {
 			if record.SuppliedOrigin == "" {
 				record.SuppliedOrigin = cloneSource
@@ -361,6 +372,36 @@ func (l *Lifecycle) clone(ctx context.Context, request CloneRequest, cloneSource
 		}
 		return MutationResult{Action: "clone", Recovered: recovered, WorktreeRoot: l.root, Inspection: &inspected, Path: inspected.Worktree.Path}, nil
 	})
+}
+
+func (l *Lifecycle) reconcileVersion1Clone(target, cloneSource, branch string) (string, error) {
+	legacyIntent := fingerprint("clone", target, cloneSource, branch)
+	record, found, err := l.load(legacyIntent)
+	if err != nil || !found {
+		return cloneSource, err
+	}
+	if record.Kind != "clone" || record.TargetPath != target {
+		return "", &Error{Code: CodeOutcomeUnknown, Message: "version-1 clone checkpoint does not match the requested repository"}
+	}
+	if record.Checkpoint == "complete" || record.Checkpoint == "aborted" {
+		return cloneSource, nil
+	}
+	if record.Checkpoint != "requested" && record.Checkpoint != "clone_pending" {
+		return "", &Error{Code: CodeConflict, Message: "version-1 clone recovery reached a checkpoint that must be reconciled before transport recovery"}
+	}
+	if record.StagingPath != "" {
+		if err = removeOwnedStage(&record); err != nil {
+			return "", err
+		}
+	}
+	record.Checkpoint = "aborted"
+	if err = l.save(&record); err != nil {
+		return "", err
+	}
+	if record.SuppliedOrigin != "" {
+		return record.SuppliedOrigin, nil
+	}
+	return cloneSource, nil
 }
 
 func (l *Lifecycle) Add(ctx context.Context, request AddRequest) (MutationResult, error) {

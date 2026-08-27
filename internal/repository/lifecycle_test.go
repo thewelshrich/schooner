@@ -226,6 +226,49 @@ func TestLifecycleCloneV2RecoversByRepositoryIdentityAndPreservesFirstOrigin(t *
 	}
 }
 
+func TestLifecycleCloneV2ReconcilesMatchingVersion1Checkpoint(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "worktrees")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	state := filepath.Join(t.TempDir(), "state")
+	executor := &lifecycleCloneExecutor{localSource: createLifecycleSource(t)}
+	lifecycle, err := NewLifecycleWithOptions(root, state, nil, LifecycleOptions{CloneExecutor: executor})
+	if err != nil {
+		t.Fatal(err)
+	}
+	origin := "https://github.com/owner/repo.git"
+	target := filepath.Join(lifecycle.root, "repo")
+	legacyIntent := fingerprint("clone", target, origin, "")
+	legacy := operationRecord{
+		SchemaVersion: operationSchemaVersion,
+		ID:            legacyIntent[:24], Kind: "clone", IntentSHA256: legacyIntent,
+		TargetPath: target, StagingPath: filepath.Join(lifecycle.root, ".schooner-stage-"+legacyIntent[:24], "repo"),
+		Checkpoint: "clone_pending", OwnershipToken: strings.Repeat("a", 64),
+	}
+	if err = lifecycle.createOwnedStage(&legacy); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.MkdirAll(legacy.StagingPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err = lifecycle.save(&legacy); err != nil {
+		t.Fatal(err)
+	}
+
+	cloned, err := lifecycle.CloneV2(t.Context(), CloneRequest{Source: origin})
+	if err != nil || cloned.Inspection == nil || cloned.Path != target {
+		t.Fatalf("clone = %+v, err = %v", cloned, err)
+	}
+	retired, found, err := lifecycle.load(legacyIntent)
+	if err != nil || !found || retired.Checkpoint != "aborted" {
+		t.Fatalf("legacy checkpoint = %+v, found = %t, err = %v", retired, found, err)
+	}
+	if _, err = os.Stat(legacy.StagingPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("legacy staging path survived reconciliation: %v", err)
+	}
+}
+
 func TestLifecycleRejectsConcurrentTargetMutation(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "root")
 	state := filepath.Join(t.TempDir(), "state")

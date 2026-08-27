@@ -118,7 +118,10 @@ func managedCloneEnvironment(paths identityPaths) []string {
 }
 
 func anonymousCloneEnvironment() []string {
-	return append(ambientCloneEnvironment(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+	return append(ambientCloneEnvironment(),
+		"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null",
+		"HOME=/dev/null", "XDG_CONFIG_HOME=/dev/null",
+	)
 }
 
 func classifyCloneFailure(result process.Result, cause error, github bool) error {
@@ -173,7 +176,8 @@ func authenticationShaped(message string, github bool) bool {
 func networkShaped(message string) bool {
 	for _, fragment := range []string{
 		"could not resolve host", "could not resolve hostname", "network is unreachable", "connection timed out",
-		"connection refused", "failed to connect", "tls", "ssl certificate", "connection reset", "no route to host",
+		"connection refused", "failed to connect", "tls handshake", "tls connect error", "tlsv1 alert",
+		"gnutls_handshake", "ssl_connect", "ssl certificate", "certificate verify failed", "connection reset", "no route to host",
 	} {
 		if strings.Contains(message, fragment) {
 			return true

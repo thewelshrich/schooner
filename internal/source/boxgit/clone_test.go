@@ -74,7 +74,7 @@ func TestCloneTriesGitHubTransportsInOrderAndDisablesPrompts(t *testing.T) {
 	if !strings.Contains(last, "credential.helper=") || !strings.Contains(last, "credential.interactive=false") || !strings.Contains(last, "url.https://github.com/owner/repo.git.insteadOf=https://github.com/Owner/Repo.git") {
 		t.Fatalf("anonymous HTTPS arguments = %v", runner.calls[2].arguments)
 	}
-	if environment := strings.Join(runner.calls[2].environment, "\n"); !strings.Contains(environment, "GIT_CONFIG_GLOBAL=/dev/null") || !strings.Contains(environment, "GIT_CONFIG_SYSTEM=/dev/null") {
+	if environment := strings.Join(runner.calls[2].environment, "\n"); !strings.Contains(environment, "GIT_CONFIG_GLOBAL=/dev/null") || !strings.Contains(environment, "GIT_CONFIG_SYSTEM=/dev/null") || !strings.Contains(environment, "HOME=/dev/null") || !strings.Contains(environment, "XDG_CONFIG_HOME=/dev/null") {
 		t.Fatalf("anonymous HTTPS environment = %v", runner.calls[2].environment)
 	}
 }
@@ -158,8 +158,10 @@ func TestCloneFailureClassificationStopsForNonAuthenticationCauses(t *testing.T)
 		reason  string
 	}{
 		{name: "filesystem", message: "fatal: could not create work tree dir: Permission denied", code: "permission_denied"},
+		{name: "filesystem path containing tls", message: "fatal: could not create work tree dir '/worktrees/tls-client': Permission denied", code: "permission_denied"},
 		{name: "invalid branch", message: "fatal: Remote branch missing not found in upstream origin", code: "invalid_input"},
 		{name: "host key", message: "WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!", code: "conflict", reason: "host_key_changed"},
+		{name: "TLS handshake", message: "fatal: unable to access source: TLS handshake timeout", code: source.CodeSourceUnavailable},
 		{name: "integrity", message: "fatal: index-pack failed", code: "conflict"},
 	}
 	for _, test := range tests {
