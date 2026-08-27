@@ -31,6 +31,7 @@ func boundedOperationContracts() []operationDescriptor {
 	return []operationDescriptor{
 		ConfigureOperation(),
 		RepositoryCloneOperation(),
+		RepositoryCloneV2Operation(),
 		SourceIdentityEnsureOperation(),
 		SourceIdentityInspectOperation(),
 		SourceIdentityRemoveOperation(),
@@ -170,6 +171,10 @@ func WorktreeInspectOperation() Operation[WorktreeRequest, WorktreeInspection] {
 
 func RepositoryCloneOperation() Operation[CloneRequest, LifecycleResult] {
 	return newLifecycleOperation("host repository clone", CapabilityRepositoryCloneV1, "clone", ValidateCloneRequest)
+}
+
+func RepositoryCloneV2Operation() Operation[CloneRequest, LifecycleResult] {
+	return newLifecycleOperation("host repository clone-v2", CapabilityRepositoryCloneV2, "clone", ValidateCloneRequest)
 }
 
 func SourceIdentityInspectOperation() Operation[SourceIdentityRequest, SourceIdentityResult] {

@@ -218,6 +218,15 @@ sanitization, grouping, and path confinement. Results are observations and may
 become stale immediately. A Session or Operation may annotate a canonical
 Worktree path, but must revalidate it against live Git state before use.
 
+Clone lifecycle version 2 delegates network transport selection to the Source
+module while retaining staging authority in the Repository module. Durable
+intent uses normalized Repository Identity plus destination and ref, and saves
+the first credential-free supplied origin separately. A source adapter can ask
+the lifecycle to reset its operation-owned stage before a candidate, but cannot
+remove another path. The host protocol remains version 1 and advertises
+`repository.clone.v1` and `repository.clone.v2` independently; SSH callers use
+v2 when the live handshake advertises it and otherwise retain v1 compatibility.
+
 ## Source access
 
 `internal/source` is the deep module for source-provider authorization and Box
@@ -253,6 +262,21 @@ fingerprint before any retry. Disconnect lists and verifies the recorded
 fingerprint, revokes GitHub authority first, and only then removes Box files. A
 failed post-revocation Box cleanup succeeds with a security warning and remains
 `cleanup_pending` for a later status or disconnect invocation.
+
+For a GitHub Repository Identity, clone transport precedence is the supplied
+URL with ambient Box configuration, canonical SSH with ambient configuration,
+managed SSH with the Box Source Identity, then anonymous HTTPS with credential
+helpers disabled. Only authentication-shaped failures advance. Network,
+filesystem, invalid-source, cancellation, host-trust, and integrity failures
+stop immediately. Every Git invocation disables terminal and credential-manager
+prompts. Managed SSH additionally uses the dedicated key and `known_hosts`, an
+empty SSH config, `BatchMode`, `IdentitiesOnly`, and strict host-key checking.
+
+Operation-scoped Git URL rewriting lets a transport candidate perform the
+fetch while the first supplied credential-free URL remains
+`remote.origin.url`. Interactive clone recovery may connect and verify a new
+managed identity before one retry. JSON and non-interactive clone or start
+operations never authorize or register source access.
 
 ## Local Links and synchronization
 

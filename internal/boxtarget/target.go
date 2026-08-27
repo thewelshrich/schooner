@@ -294,9 +294,11 @@ func normalizeError(err error) error {
 		return err
 	}
 	if code := repository.ErrorCode(err); code != "" {
+		var domain *repository.Error
+		_ = errors.As(err, &domain)
 		switch code {
 		case repository.CodeNotFound, repository.CodeInvalidInput, repository.CodeConflict, repository.CodeAuthentication, repository.CodePermissionDenied, repository.CodeOperationInProgress, repository.CodeOutcomeUnknown:
-			return box.NewError(string(code), err.Error(), err)
+			return &box.Error{Code: string(code), Message: err.Error(), Context: domain.Context, Cause: err}
 		}
 	}
 	if code := source.ErrorCode(err); code != "" {

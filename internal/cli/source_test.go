@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/thewelshrich/schooner/internal/box"
 	"github.com/thewelshrich/schooner/internal/source"
 )
 
@@ -147,11 +148,17 @@ func TestNonInteractiveDisconnectRequiresExplicitConfirmation(t *testing.T) {
 }
 
 func TestSAMLGuidanceUsesSafeOrganizationContext(t *testing.T) {
-	err := &source.Error{Code: "authentication_required", Message: "SAML authorization required", Context: map[string]string{"reason": "github_saml_sso", "organization": "acme-tools"}}
-	guided := withSourceGuidance(err, "work")
-	var guidance guidanceError
-	if !errors.As(guided, &guidance) || !strings.Contains(guidance.guidance, "acme-tools") || !strings.Contains(guidance.guidance, "Schooner / work") {
-		t.Fatalf("guided=%v", guided)
+	for name, err := range map[string]error{
+		"source": &source.Error{Code: "authentication_required", Message: "SAML authorization required", Context: map[string]string{"reason": "github_saml_sso", "organization": "acme-tools"}},
+		"box":    &box.Error{Code: "authentication_required", Message: "SAML authorization required", Context: map[string]string{"reason": "github_saml_sso", "organization": "acme-tools"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			guided := withSourceGuidance(err, "work")
+			var guidance guidanceError
+			if !errors.As(guided, &guidance) || !strings.Contains(guidance.guidance, "acme-tools") || !strings.Contains(guidance.guidance, "Schooner / work") {
+				t.Fatalf("guided=%v", guided)
+			}
+		})
 	}
 }
 

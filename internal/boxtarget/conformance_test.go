@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/thewelshrich/schooner/internal/box"
 	"github.com/thewelshrich/schooner/internal/config"
+	"github.com/thewelshrich/schooner/internal/repository"
 	hostruntime "github.com/thewelshrich/schooner/internal/runtime"
 	"github.com/thewelshrich/schooner/internal/runtime/host"
 	"github.com/thewelshrich/schooner/internal/runtime/ssh"
@@ -115,6 +117,40 @@ func TestDirectAndSSHAdaptersConformForSourceIdentityLifecycle(t *testing.T) {
 	}
 }
 
+func TestDirectAndSSHAdaptersConformForRepositoryCloneV2(t *testing.T) {
+	supplied := "https://example.test/owner/clone.git"
+	bare := filepath.Join(t.TempDir(), "clone.git")
+	if output, err := exec.Command("git", "init", "--bare", bare).CombinedOutput(); err != nil {
+		t.Fatalf("git init --bare: %v\n%s", err, output)
+	}
+	candidate := (&url.URL{Scheme: "file", Path: bare}).String()
+	gitConfig := filepath.Join(t.TempDir(), "gitconfig")
+	if err := os.WriteFile(gitConfig, []byte(fmt.Sprintf("[url %q]\n\tinsteadOf = %s\n", candidate, supplied)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", gitConfig)
+
+	direct := directConformanceTarget(t)
+	remote := sshConformanceTarget(t)
+	for _, harness := range []struct {
+		name   string
+		target Target
+	}{{name: "direct", target: direct}, {name: "ssh", target: remote}} {
+		t.Run(harness.name, func(t *testing.T) {
+			result, err := harness.target.CloneRepository(t.Context(), repository.CloneRequest{Source: supplied})
+			if err != nil || result.Action != "clone" || result.Path != filepath.Join(harness.target.state.worktreeRoot, "clone") {
+				t.Fatalf("clone = %+v, error = %v", result, err)
+			}
+			if harness.name == "direct" {
+				output, configErr := exec.Command("git", "-C", result.Path, "config", "--get-all", "remote.origin.url").CombinedOutput()
+				if configErr != nil || strings.TrimSpace(string(output)) != supplied {
+					t.Fatalf("stored origin = %q, error = %v", strings.TrimSpace(string(output)), configErr)
+				}
+			}
+		})
+	}
+}
+
 func directConformanceTarget(t *testing.T) Target {
 	t.Helper()
 	home := t.TempDir()
@@ -156,11 +192,12 @@ func sshConformanceTarget(t *testing.T) Target {
 	}
 	repositoryValue := fmt.Sprintf(`{"common_directory":%q,"primary":{"path":%q,"relative_path":"repo","git_directory":%q,"kind":"primary","branch":"main","detached":false,"status":{"staged":0,"unstaged":0,"untracked":0,"conflicted":0}},"linked":[]}`, root+"/repo/.git", root+"/repo", root+"/repo/.git")
 	worktreeValue := fmt.Sprintf(`{"path":%q,"relative_path":"repo","git_directory":%q,"kind":"primary","branch":"main","detached":false,"status":{"staged":0,"unstaged":0,"untracked":0,"conflicted":0}}`, root+"/repo", root+"/repo/.git")
-	hello := fmt.Sprintf(`{"schema_version":"1","protocol_version":"1","schooner_version":"dev","commit":"test","box_identity":%q,"os":"linux","architecture":"amd64","capabilities":["session.list.v1","source.identity.ensure.v1","source.identity.inspect.v1","source.identity.remove.v1","source.repository.verify.v1","worktree.inspect.v1","worktree.list.v1"]}`, testIdentity)
+	hello := fmt.Sprintf(`{"schema_version":"1","protocol_version":"1","schooner_version":"dev","commit":"test","box_identity":%q,"os":"linux","architecture":"amd64","capabilities":["repository.clone.v2","session.list.v1","source.identity.ensure.v1","source.identity.inspect.v1","source.identity.remove.v1","source.repository.verify.v1","worktree.inspect.v1","worktree.list.v1"]}`, testIdentity)
 	catalog := fmt.Sprintf(`{"schema_version":"1","protocol_version":"1","box_identity":%q,"worktree_root":%q,"repositories":[%s],"warnings":[]}`, testIdentity, root, repositoryValue)
 	inspection := fmt.Sprintf(`{"schema_version":"1","protocol_version":"1","box_identity":%q,"worktree_root":%q,"repository":%s,"worktree":%s,"warnings":[]}`, testIdentity, root, repositoryValue, worktreeValue)
 	invalid := fmt.Sprintf(`{"schema_version":"1","protocol_version":"1","box_identity":%q,"error":{"code":"invalid_input","message":"worktree selector is invalid"}}`, testIdentity)
 	sessions := fmt.Sprintf(`{"schema_version":"1","protocol_version":"1","box_identity":%q,"worktree_root":%q,"sessions":[]}`, testIdentity, root)
+	cloneResult := fmt.Sprintf(`{"schema_version":"1","protocol_version":"1","box_identity":%q,"action":"clone","recovered":false,"worktree_root":%q,"path":%q}`, testIdentity, root, root+"/clone")
 	sourcePresent := fmt.Sprintf(`{"schema_version":"1","protocol_version":"1","box_identity":%q,"provider":"github","exists":true,"public_key":%q,"fingerprint":%q,"trust_configured":true,"host_fingerprints":[%q]}`, testIdentity, conformanceSourceKey, sourceFingerprint, sourceFingerprint)
 	sourceAbsent := fmt.Sprintf(`{"schema_version":"1","protocol_version":"1","box_identity":%q,"provider":"github","exists":false,"trust_configured":false}`, testIdentity)
 	sourceRemoved := fmt.Sprintf(`{"schema_version":"1","protocol_version":"1","box_identity":%q,"provider":"github","removed":true}`, testIdentity)
@@ -171,13 +208,14 @@ case " $* " in
   *"host worktree list"*) cat >/dev/null; printf '%%s\n' '%s' ;;
   *"host worktree inspect"*) payload=$(cat); case "$payload" in *"../outside"*) printf '%%s\n' '%s' ;; *) printf '%%s\n' '%s' ;; esac ;;
   *"host session list"*) cat >/dev/null; printf '%%s\n' '%s' ;;
+  *"host repository clone-v2"*) cat >/dev/null; printf '%%s\n' '%s' ;;
   *"host source identity ensure"*) cat >/dev/null; : > '%s'; printf '%%s\n' '%s' ;;
   *"host source identity inspect"*) cat >/dev/null; if test -f '%s'; then printf '%%s\n' '%s'; else printf '%%s\n' '%s'; fi ;;
   *"host source identity remove"*) cat >/dev/null; rm -f '%s'; printf '%%s\n' '%s' ;;
   *"host source repository verify"*) cat >/dev/null; printf '%%s\n' '%s' ;;
   *) exit 64 ;;
 esac
-`, hello, catalog, invalid, inspection, sessions, sourceState, sourcePresent, sourceState, sourcePresent, sourceAbsent, sourceState, sourceRemoved, sourceVerified)
+`, hello, catalog, invalid, inspection, sessions, cloneResult, sourceState, sourcePresent, sourceState, sourcePresent, sourceAbsent, sourceState, sourceRemoved, sourceVerified)
 	path := filepath.Join(t.TempDir(), "ssh")
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatal(err)

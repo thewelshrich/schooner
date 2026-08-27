@@ -12,6 +12,7 @@ import (
 	"os"
 	"path"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -285,7 +286,15 @@ func (r *Runtime) InspectWorktree(ctx context.Context, connection box.Connection
 
 func (r *Runtime) CloneRepository(ctx context.Context, connection box.Connection, installed box.HostRuntime, expectedIdentity, worktreeRoot, source, branch string) (repository.MutationResult, error) {
 	request := hostruntime.NewCloneRequest(source, branch, worktreeRoot, expectedIdentity)
-	result, err := invokeHostOperation(ctx, r, connection, installed, hostruntime.RepositoryCloneOperation(), request)
+	hello, err := operationHello(ctx, r, connection, installed)
+	if err != nil {
+		return repository.MutationResult{}, err
+	}
+	operation := hostruntime.RepositoryCloneOperation()
+	if slices.Contains(hello.Capabilities, hostruntime.CapabilityRepositoryCloneV2) {
+		operation = hostruntime.RepositoryCloneV2Operation()
+	}
+	result, err := invokeHostOperationWithHello(ctx, r, connection, installed, hello, operation, request)
 	if err != nil {
 		return repository.MutationResult{}, err
 	}
@@ -391,20 +400,33 @@ func (r *Runtime) OpenWorktreeShell(ctx context.Context, connection box.Connecti
 
 func invokeHostOperation[Request, Result any](ctx context.Context, r *Runtime, connection box.Connection, installed box.HostRuntime, operation hostruntime.Operation[Request, Result], request Request) (Result, error) {
 	var zero Result
-	if err := validateRuntimePath(installed.Path); err != nil {
+	hello, err := operationHello(ctx, r, connection, installed)
+	if err != nil {
 		return zero, err
+	}
+	return invokeHostOperationWithHello(ctx, r, connection, installed, hello, operation, request)
+}
+
+func operationHello(ctx context.Context, r *Runtime, connection box.Connection, installed box.HostRuntime) (hostruntime.Hello, error) {
+	if err := validateRuntimePath(installed.Path); err != nil {
+		return hostruntime.Hello{}, err
 	}
 	hello, attempt, err := r.helloAt(ctx, connection, installed.Path)
 	if err != nil {
 		if isProtocolError(err) {
-			return zero, protocolError(err)
+			return hostruntime.Hello{}, protocolError(err)
 		}
-		return zero, err
+		return hostruntime.Hello{}, err
 	}
 	if attempt.ExitCode != 0 {
-		return zero, box.NewError("host_runtime_missing", "the recorded host runtime is unavailable and must be repaired", fmt.Errorf("remote exit status %d", attempt.ExitCode))
+		return hostruntime.Hello{}, box.NewError("host_runtime_missing", "the recorded host runtime is unavailable and must be repaired", fmt.Errorf("remote exit status %d", attempt.ExitCode))
 	}
-	if err = operation.ValidateHello(request, hello); err != nil {
+	return hello, nil
+}
+
+func invokeHostOperationWithHello[Request, Result any](ctx context.Context, r *Runtime, connection box.Connection, installed box.HostRuntime, hello hostruntime.Hello, operation hostruntime.Operation[Request, Result], request Request) (Result, error) {
+	var zero Result
+	if err := operation.ValidateHello(request, hello); err != nil {
 		if hostruntime.ErrorCode(err) == hostruntime.CodeCapabilityUnavailable {
 			return zero, box.NewError("host_runtime_incompatible", "the host runtime lacks required support; run box update", err)
 		}

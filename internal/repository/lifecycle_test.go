@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/thewelshrich/schooner/internal/process"
+	"github.com/thewelshrich/schooner/internal/source"
 )
 
 type lifecycleWorktreeUse struct {
@@ -42,6 +44,32 @@ func TestOperationJournalsPreserveXDGWhileWorktreeLocksUseStableHome(t *testing.
 type lifecycleRunnerFunc func(context.Context, string, ...string) (process.Result, error)
 
 type lifecycleWorktreeUseFunc func(context.Context, string) ([]string, error)
+
+type lifecycleCloneExecutor struct {
+	localSource string
+	fail        bool
+	requests    []source.CloneExecution
+}
+
+func (executor *lifecycleCloneExecutor) Clone(ctx context.Context, request source.CloneExecution, prepare source.PrepareCloneAttempt) error {
+	executor.requests = append(executor.requests, request)
+	if err := prepare(); err != nil {
+		return err
+	}
+	if executor.fail {
+		return &source.Error{Code: "authentication_required", Message: "GitHub repository authentication is required", Context: map[string]string{"reason": "credentials_missing"}}
+	}
+	candidate := (&url.URL{Scheme: "file", Path: executor.localSource}).String()
+	arguments := []string{"-c", "url." + candidate + ".insteadOf=" + request.SuppliedOrigin, "-C", request.WorktreeRoot, "clone", "-c", "remote.origin.url=" + request.SuppliedOrigin}
+	if request.Branch != "" {
+		arguments = append(arguments, "--branch", request.Branch)
+	}
+	arguments = append(arguments, "--", request.SuppliedOrigin, request.Destination)
+	if _, err := (osMutationRunner{}).Run(ctx, "git", arguments...); err != nil {
+		return source.NewError("conflict", "test clone failed", err)
+	}
+	return nil
+}
 
 func (f lifecycleRunnerFunc) Run(ctx context.Context, name string, args ...string) (process.Result, error) {
 	return f(ctx, name, args...)
@@ -146,6 +174,55 @@ func TestLifecycleCloneAddRemoveAndRecover(t *testing.T) {
 	output := lifecycleGitOutput(t, cloned.Path, "worktree", "list", "--porcelain")
 	if strings.Contains(output, stalePath) {
 		t.Fatalf("stale Worktree registration remained: %s", output)
+	}
+}
+
+func TestLifecycleCloneV2RecoversByRepositoryIdentityAndPreservesFirstOrigin(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "worktrees")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	state := filepath.Join(t.TempDir(), "state")
+	executor := &lifecycleCloneExecutor{localSource: createLifecycleSource(t), fail: true}
+	lifecycle, err := NewLifecycleWithOptions(root, state, nil, LifecycleOptions{CloneExecutor: executor})
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstOrigin := "https://github.com/Owner/Repo.git"
+	if _, err = lifecycle.CloneV2(t.Context(), CloneRequest{Source: firstOrigin}); ErrorCode(err) != CodeAuthentication {
+		t.Fatalf("first clone error = %v", err)
+	}
+	entries, err := os.ReadDir(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var checkpoint []byte
+	for _, entry := range entries {
+		if strings.HasSuffix(entry.Name(), ".json") {
+			checkpoint, err = os.ReadFile(filepath.Join(state, entry.Name()))
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if !strings.Contains(string(checkpoint), firstOrigin) {
+		t.Fatalf("checkpoint did not preserve first supplied origin: %s", checkpoint)
+	}
+	executor.fail = false
+	secondOrigin := "git@github.com:owner/repo.git"
+	cloned, err := lifecycle.CloneV2(t.Context(), CloneRequest{Source: secondOrigin})
+	if err != nil || cloned.Inspection == nil || cloned.Path != filepath.Join(lifecycle.root, "repo") {
+		t.Fatalf("recovered clone = %+v, %v", cloned, err)
+	}
+	if len(executor.requests) != 2 || executor.requests[1].SuppliedOrigin != firstOrigin {
+		t.Fatalf("clone requests = %+v", executor.requests)
+	}
+	if storedOrigin := strings.TrimSpace(lifecycleGitOutput(t, cloned.Path, "config", "--get-all", "remote.origin.url")); storedOrigin != firstOrigin {
+		t.Fatalf("stored origin = %q, want %q", storedOrigin, firstOrigin)
+	}
+	recovered, err := lifecycle.CloneV2(t.Context(), CloneRequest{Source: "ssh://git@github.com/OWNER/REPO.git"})
+	if err != nil || !recovered.Recovered || len(executor.requests) != 2 {
+		t.Fatalf("completed recovery = %+v, requests = %d, err = %v", recovered, len(executor.requests), err)
 	}
 }
 
@@ -1133,13 +1210,12 @@ func TestUnlockStagedWorktreeRecoversWithoutLocalizedDiagnostics(t *testing.T) {
 }
 
 func TestGitMutationsUseNonInteractiveSSH(t *testing.T) {
-	for _, expected := range []string{"LC_ALL=C", "LANG=C", "GIT_SSH_COMMAND=ssh -o BatchMode=yes", "GIT_SSH_VARIANT=ssh"} {
-		if !slices.Contains(gitMutationEnvironment(true), expected) {
-			t.Fatalf("noninteractive Git mutation environment does not contain %q: %v", expected, gitMutationEnvironment(true))
+	for _, mode := range []bool{false, true} {
+		for _, expected := range []string{"LC_ALL=C", "LANG=C", "GIT_TERMINAL_PROMPT=0", "GCM_INTERACTIVE=never", "SSH_ASKPASS_REQUIRE=never", "GIT_SSH_COMMAND=ssh -o BatchMode=yes", "GIT_SSH_VARIANT=ssh"} {
+			if !slices.Contains(gitMutationEnvironment(mode), expected) {
+				t.Fatalf("Git mutation environment for noninteractive=%t does not contain %q: %v", mode, expected, gitMutationEnvironment(mode))
+			}
 		}
-	}
-	if environment := gitMutationEnvironment(false); !slices.Contains(environment, "LC_ALL=C") || slices.Contains(environment, "GIT_TERMINAL_PROMPT=0") {
-		t.Fatalf("interactive Git mutation environment has the wrong prompt/locale policy: %v", environment)
 	}
 }
 

@@ -124,9 +124,12 @@ schooner worktree remove repository-feature --box work-api
 schooner worktree prune --box work-api
 ```
 
-The Box user's existing Git and SSH credentials are used. Schooner does not
-copy local Git credentials to a Box or require a repository configuration
-file.
+Schooner first uses the supplied URL and the Box user's existing Git and SSH
+configuration. For GitHub it can then try canonical SSH, a connected Box Source
+Identity, and anonymous HTTPS. Every Git process is non-interactive. The
+credential-free supplied URL remains `remote.origin.url` even when another
+transport completes the clone. Schooner does not copy local Git credentials to
+a Box or require a repository configuration file.
 
 ### Connect a Box to private GitHub repositories
 
@@ -147,6 +150,12 @@ JSON and non-interactive commands never launch authorization; they return
 `authentication_required` if no stored credential can satisfy the request.
 See the [source access guide](docs/source-access.md) for permissions, status,
 recovery, and cleanup behavior.
+
+An interactive `schooner clone` or contextual `schooner start` can offer to
+connect the selected Box after a GitHub authentication failure, verify the
+requested repository with the managed key, and retry the same durable clone
+once. JSON and non-interactive invocations never authorize an account or
+register a key; use explicit `source connect` as the automation path.
 
 ### Start and resume persistent sessions
 

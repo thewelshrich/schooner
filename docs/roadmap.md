@@ -10,7 +10,8 @@ not a compatibility promise.
 - Provision and destroy DigitalOcean Droplets.
 - Install, inspect, repair, and update the on-demand remote runtime.
 - Discover, create, inspect, remove, and prune remote Git worktrees.
-- Connect dedicated Box-owned SSH identities to private GitHub repositories.
+- Clone public and private GitHub repositories with Box-owned SSH identity
+  recovery, while retaining explicit source connect and disconnect controls.
 - Start, list, resume, inspect, and stop tmux-backed sessions.
 - Produce human-readable and versioned JSON output.
 

@@ -33,7 +33,7 @@ func (a directAdapter) inspectWorktree(ctx context.Context, selector string) (re
 func (a directAdapter) cloneRepository(ctx context.Context, request repository.CloneRequest) (repository.MutationResult, error) {
 	remote := hostruntime.NewCloneRequest(request.Source, request.Branch, a.state.worktreeRoot, a.state.boxIdentity)
 	remote.NonInteractive = a.nonInteractive
-	result, err := a.runtime.CloneRepository(ctx, remote)
+	result, err := a.runtime.CloneRepositoryV2(ctx, remote)
 	return result.MutationResult, err
 }
 

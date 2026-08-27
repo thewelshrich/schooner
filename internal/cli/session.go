@@ -270,52 +270,44 @@ func resolveContextualStart(ctx context.Context, streams Streams, global *global
 	}
 }
 
-func confirmCloneForStart(ctx context.Context, streams Streams, global *globalOptions, target boxtarget.Target, local *repository.LocalCheckout, plan workcontext.StartPlan) (string, error) {
-	if !interactionAllowed(streams, global) {
-		return "", usageError{cause: fmt.Errorf("cloning a Repository during start requires confirmation; rerun without --no-input or run `schooner clone` explicitly")}
-	}
-	theme := terminalTheme(global, streams)
-	repositoryName := filepath.Base(local.TopLevel)
-	if err := writeActionSummary(streams.Err, theme, "Create remote checkout", []summaryRow{
-		{Label: "Repository", Value: repositoryName},
-		{Label: "Origin", Value: plan.CloneSource},
-		{Label: "Box", Value: targetBoxLabel(target)},
-		{Label: "Remote branch", Value: "origin default"},
-	}); err != nil {
-		return "", executionError{cause: err}
-	}
-	for _, warning := range cloneStartWarnings(local) {
-		if err := writeWarningLine(streams.Err, theme, warning); err != nil {
+func confirmCloneForStart(ctx context.Context, streams Streams, global *globalOptions, target cloneExecutionTarget, local *repository.LocalCheckout, plan workcontext.StartPlan) (string, error) {
+	interactive := interactionAllowed(streams, global)
+	if interactive {
+		theme := terminalTheme(global, streams)
+		repositoryName := filepath.Base(local.TopLevel)
+		if err := writeActionSummary(streams.Err, theme, "Create remote checkout", []summaryRow{
+			{Label: "Repository", Value: repositoryName},
+			{Label: "Origin", Value: plan.CloneSource},
+			{Label: "Box", Value: targetBoxLabel(target)},
+			{Label: "Remote branch", Value: "origin default"},
+		}); err != nil {
 			return "", executionError{cause: err}
 		}
-	}
-	negative := "Cancel"
-	if len(plan.Choices) != 0 {
-		negative = "Choose existing"
-	}
-	confirmed, err := prompts.Confirm(ctx, promptOptions(streams, global), "Clone this Repository and start?", "Clone and start", negative)
-	if errors.Is(err, prompts.ErrAborted) {
-		return "", abortError{cause: err}
-	}
-	if err != nil {
-		return "", executionError{cause: err}
-	}
-	if !confirmed {
-		if len(plan.Choices) != 0 {
-			return chooseWorktreeChoices(ctx, streams, global, "Choose an existing Worktree", plan.Choices)
+		for _, warning := range cloneStartWarnings(local) {
+			if err := writeWarningLine(streams.Err, theme, warning); err != nil {
+				return "", executionError{cause: err}
+			}
 		}
-		writeCancelled(streams.Err)
-		return "", abortError{cause: prompts.ErrAborted}
+		negative := "Cancel"
+		if len(plan.Choices) != 0 {
+			negative = "Choose existing"
+		}
+		confirmed, err := prompts.Confirm(ctx, promptOptions(streams, global), "Clone this Repository and start?", "Clone and start", negative)
+		if errors.Is(err, prompts.ErrAborted) {
+			return "", abortError{cause: err}
+		}
+		if err != nil {
+			return "", executionError{cause: err}
+		}
+		if !confirmed {
+			if len(plan.Choices) != 0 {
+				return chooseWorktreeChoices(ctx, streams, global, "Choose an existing Worktree", plan.Choices)
+			}
+			writeCancelled(streams.Err)
+			return "", abortError{cause: prompts.ErrAborted}
+		}
 	}
-	var result repository.MutationResult
-	err = prompts.Wait(ctx, promptOptions(streams, global), "Cloning Repository on "+targetBoxLabel(target), func(waitCtx context.Context) error {
-		var cloneErr error
-		result, cloneErr = target.CloneRepository(waitCtx, repository.CloneRequest{Source: plan.CloneSource})
-		return cloneErr
-	})
-	if errors.Is(err, prompts.ErrAborted) {
-		return "", abortError{cause: err}
-	}
+	result, err := cloneWithRecovery(ctx, streams, global, target, repository.CloneRequest{Source: plan.CloneSource}, "Cloning Repository on "+targetBoxLabel(target), nil)
 	if err != nil {
 		return "", executionError{cause: err}
 	}
@@ -486,7 +478,7 @@ func writeResumeSummary(streams Streams, global *globalOptions, target boxtarget
 	_ = writeActionSummary(streams.Err, terminalTheme(global, streams), "Resuming work", rows)
 }
 
-func targetBoxLabel(target boxtarget.Target) string {
+func targetBoxLabel(target interface{ BoxName() string }) string {
 	return defaultString(target.BoxName(), "this box")
 }
 

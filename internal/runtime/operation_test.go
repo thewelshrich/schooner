@@ -71,6 +71,27 @@ func TestContextWorktreeListRequiresOriginIdentityCapability(t *testing.T) {
 	}
 }
 
+func TestRepositoryCloneCapabilitiesNegotiateIndependently(t *testing.T) {
+	request := NewCloneRequest("https://github.com/owner/repo.git", "", "/worktrees", testIdentity)
+	hello := Hello{
+		SchemaVersion: SchemaVersion, ProtocolVersion: ProtocolVersion, SchoonerVersion: "v1.2.3", Commit: "abc123",
+		BoxIdentity: testIdentity, OS: "linux", Architecture: "amd64", Capabilities: Capabilities(),
+	}
+	withoutV2 := hello
+	withoutV2.Capabilities = slices.DeleteFunc(append([]string(nil), hello.Capabilities...), func(value string) bool { return value == CapabilityRepositoryCloneV2 })
+	if err := RepositoryCloneOperation().ValidateHello(request, withoutV2); err != nil {
+		t.Fatalf("v1 clone rejected legacy runtime: %v", err)
+	}
+	if err := RepositoryCloneV2Operation().ValidateHello(request, withoutV2); ErrorCode(err) != CodeCapabilityUnavailable {
+		t.Fatalf("v2 clone capability error = %v", err)
+	}
+	withoutV1 := hello
+	withoutV1.Capabilities = slices.DeleteFunc(append([]string(nil), hello.Capabilities...), func(value string) bool { return value == CapabilityRepositoryCloneV1 })
+	if err := RepositoryCloneV2Operation().ValidateHello(request, withoutV1); err != nil {
+		t.Fatalf("v2 clone unexpectedly depends on v1: %v", err)
+	}
+}
+
 func TestOperationDecodeResultAppliesEnvelopeAndResultInvariant(t *testing.T) {
 	operation := RepositoryCloneOperation()
 	request := NewCloneRequest("git@example.com:owner/repo.git", "main", "/worktrees", testIdentity)
