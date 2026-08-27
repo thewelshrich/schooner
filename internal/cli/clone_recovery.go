@@ -30,7 +30,7 @@ func cloneWithRecovery(ctx context.Context, streams Streams, global *globalOptio
 	if identityErr != nil || !network || !identity.IsGitHub() {
 		return repository.MutationResult{}, err
 	}
-	if cloneErrorReason(err) == "github_saml_sso" {
+	if cloneErrorReason(err) == "github_saml_sso" || cloneErrorReason(err) == "host_runtime_update_required" {
 		return repository.MutationResult{}, withCloneSourceGuidance(err, target.BoxName())
 	}
 	if !interactionAllowed(streams, global) {
@@ -117,6 +117,8 @@ func withCloneSourceGuidance(err error, boxName string) error {
 		return guidanceError{cause: err, guidance: "authorize the `Schooner / " + firstNonEmpty(boxName, "Box") + "` SSH key for " + organization + "'s SAML SSO, then retry"}
 	case "host_key_changed":
 		return guidanceError{cause: err, guidance: "run `schooner source connect github --box " + firstNonEmpty(boxName, "<box>") + "` to refresh managed GitHub host trust"}
+	case "host_runtime_update_required":
+		return guidanceError{cause: err, guidance: "run `schooner box update " + firstNonEmpty(boxName, "<box>") + "` to add managed GitHub clone support, then retry"}
 	case "credentials_missing":
 		return guidanceError{cause: err, guidance: "run `schooner source connect github --box " + firstNonEmpty(boxName, "<box>") + "`, then retry"}
 	default:

@@ -284,21 +284,37 @@ func (r *Runtime) InspectWorktree(ctx context.Context, connection box.Connection
 	return result.Inspection, nil
 }
 
-func (r *Runtime) CloneRepository(ctx context.Context, connection box.Connection, installed box.HostRuntime, expectedIdentity, worktreeRoot, source, branch string) (repository.MutationResult, error) {
-	request := hostruntime.NewCloneRequest(source, branch, worktreeRoot, expectedIdentity)
+func (r *Runtime) CloneRepository(ctx context.Context, connection box.Connection, installed box.HostRuntime, expectedIdentity, worktreeRoot, repositorySource, branch string) (repository.MutationResult, error) {
+	request := hostruntime.NewCloneRequest(repositorySource, branch, worktreeRoot, expectedIdentity)
 	hello, err := operationHello(ctx, r, connection, installed)
 	if err != nil {
 		return repository.MutationResult{}, err
 	}
 	operation := hostruntime.RepositoryCloneOperation()
-	if slices.Contains(hello.Capabilities, hostruntime.CapabilityRepositoryCloneV2) {
+	cloneV2 := slices.Contains(hello.Capabilities, hostruntime.CapabilityRepositoryCloneV2)
+	if cloneV2 {
 		operation = hostruntime.RepositoryCloneV2Operation()
 	}
 	result, err := invokeHostOperationWithHello(ctx, r, connection, installed, hello, operation, request)
 	if err != nil {
+		if !cloneV2 && legacyGitHubCloneAuthentication(repositorySource, err) {
+			return repository.MutationResult{}, &box.Error{
+				Code: "authentication_required", Message: "managed GitHub source recovery requires an updated Box runtime",
+				Context: map[string]string{"reason": "host_runtime_update_required"}, Cause: err,
+			}
+		}
 		return repository.MutationResult{}, err
 	}
 	return result.MutationResult, nil
+}
+
+func legacyGitHubCloneAuthentication(repositorySource string, err error) bool {
+	var domain *box.Error
+	if !errors.As(err, &domain) || domain.Code != "authentication_required" || domain.Cause != nil {
+		return false
+	}
+	identity, network, identityErr := source.RepositoryIdentityFor(repositorySource)
+	return identityErr == nil && network && identity.IsGitHub()
 }
 
 func (r *Runtime) InspectSourceIdentity(ctx context.Context, connection box.Connection, installed box.HostRuntime, expectedIdentity, provider string) (source.HostIdentity, error) {

@@ -88,6 +88,11 @@ invocations never authorize an account or register a key; they return
 `authentication_required` guidance and leave explicit `source connect` as the
 automation path.
 
+Managed recovery requires the Box runtime to advertise `repository.clone.v2`.
+An authentication failure from a version-1-only runtime returns
+`host_runtime_update_required` guidance instead of registering a key that the
+retry cannot use.
+
 GitHub SAML SSO failures use reason `github_saml_sso`. Authorize the displayed
 `Schooner / <box-name>` key for the named organization when one is safely
 available, then retry. Schooner never automates SAML key authorization.

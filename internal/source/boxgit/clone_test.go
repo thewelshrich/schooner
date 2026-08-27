@@ -111,6 +111,15 @@ func TestCloneRetainsSAMLClassificationAcrossFallbacks(t *testing.T) {
 	}
 }
 
+func TestCloneDoesNotInferSAMLFromRepositoryName(t *testing.T) {
+	failure := errors.New("exit 128")
+	err := classifyCloneFailure(process.Result{Stderr: []byte("Repository not found: https://github.com/owner/saml-client.git")}, failure, true)
+	var domain *source.Error
+	if !errors.As(err, &domain) || domain.Code != "authentication_required" || domain.Context["reason"] == "github_saml_sso" {
+		t.Fatalf("error = %#v", err)
+	}
+}
+
 func TestCloneManagedSSHUsesDedicatedStrictConfiguration(t *testing.T) {
 	home := t.TempDir()
 	manager, err := New(home)

@@ -126,7 +126,7 @@ func classifyCloneFailure(result process.Result, cause error, github bool) error
 		return source.NewError("outcome_unknown", "Git clone was interrupted; retry to reconcile it", cause)
 	}
 	message := strings.ToLower(string(result.Stdout) + "\n" + string(result.Stderr))
-	if github && (strings.Contains(message, "saml") || strings.Contains(message, "single sign-on")) {
+	if github && githubSAMLDiagnostic(message) {
 		contextValues := map[string]string{"reason": "github_saml_sso"}
 		if organization := githubOrganization(message); organization != "" {
 			contextValues["organization"] = organization

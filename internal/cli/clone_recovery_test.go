@@ -97,6 +97,21 @@ func TestCloneWithRecoveryGuidesHostKeyFailureWithoutRetrying(t *testing.T) {
 	}
 }
 
+func TestCloneWithRecoveryRequiresV2BeforeConnecting(t *testing.T) {
+	runtimeUpdate := &box.Error{Code: "authentication_required", Message: "managed recovery requires clone v2", Context: map[string]string{"reason": "host_runtime_update_required"}}
+	target := &cloneRecoveryTarget{name: "work", identity: "11111111-1111-4111-8111-111111111111", cloneErrors: []error{runtimeUpdate}}
+	connectCalls := 0
+	streams := Streams{In: strings.NewReader("y\n"), Out: &bytes.Buffer{}, Err: &bytes.Buffer{}, InIsTerminal: true, OutIsTerminal: true, ErrIsTerminal: true}
+	_, err := cloneWithRecovery(t.Context(), streams, &globalOptions{output: "human", accessible: true}, target, repository.CloneRequest{Source: "https://github.com/owner/repo.git"}, "", func(context.Context, source.Target, string) (source.ConnectResult, error) {
+		connectCalls++
+		return source.ConnectResult{}, nil
+	})
+	var guidance guidanceError
+	if !errors.As(err, &guidance) || !strings.Contains(guidance.guidance, "schooner box update work") || target.cloneCalls != 1 || connectCalls != 0 {
+		t.Fatalf("error = %v, clone calls = %d, connect calls = %d", err, target.cloneCalls, connectCalls)
+	}
+}
+
 func TestCloneWithRecoveryDoesNotPromptForSAMLOrExistingSuccess(t *testing.T) {
 	saml := &box.Error{Code: "authentication_required", Message: "SAML required", Context: map[string]string{"reason": "github_saml_sso", "organization": "acme-tools"}}
 	for name, target := range map[string]*cloneRecoveryTarget{
