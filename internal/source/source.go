@@ -317,6 +317,20 @@ func (m *Manager) Connect(ctx context.Context, request ConnectRequest) (result C
 			}
 		}()
 	}
+	binding, findErr := m.store.FindBoxSourceIdentity(ctx, request.Target.BoxIdentity(), GitHub)
+	recovered := findErr == nil
+	if findErr != nil && !IsNotFound(findErr) {
+		return ConnectResult{}, findErr
+	}
+	if findErr == nil && binding.AccountExternalID != "" && binding.AccountExternalID != account.ID {
+		return ConnectResult{}, NewError("conflict", "this Box source identity is bound to a different GitHub account", nil)
+	}
+	if findErr == nil && binding.State == StateConnected && request.Repository != "" {
+		preflight, conclusive, preflightErr := m.verifyConnectedRepository(ctx, request.Target, binding, token, account, request.Repository, warning)
+		if conclusive {
+			return preflight, preflightErr
+		}
+	}
 	hostKeys, err := m.github.HostKeys(ctx)
 	if err != nil {
 		return ConnectResult{}, err
@@ -333,27 +347,16 @@ func (m *Manager) Connect(ctx context.Context, request ConnectRequest) (result C
 		return ConnectResult{}, NewError("outcome_unknown", "the Box did not return a complete GitHub source identity", nil)
 	}
 
-	now := m.now().UTC()
-	binding, findErr := m.store.FindBoxSourceIdentity(ctx, request.Target.BoxIdentity(), GitHub)
-	recovered := findErr == nil
-	wasConnected := findErr == nil && binding.State == StateConnected
-	if findErr != nil && !IsNotFound(findErr) {
-		return ConnectResult{}, findErr
-	}
-	if findErr == nil && binding.AccountExternalID != "" && binding.AccountExternalID != account.ID {
-		return ConnectResult{}, NewError("conflict", "this Box source identity is bound to a different GitHub account", nil)
-	}
 	if findErr == nil && binding.Fingerprint != "" && binding.Fingerprint != hostIdentity.Fingerprint {
 		return ConnectResult{}, NewError("conflict", "the Box GitHub key differs from the recorded source identity", nil)
 	}
+	now := m.now().UTC()
 	binding.BoxIdentity = request.Target.BoxIdentity()
 	binding.BoxName = boxName
 	binding.Provider = GitHub
 	binding.AccountExternalID = account.ID
 	binding.Fingerprint = hostIdentity.Fingerprint
-	if !wasConnected {
-		binding.State = StateConnecting
-	}
+	binding.State = StateConnecting
 	binding.UpdatedAt = now
 	if binding.CreatedAt.IsZero() {
 		binding.CreatedAt = now
@@ -390,6 +393,40 @@ func (m *Manager) Connect(ctx context.Context, request ConnectRequest) (result C
 		Fingerprint: binding.Fingerprint, RemoteKeyID: binding.RemoteKeyID, RemoteKeyTitle: binding.RemoteKeyTitle,
 		State: binding.State, Recovered: recovered, Warning: warning,
 	}, nil
+}
+
+func (m *Manager) verifyConnectedRepository(ctx context.Context, target Target, binding BoxIdentity, token Token, account RemoteAccount, repository, warning string) (ConnectResult, bool, error) {
+	hostIdentity, err := target.InspectSourceIdentity(ctx, GitHub)
+	if err != nil || !hostIdentity.Exists || hostIdentity.Provider != GitHub || !hostIdentity.TrustConfigured || hostIdentity.Fingerprint != binding.Fingerprint {
+		return ConnectResult{}, false, nil
+	}
+	actualFingerprint, fingerprintErr := PublicKeyFingerprint(hostIdentity.PublicKey)
+	if fingerprintErr != nil || actualFingerprint != binding.Fingerprint {
+		return ConnectResult{}, false, nil
+	}
+	keys, err := m.github.ListKeys(ctx, token.AccessToken)
+	if err != nil {
+		return ConnectResult{}, true, err
+	}
+	remote, present, mismatch := findRemoteKey(keys, binding)
+	if mismatch {
+		return ConnectResult{}, true, NewError("conflict", "the recorded GitHub key ID now has a different fingerprint", nil)
+	}
+	if !present {
+		return ConnectResult{}, false, nil
+	}
+	verification, err := target.VerifySourceRepository(ctx, VerifyRequest{Provider: GitHub, Repository: repository})
+	if err != nil {
+		return ConnectResult{}, true, err
+	}
+	if !verification.Authenticated {
+		return ConnectResult{}, true, NewError("outcome_unknown", "the Box did not confirm GitHub source access", nil)
+	}
+	return ConnectResult{
+		Provider: GitHub, Account: account, BoxName: binding.BoxName, BoxIdentity: binding.BoxIdentity,
+		Fingerprint: binding.Fingerprint, RemoteKeyID: remote.ID, RemoteKeyTitle: remote.Title,
+		State: StateConnected, Recovered: true, Warning: warning,
+	}, true, nil
 }
 
 func (m *Manager) Status(ctx context.Context, request StatusRequest) (StatusResult, error) {

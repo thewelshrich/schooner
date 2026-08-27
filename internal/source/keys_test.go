@@ -16,6 +16,19 @@ func TestPublicKeyFingerprintRejectsDeclaredTypeMismatch(t *testing.T) {
 	}
 }
 
+func TestPublicKeyFingerprintAcceptsOpenSSHSecurityKeyTypes(t *testing.T) {
+	for _, keyType := range []string{"sk-ssh-ed25519@openssh.com", "sk-ecdsa-sha2-nistp256@openssh.com"} {
+		t.Run(keyType, func(t *testing.T) {
+			body := make([]byte, 4+len(keyType))
+			binary.BigEndian.PutUint32(body[:4], uint32(len(keyType)))
+			copy(body[4:], keyType)
+			if _, err := PublicKeyFingerprint(keyType + " " + base64.StdEncoding.EncodeToString(body)); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
 func TestValidateFingerprintRequiresOneSHA256Digest(t *testing.T) {
 	fingerprint, err := PublicKeyFingerprint(testPublicKey)
 	if err != nil {

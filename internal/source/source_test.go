@@ -266,8 +266,25 @@ func TestRepositoryVerificationFailurePreservesConnectedBinding(t *testing.T) {
 	if ErrorCode(err) != "authentication_required" {
 		t.Fatalf("err=%v", err)
 	}
-	if binding := store.identities[target.boxIdentity]; binding.State != StateConnected || github.createCalls != 1 || target.verifyCalls != 2 {
-		t.Fatalf("binding=%+v createCalls=%d verifyCalls=%d", binding, github.createCalls, target.verifyCalls)
+	if binding := store.identities[target.boxIdentity]; binding.State != StateConnected || github.createCalls != 1 || target.ensureCalls != 1 || target.verifyCalls != 2 {
+		t.Fatalf("binding=%+v createCalls=%d ensureCalls=%d verifyCalls=%d", binding, github.createCalls, target.ensureCalls, target.verifyCalls)
+	}
+}
+
+func TestReconnectMutationReturnsToVerificationPending(t *testing.T) {
+	manager, store, _, github, target := testManager(t)
+	if _, err := manager.Connect(t.Context(), ConnectRequest{Target: target, AllowAuthorization: true}); err != nil {
+		t.Fatal(err)
+	}
+	github.keys = nil
+	target.verifyErr = NewError("authentication_required", "replacement key propagation is pending", nil)
+
+	_, err := manager.Connect(t.Context(), ConnectRequest{Target: target, Repository: "git@github.com:owner/private.git"})
+	if ErrorCode(err) != "authentication_required" {
+		t.Fatalf("err=%v", err)
+	}
+	if binding := store.identities[target.boxIdentity]; binding.State != StateConnecting || github.createCalls != 2 || target.ensureCalls != 2 || target.verifyCalls != 2 {
+		t.Fatalf("binding=%+v createCalls=%d ensureCalls=%d verifyCalls=%d", binding, github.createCalls, target.ensureCalls, target.verifyCalls)
 	}
 }
 
