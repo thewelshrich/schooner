@@ -14,12 +14,17 @@ import (
 // nested namespaces; GitHub identities always contain one owner segment.
 type RepositoryIdentity struct {
 	Host       string
+	Account    string
 	Owner      string
 	Repository string
 }
 
 func (identity RepositoryIdentity) Key() string {
-	return identity.Host + "/" + identity.Owner + "/" + identity.Repository
+	host := identity.Host
+	if identity.Account != "" {
+		host = identity.Account + "@" + host
+	}
+	return host + "/" + identity.Owner + "/" + identity.Repository
 }
 
 func (identity RepositoryIdentity) IsGitHub() bool { return identity.Host == GitHubHost }
@@ -57,11 +62,17 @@ func RepositoryIdentityFor(raw string) (identity RepositoryIdentity, network boo
 		if !validTransportUsername(username) {
 			return RepositoryIdentity{}, true, NewError("invalid_input", "repository SSH source uses an invalid account", nil)
 		}
+		if strings.TrimSpace(host) != host {
+			return RepositoryIdentity{}, true, NewError("invalid_input", "repository SSH source uses an invalid host", nil)
+		}
 		host = normalizeSCPHost(host)
 		if host == GitHubHost && username != "" && username != "git" {
 			return RepositoryIdentity{}, true, NewError("invalid_input", "GitHub SSH transport must use the git account", nil)
 		}
-		return normalizedRepositoryIdentity(host, "", repositoryPath)
+		if host == GitHubHost {
+			username = ""
+		}
+		return normalizedRepositoryIdentity(host, username, "", repositoryPath)
 	}
 
 	parsed, parseErr := url.Parse(raw)
@@ -103,11 +114,17 @@ func RepositoryIdentityFor(raw string) (identity RepositoryIdentity, network boo
 		explicitPort = port
 	}
 	repositoryPath := parsed.Path
-	return normalizedRepositoryIdentity(host, explicitPort, repositoryPath)
+	if host == GitHubHost || scheme != "ssh" {
+		username = ""
+	}
+	return normalizedRepositoryIdentity(host, username, explicitPort, repositoryPath)
 }
 
-func normalizedRepositoryIdentity(host, explicitPort, repositoryPath string) (RepositoryIdentity, bool, error) {
-	host = strings.ToLower(strings.TrimSpace(host))
+func normalizedRepositoryIdentity(host, account, explicitPort, repositoryPath string) (RepositoryIdentity, bool, error) {
+	if strings.TrimSpace(host) != host {
+		return RepositoryIdentity{}, true, NewError("invalid_input", "repository source has an invalid host", nil)
+	}
+	host = strings.ToLower(host)
 	if strings.ContainsRune(repositoryPath, '\\') {
 		return RepositoryIdentity{}, true, NewError("invalid_input", "repository source has an invalid identity", nil)
 	}
@@ -132,7 +149,7 @@ func normalizedRepositoryIdentity(host, explicitPort, repositoryPath string) (Re
 		}
 		return RepositoryIdentity{Host: host, Owner: strings.ToLower(parts[0]), Repository: strings.ToLower(parts[1])}, true, nil
 	}
-	return RepositoryIdentity{Host: host, Owner: strings.Join(parts[:len(parts)-1], "/"), Repository: parts[len(parts)-1]}, true, nil
+	return RepositoryIdentity{Host: host, Account: account, Owner: strings.Join(parts[:len(parts)-1], "/"), Repository: parts[len(parts)-1]}, true, nil
 }
 
 func splitAuthority(authority string) (username, host string) {

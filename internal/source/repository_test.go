@@ -27,6 +27,7 @@ func TestRepositoryIdentityRejectsCredentialBearingAndMalformedSources(t *testin
 		"http://github.com/openai/codex.git",
 		"ssh://git@github.com:2222/openai/codex.git",
 		"git@github.com:openai/codex/extra.git",
+		"alice@ github.com:openai/codex.git",
 		`git@github.com:openai\codex.git`,
 		`https://github.com/openai\codex.git`,
 		"https://github.com/openai%2Fcodex.git",
@@ -44,7 +45,15 @@ func TestRepositoryIdentityRejectsCredentialBearingAndMalformedSources(t *testin
 
 func TestRepositoryIdentityPreservesGenericNestedNamespace(t *testing.T) {
 	identity, network, err := RepositoryIdentityFor("ssh://alice@gitlab.example.com/team/platform/tool.git")
-	if err != nil || !network || identity.Key() != "gitlab.example.com/team/platform/tool" || identity.CanonicalSSH() != "" {
+	if err != nil || !network || identity.Key() != "alice@gitlab.example.com/team/platform/tool" || identity.CanonicalSSH() != "" {
 		t.Fatalf("RepositoryIdentityFor() = %+v, %t, %v", identity, network, err)
+	}
+}
+
+func TestRepositoryIdentityDistinguishesGenericSSHAccounts(t *testing.T) {
+	alice, aliceNetwork, aliceErr := RepositoryIdentityFor("alice@git.example:team/repo.git")
+	bob, bobNetwork, bobErr := RepositoryIdentityFor("bob@git.example:team/repo.git")
+	if aliceErr != nil || bobErr != nil || !aliceNetwork || !bobNetwork || alice.Key() == bob.Key() || alice.Account != "alice" || bob.Account != "bob" {
+		t.Fatalf("alice=%+v network=%t err=%v, bob=%+v network=%t err=%v", alice, aliceNetwork, aliceErr, bob, bobNetwork, bobErr)
 	}
 }

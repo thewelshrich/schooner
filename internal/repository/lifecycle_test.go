@@ -237,13 +237,14 @@ func TestLifecycleCloneV2ReconcilesMatchingVersion1Checkpoint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	origin := "https://github.com/owner/repo.git"
+	origin := "https://github.com/Owner/Repo.git"
+	legacyTarget := filepath.Join(lifecycle.root, "Repo")
 	target := filepath.Join(lifecycle.root, "repo")
-	legacyIntent := fingerprint("clone", target, origin, "")
+	legacyIntent := fingerprint("clone", legacyTarget, origin, "")
 	legacy := operationRecord{
 		SchemaVersion: operationSchemaVersion,
 		ID:            legacyIntent[:24], Kind: "clone", IntentSHA256: legacyIntent,
-		TargetPath: target, StagingPath: filepath.Join(lifecycle.root, ".schooner-stage-"+legacyIntent[:24], "repo"),
+		TargetPath: legacyTarget, StagingPath: filepath.Join(lifecycle.root, ".schooner-stage-"+legacyIntent[:24], "Repo"),
 		Checkpoint: "clone_pending", OwnershipToken: strings.Repeat("a", 64),
 	}
 	if err = lifecycle.createOwnedStage(&legacy); err != nil {

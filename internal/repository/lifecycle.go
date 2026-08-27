@@ -222,6 +222,10 @@ func (l *Lifecycle) CloneV2(ctx context.Context, request CloneRequest) (Mutation
 	if !network {
 		return l.Clone(ctx, request)
 	}
+	legacyTarget, err := l.newPath(name)
+	if err != nil {
+		return MutationResult{}, err
+	}
 	name = identity.Repository
 	if l.cloneExecutor == nil {
 		return MutationResult{}, &Error{Code: CodeConflict, Message: "source transport support is unavailable on this Box"}
@@ -232,6 +236,20 @@ func (l *Lifecycle) CloneV2(ctx context.Context, request CloneRequest) (Mutation
 	target, err := l.newPath(name)
 	if err != nil {
 		return MutationResult{}, err
+	}
+	if legacyTarget != target {
+		legacyLock, lockErr := acquireMutationLock(l.state, legacyTarget)
+		if lockErr != nil {
+			return MutationResult{}, lockErr
+		}
+		cloneSource, err = l.reconcileVersion1Clone(legacyTarget, cloneSource, request.Branch)
+		closeErr := legacyLock.Close()
+		if err != nil {
+			return MutationResult{}, err
+		}
+		if closeErr != nil {
+			return MutationResult{}, closeErr
+		}
 	}
 	intent := fingerprint("clone.v2", target, identity.Key(), request.Branch)
 	return l.clone(ctx, request, cloneSource, target, intent, identity)
