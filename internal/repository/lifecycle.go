@@ -518,7 +518,24 @@ func (l *Lifecycle) findEquivalentVersion1Clone(ctx context.Context, target, bra
 
 func (l *Lifecycle) version1CloneBranchMatches(ctx context.Context, checkoutPath, requested, observed string) (bool, error) {
 	if requested != "" {
-		return observed == requested, nil
+		if observed == requested {
+			return true, nil
+		}
+		if observed != "" || checkoutPath == "" {
+			return false, nil
+		}
+		if filepath.Clean(checkoutPath) != checkoutPath || !within(l.root, checkoutPath) {
+			return false, &Error{Code: CodeOutcomeUnknown, Message: "version-1 clone checkpoint has an invalid checkout path"}
+		}
+		tag, err := l.runGit(ctx, "-C", checkoutPath, "rev-parse", "--verify", "refs/tags/"+requested+"^{commit}")
+		if err != nil {
+			return false, nil
+		}
+		head, err := l.runGit(ctx, "-C", checkoutPath, "rev-parse", "--verify", "HEAD^{commit}")
+		if err != nil {
+			return false, nil
+		}
+		return strings.TrimSpace(string(tag.Stdout)) == strings.TrimSpace(string(head.Stdout)), nil
 	}
 	if checkoutPath == "" || observed == "" {
 		return false, nil

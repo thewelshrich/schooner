@@ -395,6 +395,7 @@ func TestFindEquivalentVersion1ClonePreservesBranchIntent(t *testing.T) {
 	state := filepath.Join(t.TempDir(), "state")
 	localSource := createLifecycleSource(t)
 	runLifecycleGit(t, localSource, "branch", "feature", "main")
+	runLifecycleGit(t, localSource, "tag", "v1", "main")
 	lifecycle, err := NewLifecycleWithOptions(root, state, nil, LifecycleOptions{CloneExecutor: &lifecycleCloneExecutor{localSource: localSource}})
 	if err != nil {
 		t.Fatal(err)
@@ -427,6 +428,34 @@ func TestFindEquivalentVersion1ClonePreservesBranchIntent(t *testing.T) {
 	}
 	if matched, _, found, findErr := lifecycle.findEquivalentVersion1Clone(t.Context(), "", "feature", identity); findErr != nil || !found || matched.IntentSHA256 != legacyIntent {
 		t.Fatalf("feature match=%+v found=%t err=%v", matched, found, findErr)
+	}
+
+	tagTarget := filepath.Join(lifecycle.root, "tagged-repo")
+	if output, cloneErr := exec.Command("git", "clone", "--branch", "v1", localSource, tagTarget).CombinedOutput(); cloneErr != nil {
+		t.Fatalf("git clone tag: %v\n%s", cloneErr, output)
+	}
+	runLifecycleGit(t, tagTarget, "remote", "set-url", "origin", origin)
+	taggedInspection, err := Inspect(t.Context(), lifecycle.root, tagTarget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !taggedInspection.Worktree.Detached || taggedInspection.Worktree.Branch != "" {
+		t.Fatalf("tagged checkout = %+v", taggedInspection.Worktree)
+	}
+	tagIntent := fingerprint("clone", tagTarget, origin, "v1")
+	tagRecord := operationRecord{
+		SchemaVersion: operationSchemaVersion, ID: tagIntent[:24], Kind: "clone", IntentSHA256: tagIntent,
+		TargetPath: tagTarget, Checkpoint: "complete", OwnershipToken: strings.Repeat("b", 64),
+	}
+	recordSnapshot(&tagRecord, taggedInspection)
+	if err = lifecycle.save(&tagRecord); err != nil {
+		t.Fatal(err)
+	}
+	if matched, _, found, findErr := lifecycle.findEquivalentVersion1Clone(t.Context(), "", "v1", identity); findErr != nil || !found || matched.IntentSHA256 != tagIntent {
+		t.Fatalf("tag match=%+v found=%t err=%v", matched, found, findErr)
+	}
+	if _, _, found, findErr := lifecycle.findEquivalentVersion1Clone(t.Context(), "", "v2", identity); findErr != nil || found {
+		t.Fatalf("missing tag match found=%t err=%v", found, findErr)
 	}
 }
 
