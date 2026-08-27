@@ -139,7 +139,7 @@ func TestCloneDoesNotAttributeAmbientSAMLToManagedKey(t *testing.T) {
 
 func TestCloneDoesNotInferSAMLFromRepositoryName(t *testing.T) {
 	failure := errors.New("exit 128")
-	err := classifyCloneFailure(process.Result{Stderr: []byte("Repository not found: https://github.com/owner/saml-client.git")}, failure, true)
+	err := classifyCloneFailure(process.Result{Stderr: []byte("Repository not found: https://github.com/owner/saml-client.git")}, failure, true, false)
 	var domain *source.Error
 	if !errors.As(err, &domain) || domain.Code != "authentication_required" || domain.Context["reason"] == "github_saml_sso" {
 		t.Fatalf("error = %#v", err)
@@ -176,30 +176,50 @@ func TestCloneManagedSSHUsesDedicatedStrictConfiguration(t *testing.T) {
 	}
 }
 
+func TestCloneAttributesAmbientHostKeyFailureToBoxSSHConfig(t *testing.T) {
+	manager, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	failure := errors.New("exit 128")
+	runner := &cloneScriptRunner{responses: []cloneResponse{
+		{result: process.Result{Stderr: []byte("Authentication failed")}, err: failure},
+		{result: process.Result{Stderr: []byte("WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!")}, err: failure},
+	}}
+	manager.run = runner
+
+	err = manager.Clone(t.Context(), cloneExecution(t, "https://github.com/owner/repo.git"), func() error { return nil })
+	var domain *source.Error
+	if !errors.As(err, &domain) || domain.Code != "conflict" || domain.Context["reason"] != "ambient_host_key_changed" || len(runner.calls) != 2 {
+		t.Fatalf("error = %#v, Git calls = %d", err, len(runner.calls))
+	}
+}
+
 func TestCloneFailureClassificationStopsForNonAuthenticationCauses(t *testing.T) {
 	tests := []struct {
 		name    string
 		message string
 		code    string
 		reason  string
+		managed bool
 	}{
 		{name: "filesystem", message: "fatal: could not create work tree dir: Permission denied", code: "permission_denied"},
 		{name: "filesystem path containing tls", message: "fatal: could not create work tree dir '/worktrees/tls-client': Permission denied", code: "permission_denied"},
 		{name: "invalid branch", message: "fatal: Remote branch missing not found in upstream origin", code: "invalid_input"},
-		{name: "host key", message: "WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!", code: "conflict", reason: "host_key_changed"},
+		{name: "host key", message: "WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!", code: "conflict", reason: "host_key_changed", managed: true},
 		{name: "TLS handshake", message: "fatal: unable to access source: TLS handshake timeout", code: source.CodeSourceUnavailable},
 		{name: "integrity", message: "fatal: index-pack failed", code: "conflict"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			err := classifyCloneFailure(process.Result{Stderr: []byte(test.message)}, errors.New("exit 128"), true)
+			err := classifyCloneFailure(process.Result{Stderr: []byte(test.message)}, errors.New("exit 128"), true, test.managed)
 			var domain *source.Error
 			if !errors.As(err, &domain) || domain.Code != test.code || domain.Context["reason"] != test.reason {
 				t.Fatalf("error = %#v", err)
 			}
 		})
 	}
-	interrupted := classifyCloneFailure(process.Result{}, context.Canceled, true)
+	interrupted := classifyCloneFailure(process.Result{}, context.Canceled, true, false)
 	if source.ErrorCode(interrupted) != "outcome_unknown" || !errors.Is(interrupted, context.Canceled) {
 		t.Fatalf("cancellation error = %v", interrupted)
 	}

@@ -65,7 +65,7 @@ func (m *Manager) Clone(ctx context.Context, request source.CloneExecution, prep
 		if runErr == nil {
 			return nil
 		}
-		classified := classifyCloneFailure(result, runErr, request.Repository.IsGitHub())
+		classified := classifyCloneFailure(result, runErr, request.Repository.IsGitHub(), candidate.managed)
 		if source.ErrorCode(classified) != "authentication_required" {
 			return classified
 		}
@@ -124,7 +124,7 @@ func anonymousCloneEnvironment() []string {
 	)
 }
 
-func classifyCloneFailure(result process.Result, cause error, github bool) error {
+func classifyCloneFailure(result process.Result, cause error, github, managed bool) error {
 	if errors.Is(cause, context.Canceled) || errors.Is(cause, context.DeadlineExceeded) {
 		return source.NewError("outcome_unknown", "Git clone was interrupted; retry to reconcile it", cause)
 	}
@@ -138,10 +138,12 @@ func classifyCloneFailure(result process.Result, cause error, github bool) error
 	}
 	if strings.Contains(message, "host key verification failed") || strings.Contains(message, "remote host identification has changed") || strings.Contains(message, "offending") && strings.Contains(message, "known_hosts") {
 		safe := "repository SSH host-key verification failed"
-		if github {
+		reason := "ambient_host_key_changed"
+		if github && managed {
 			safe = "GitHub SSH host-key verification failed"
+			reason = "host_key_changed"
 		}
-		return &source.Error{Code: "conflict", Message: safe, Context: map[string]string{"reason": "host_key_changed"}, Cause: cause}
+		return &source.Error{Code: "conflict", Message: safe, Context: map[string]string{"reason": reason}, Cause: cause}
 	}
 	if strings.Contains(message, "remote branch") && strings.Contains(message, "not found") || strings.Contains(message, "invalid refspec") {
 		return source.NewError("invalid_input", "Git branch or tag was not found at the source", cause)

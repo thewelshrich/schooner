@@ -75,6 +75,10 @@ func RepositoryIdentityFor(raw string) (identity RepositoryIdentity, network boo
 	if parsed.RawQuery != "" || parsed.Fragment != "" {
 		return RepositoryIdentity{}, true, NewError("invalid_input", "repository source must not contain query parameters or fragments", nil)
 	}
+	escapedPath := strings.ToLower(parsed.EscapedPath())
+	if strings.Contains(escapedPath, "%2f") || strings.Contains(escapedPath, "%5c") {
+		return RepositoryIdentity{}, true, NewError("invalid_input", "repository source must not contain encoded path separators", nil)
+	}
 	username := ""
 	if parsed.User != nil {
 		username = parsed.User.Username()

@@ -361,7 +361,7 @@ func validOperationErrorContext(key, value string) bool {
 	}
 	switch key {
 	case "reason":
-		return slices.Contains([]string{"credentials_missing", "github_saml_sso", "host_key_changed"}, value)
+		return slices.Contains([]string{"ambient_host_key_changed", "credentials_missing", "github_saml_sso", "host_key_changed"}, value)
 	case "organization":
 		return platformPattern.MatchString(value)
 	default:

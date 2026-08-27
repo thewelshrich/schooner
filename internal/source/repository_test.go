@@ -29,6 +29,7 @@ func TestRepositoryIdentityRejectsCredentialBearingAndMalformedSources(t *testin
 		"git@github.com:openai/codex/extra.git",
 		`git@github.com:openai\codex.git`,
 		`https://github.com/openai\codex.git`,
+		"https://github.com/openai%2Fcodex.git",
 		"https://github.com/openai%5Ccodex.git",
 		"https://github.com/openai/../codex.git",
 	} {

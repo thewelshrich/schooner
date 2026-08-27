@@ -97,6 +97,15 @@ func TestCloneWithRecoveryGuidesHostKeyFailureWithoutRetrying(t *testing.T) {
 	}
 }
 
+func TestCloneWithRecoveryGuidesAmbientHostKeyFailureToBoxSSHConfig(t *testing.T) {
+	target := &cloneRecoveryTarget{name: "work", identity: "11111111-1111-4111-8111-111111111111", cloneErrors: []error{&box.Error{Code: "conflict", Message: "host key changed", Context: map[string]string{"reason": "ambient_host_key_changed"}}}}
+	_, err := cloneWithRecovery(t.Context(), Streams{}, &globalOptions{output: "human", noInput: true}, target, repository.CloneRequest{Source: "https://github.com/owner/repo.git"}, "", nil)
+	var guidance guidanceError
+	if !errors.As(err, &guidance) || !strings.Contains(guidance.guidance, "Box user's SSH known_hosts") || strings.Contains(guidance.guidance, "source connect") || target.cloneCalls != 1 {
+		t.Fatalf("error = %v, clone calls = %d", err, target.cloneCalls)
+	}
+}
+
 func TestCloneWithRecoveryRequiresV2BeforeConnecting(t *testing.T) {
 	runtimeUpdate := &box.Error{Code: "authentication_required", Message: "managed recovery requires clone v2", Context: map[string]string{"reason": "host_runtime_update_required"}}
 	target := &cloneRecoveryTarget{name: "work", identity: "11111111-1111-4111-8111-111111111111", cloneErrors: []error{runtimeUpdate}}
