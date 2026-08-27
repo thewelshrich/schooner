@@ -161,7 +161,7 @@ func sshConformanceTarget(t *testing.T) Target {
 	inspection := fmt.Sprintf(`{"schema_version":"1","protocol_version":"1","box_identity":%q,"worktree_root":%q,"repository":%s,"worktree":%s,"warnings":[]}`, testIdentity, root, repositoryValue, worktreeValue)
 	invalid := fmt.Sprintf(`{"schema_version":"1","protocol_version":"1","box_identity":%q,"error":{"code":"invalid_input","message":"worktree selector is invalid"}}`, testIdentity)
 	sessions := fmt.Sprintf(`{"schema_version":"1","protocol_version":"1","box_identity":%q,"worktree_root":%q,"sessions":[]}`, testIdentity, root)
-	sourcePresent := fmt.Sprintf(`{"schema_version":"1","protocol_version":"1","box_identity":%q,"provider":"github","exists":true,"public_key":%q,"fingerprint":%q,"trust_configured":true}`, testIdentity, conformanceSourceKey, sourceFingerprint)
+	sourcePresent := fmt.Sprintf(`{"schema_version":"1","protocol_version":"1","box_identity":%q,"provider":"github","exists":true,"public_key":%q,"fingerprint":%q,"trust_configured":true,"host_fingerprints":[%q]}`, testIdentity, conformanceSourceKey, sourceFingerprint, sourceFingerprint)
 	sourceAbsent := fmt.Sprintf(`{"schema_version":"1","protocol_version":"1","box_identity":%q,"provider":"github","exists":false,"trust_configured":false}`, testIdentity)
 	sourceRemoved := fmt.Sprintf(`{"schema_version":"1","protocol_version":"1","box_identity":%q,"provider":"github","removed":true}`, testIdentity)
 	sourceVerified := fmt.Sprintf(`{"schema_version":"1","protocol_version":"1","box_identity":%q,"provider":"github","authenticated":true}`, testIdentity)

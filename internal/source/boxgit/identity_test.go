@@ -28,7 +28,7 @@ func TestEnsureCreatesAndRecoversBoxOwnedIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !identity.Exists || !identity.TrustConfigured || identity.Fingerprint == "" || !strings.HasPrefix(identity.PublicKey, "ssh-ed25519 ") || strings.Contains(identity.PublicKey, "PRIVATE") {
+	if !identity.Exists || !identity.TrustConfigured || len(identity.HostFingerprints) != 1 || identity.Fingerprint == "" || !strings.HasPrefix(identity.PublicKey, "ssh-ed25519 ") || strings.Contains(identity.PublicKey, "PRIVATE") {
 		t.Fatalf("identity=%+v", identity)
 	}
 	paths := manager.paths()
@@ -287,7 +287,7 @@ func TestRepositoryVerificationSuppressesPromptsAndPinsManagedSSH(t *testing.T) 
 		t.Fatalf("result=%+v command=%q err=%v", result, recorder.name, err)
 	}
 	environment := strings.Join(recorder.environment, "\n")
-	for _, required := range []string{"GIT_TERMINAL_PROMPT=0", "GCM_INTERACTIVE=never", "SSH_ASKPASS_REQUIRE=never", "GIT_SSH_COMMAND=", "BatchMode=yes", "IdentitiesOnly=yes", "StrictHostKeyChecking=yes", "-F"} {
+	for _, required := range []string{"GIT_TERMINAL_PROMPT=0", "GCM_INTERACTIVE=never", "SSH_ASKPASS_REQUIRE=never", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_SSH_COMMAND=", "BatchMode=yes", "IdentitiesOnly=yes", "StrictHostKeyChecking=yes", "-F"} {
 		if !strings.Contains(environment, required) {
 			t.Fatalf("managed environment is missing %q", required)
 		}

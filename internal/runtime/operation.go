@@ -227,7 +227,14 @@ func SourceRepositoryVerifyOperation() Operation[SourceRepositoryVerifyRequest, 
 }
 
 func validateSourceIdentityResult(provider string, result source.HostIdentity, required bool) error {
-	if result.Provider != provider || (required && (!result.Exists || !result.TrustConfigured || result.PublicKey == "" || result.Fingerprint == "")) {
+	if result.Provider != provider || (required && (!result.Exists || !result.TrustConfigured || result.PublicKey == "" || result.Fingerprint == "" || len(result.HostFingerprints) == 0)) {
+		return invalidOperationResult("source identity operation returned an invalid result")
+	}
+	if result.TrustConfigured {
+		if source.ValidateHostFingerprints(result.HostFingerprints) != nil {
+			return invalidOperationResult("source identity operation returned an invalid result")
+		}
+	} else if len(result.HostFingerprints) != 0 {
 		return invalidOperationResult("source identity operation returned an invalid result")
 	}
 	if !result.Exists {

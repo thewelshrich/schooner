@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -57,6 +58,39 @@ func ValidateFingerprint(value string) error {
 		return fmt.Errorf("SSH public key fingerprint is invalid")
 	}
 	return nil
+}
+
+// HostKeyFingerprints returns the canonical fingerprint set represented by
+// validated GitHub host-key metadata.
+func HostKeyFingerprints(values []HostKey) ([]string, error) {
+	if err := ValidateHostKeys(values); err != nil {
+		return nil, err
+	}
+	result := make([]string, len(values))
+	for index, value := range values {
+		result[index] = value.Fingerprint
+	}
+	slices.Sort(result)
+	return result, nil
+}
+
+// ValidateHostFingerprints checks the bounded, canonical trust evidence sent
+// over the runtime protocol.
+func ValidateHostFingerprints(values []string) error {
+	if len(values) == 0 || len(values) > 16 || !slices.IsSorted(values) {
+		return fmt.Errorf("GitHub host fingerprint set is invalid")
+	}
+	for index, value := range values {
+		if ValidateFingerprint(value) != nil || (index > 0 && values[index-1] == value) {
+			return fmt.Errorf("GitHub host fingerprint set is invalid")
+		}
+	}
+	return nil
+}
+
+func HostFingerprintsMatch(actual []string, expected []HostKey) bool {
+	want, err := HostKeyFingerprints(expected)
+	return err == nil && ValidateHostFingerprints(actual) == nil && slices.Equal(actual, want)
 }
 
 func supportedKeyType(value string) bool {

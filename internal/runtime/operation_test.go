@@ -155,7 +155,7 @@ func TestSourceIdentityOperationsValidateKeysAndNeverCarryPrivateMaterial(t *tes
 	if err = SourceIdentityEnsureOperation().ValidateRequest(request); err != nil {
 		t.Fatal(err)
 	}
-	result := SourceIdentityResult{SchemaVersion: SchemaVersion, ProtocolVersion: ProtocolVersion, BoxIdentity: testIdentity, HostIdentity: source.HostIdentity{Provider: source.GitHub, Exists: true, PublicKey: publicKey, Fingerprint: fingerprint, TrustConfigured: true}}
+	result := SourceIdentityResult{SchemaVersion: SchemaVersion, ProtocolVersion: ProtocolVersion, BoxIdentity: testIdentity, HostIdentity: source.HostIdentity{Provider: source.GitHub, Exists: true, PublicKey: publicKey, Fingerprint: fingerprint, TrustConfigured: true, HostFingerprints: []string{hostKey.Fingerprint}}}
 	if err = SourceIdentityEnsureOperation().ValidateResult(request, result); err != nil {
 		t.Fatal(err)
 	}

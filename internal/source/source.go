@@ -137,11 +137,12 @@ type GitHubClient interface {
 }
 
 type HostIdentity struct {
-	Provider        string `json:"provider"`
-	Exists          bool   `json:"exists"`
-	PublicKey       string `json:"public_key,omitempty"`
-	Fingerprint     string `json:"fingerprint,omitempty"`
-	TrustConfigured bool   `json:"trust_configured"`
+	Provider         string   `json:"provider"`
+	Exists           bool     `json:"exists"`
+	PublicKey        string   `json:"public_key,omitempty"`
+	Fingerprint      string   `json:"fingerprint,omitempty"`
+	TrustConfigured  bool     `json:"trust_configured"`
+	HostFingerprints []string `json:"host_fingerprints,omitempty"`
 }
 
 type EnsureIdentityRequest struct {
@@ -342,7 +343,7 @@ func (m *Manager) Connect(ctx context.Context, request ConnectRequest) (result C
 		return ConnectResult{}, err
 	}
 	actualFingerprint, fingerprintErr := PublicKeyFingerprint(hostIdentity.PublicKey)
-	if !hostIdentity.Exists || hostIdentity.Provider != GitHub || hostIdentity.Fingerprint == "" || hostIdentity.PublicKey == "" || !hostIdentity.TrustConfigured || fingerprintErr != nil || actualFingerprint != hostIdentity.Fingerprint {
+	if !hostIdentity.Exists || hostIdentity.Provider != GitHub || hostIdentity.Fingerprint == "" || hostIdentity.PublicKey == "" || !hostIdentity.TrustConfigured || !HostFingerprintsMatch(hostIdentity.HostFingerprints, hostKeys) || fingerprintErr != nil || actualFingerprint != hostIdentity.Fingerprint {
 		return ConnectResult{}, NewError("outcome_unknown", "the Box did not return a complete GitHub source identity", nil)
 	}
 
@@ -397,6 +398,13 @@ func (m *Manager) Connect(ctx context.Context, request ConnectRequest) (result C
 func (m *Manager) verifyConnectedRepository(ctx context.Context, target Target, binding BoxIdentity, token Token, account RemoteAccount, repository, warning string) (ConnectResult, bool, error) {
 	hostIdentity, err := target.InspectSourceIdentity(ctx, GitHub)
 	if err != nil || !hostIdentity.Exists || hostIdentity.Provider != GitHub || !hostIdentity.TrustConfigured || hostIdentity.Fingerprint != binding.Fingerprint {
+		return ConnectResult{}, false, nil
+	}
+	hostKeys, err := m.github.HostKeys(ctx)
+	if err != nil {
+		return ConnectResult{}, true, err
+	}
+	if !HostFingerprintsMatch(hostIdentity.HostFingerprints, hostKeys) {
 		return ConnectResult{}, false, nil
 	}
 	actualFingerprint, fingerprintErr := PublicKeyFingerprint(hostIdentity.PublicKey)
@@ -463,6 +471,7 @@ func (m *Manager) Status(ctx context.Context, request StatusRequest) (StatusResu
 		return m.resumeCleanup(ctx, target, binding, result)
 	}
 
+	var inspectedIdentity HostIdentity
 	if target != nil {
 		hostIdentity, inspectErr := target.InspectSourceIdentity(ctx, GitHub)
 		if inspectErr != nil {
@@ -472,6 +481,7 @@ func (m *Manager) Status(ctx context.Context, request StatusRequest) (StatusResu
 		} else if !hostIdentity.TrustConfigured {
 			result.Box = LayerObservation{State: "trust_missing", Fingerprint: hostIdentity.Fingerprint}
 		} else {
+			inspectedIdentity = hostIdentity
 			result.Box = LayerObservation{State: "present", Fingerprint: hostIdentity.Fingerprint}
 		}
 	}
@@ -521,6 +531,17 @@ func (m *Manager) Status(ctx context.Context, request StatusRequest) (StatusResu
 	} else {
 		result.Remote.State = "absent"
 	}
+	if result.Box.State == "present" {
+		hostKeys, hostKeysErr := m.github.HostKeys(ctx)
+		if hostKeysErr != nil {
+			result.State = StatusUnknown
+			result.Warnings = append(result.Warnings, "GitHub host-key metadata is unavailable: "+hostKeysErr.Error())
+			return result, nil
+		}
+		if !HostFingerprintsMatch(inspectedIdentity.HostFingerprints, hostKeys) {
+			result.Box.State = "trust_changed"
+		}
+	}
 	if binding.State == StateDisconnecting {
 		if mismatch {
 			result.State = StatusConflict
@@ -540,7 +561,7 @@ func (m *Manager) Status(ctx context.Context, request StatusRequest) (StatusResu
 		return m.resumeCleanup(ctx, target, binding, result)
 	}
 	if binding.State == StateConnecting {
-		if mismatch || (result.Box.State == "present" && result.Box.Fingerprint != binding.Fingerprint) {
+		if mismatch || result.Box.State == "trust_changed" || (result.Box.State == "present" && result.Box.Fingerprint != binding.Fingerprint) {
 			result.State = StatusConflict
 			return result, nil
 		}
@@ -874,6 +895,19 @@ func (m *Manager) resolveAccount(ctx context.Context, allowAuthorization bool) (
 		remote := RemoteAccount{ID: account.ExternalID, Login: account.Login}
 		if !validRemoteAccount(remote) {
 			return Token{}, RemoteAccount{}, "", NewError("conflict", "stored GitHub account metadata is invalid", nil)
+		}
+		if allowAuthorization {
+			verified, verifyErr := m.github.Account(ctx, token.AccessToken)
+			if verifyErr != nil {
+				if ErrorCode(verifyErr) == "authentication_required" {
+					return m.authorize(ctx, account)
+				}
+				return Token{}, RemoteAccount{}, "", verifyErr
+			}
+			if !validRemoteAccount(verified) || verified.ID != account.ExternalID {
+				return Token{}, RemoteAccount{}, "", NewError("conflict", "GitHub authorization now resolves to a different account", nil)
+			}
+			remote = verified
 		}
 		return token, remote, warning, nil
 	}

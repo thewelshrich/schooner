@@ -78,6 +78,20 @@ func TestCredentialStoreReadFailureNeverReauthorizes(t *testing.T) {
 	}
 }
 
+func TestInteractiveConnectReauthorizesARejectedUnexpiredToken(t *testing.T) {
+	manager, store, _, github, target := testManager(t)
+	if _, err := manager.Connect(t.Context(), ConnectRequest{Target: target, AllowAuthorization: true}); err != nil {
+		t.Fatal(err)
+	}
+	previousGeneration := store.account.CredentialGeneration
+	github.accountErrOnce = authenticationRequired("GitHub rejected the access token")
+
+	result, err := manager.Connect(t.Context(), ConnectRequest{Target: target, AllowAuthorization: true})
+	if err != nil || result.State != StateConnected || github.authorizeCalls != 2 || store.account.CredentialGeneration == previousGeneration {
+		t.Fatalf("result=%+v authorizeCalls=%d account=%+v err=%v", result, github.authorizeCalls, store.account, err)
+	}
+}
+
 func TestConnectRemovesNewAuthorizationWhenNoBindingCanBeCheckpointed(t *testing.T) {
 	manager, store, secrets, github, target := testManager(t)
 	github.hostKeysErr = NewError(CodeSourceUnavailable, "GitHub metadata unavailable", nil)
@@ -163,6 +177,23 @@ func TestStatusReturnsPartialFactsWhenGitHubIsUnavailable(t *testing.T) {
 	}
 	if status.State != StatusUnknown || status.Box.State != "present" || len(status.Warnings) == 0 {
 		t.Fatalf("status=%+v", status)
+	}
+}
+
+func TestStatusRejectsManagedTrustNotAdvertisedByGitHub(t *testing.T) {
+	manager, _, _, _, target := testManager(t)
+	if _, err := manager.Connect(t.Context(), ConnectRequest{Target: target, AllowAuthorization: true}); err != nil {
+		t.Fatal(err)
+	}
+	staleFingerprint, err := PublicKeyFingerprint(testPublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target.identity.HostFingerprints = []string{staleFingerprint}
+
+	status, err := manager.Status(t.Context(), StatusRequest{Target: target})
+	if err != nil || status.State != StatusConflict || status.Box.State != "trust_changed" {
+		t.Fatalf("status=%+v err=%v", status, err)
 	}
 }
 
@@ -776,6 +807,7 @@ type fakeGitHub struct {
 	hostKeysHook           func()
 	keys                   []RemoteKey
 	listErr                error
+	accountErrOnce         error
 	refreshToken           Token
 	refreshErr             error
 	createErr              error
@@ -787,6 +819,7 @@ type fakeGitHub struct {
 	authorizeCalls         int
 	refreshCalls           int
 	listCalls              int
+	accountCalls           int
 	createCalls            int
 	deleteCalls            int
 	verifyCreateTitle      string
@@ -811,7 +844,15 @@ func (f *fakeGitHub) Refresh(context.Context, string) (Token, error) {
 	}
 	return f.token, nil
 }
-func (f *fakeGitHub) Account(context.Context, string) (RemoteAccount, error) { return f.account, nil }
+func (f *fakeGitHub) Account(context.Context, string) (RemoteAccount, error) {
+	f.accountCalls++
+	if f.accountErrOnce != nil {
+		err := f.accountErrOnce
+		f.accountErrOnce = nil
+		return RemoteAccount{}, err
+	}
+	return f.account, nil
+}
 func (f *fakeGitHub) HostKeys(context.Context) ([]HostKey, error) {
 	if f.hostKeysHook != nil {
 		f.hostKeysHook()
@@ -876,8 +917,9 @@ func (f *fakeTarget) BoxIdentity() string { return f.boxIdentity }
 func (f *fakeTarget) InspectSourceIdentity(context.Context, string) (HostIdentity, error) {
 	return f.identity, nil
 }
-func (f *fakeTarget) EnsureSourceIdentity(context.Context, EnsureIdentityRequest) (HostIdentity, error) {
+func (f *fakeTarget) EnsureSourceIdentity(_ context.Context, request EnsureIdentityRequest) (HostIdentity, error) {
 	f.ensureCalls++
+	f.identity.HostFingerprints, _ = HostKeyFingerprints(request.HostKeys)
 	return f.identity, nil
 }
 func (f *fakeTarget) RemoveSourceIdentity(_ context.Context, request RemoveIdentityRequest) (RemoveIdentityResult, error) {
