@@ -237,24 +237,25 @@ func (l *Lifecycle) CloneV2(ctx context.Context, request CloneRequest) (Mutation
 	if err != nil {
 		return MutationResult{}, err
 	}
-	if legacyTarget != target {
-		legacyLock, lockErr := acquireMutationLock(l.state, legacyTarget)
-		if lockErr != nil {
-			return MutationResult{}, lockErr
-		}
-		var legacyResult MutationResult
-		var legacyComplete bool
-		cloneSource, legacyResult, legacyComplete, err = l.reconcileVersion1Clone(ctx, legacyTarget, cloneSource, request.Branch)
-		closeErr := legacyLock.Close()
-		if err != nil {
-			return MutationResult{}, err
-		}
-		if closeErr != nil {
-			return MutationResult{}, closeErr
-		}
-		if legacyComplete {
-			return legacyResult, nil
-		}
+	legacyLock, lockErr := acquireMutationLock(l.state, legacyTarget)
+	if lockErr != nil {
+		return MutationResult{}, lockErr
+	}
+	var legacyResult MutationResult
+	var legacyComplete, resumeLegacy bool
+	cloneSource, legacyResult, legacyComplete, resumeLegacy, err = l.reconcileVersion1Clone(ctx, legacyTarget, cloneSource, request.Branch)
+	closeErr := legacyLock.Close()
+	if err != nil {
+		return MutationResult{}, err
+	}
+	if closeErr != nil {
+		return MutationResult{}, closeErr
+	}
+	if legacyComplete {
+		return legacyResult, nil
+	}
+	if resumeLegacy {
+		return l.Clone(ctx, request)
 	}
 	intent := fingerprint("clone.v2", target, identity.Key(), request.Branch)
 	return l.clone(ctx, request, cloneSource, target, intent, identity)
@@ -267,17 +268,6 @@ func (l *Lifecycle) clone(ctx context.Context, request CloneRequest, cloneSource
 		return MutationResult{}, err
 	}
 	defer func() { _ = lock.Close() }()
-	if identity.Host != "" {
-		var legacyResult MutationResult
-		var legacyComplete bool
-		cloneSource, legacyResult, legacyComplete, err = l.reconcileVersion1Clone(ctx, target, cloneSource, request.Branch)
-		if err != nil {
-			return MutationResult{}, err
-		}
-		if legacyComplete {
-			return legacyResult, nil
-		}
-	}
 	return l.withOperationLocked(ctx, "clone", target, intent, func(record *operationRecord, recovered bool) (MutationResult, error) {
 		if identity.Host != "" {
 			if record.SuppliedOrigin == "" {
@@ -402,41 +392,44 @@ func (l *Lifecycle) clone(ctx context.Context, request CloneRequest, cloneSource
 	})
 }
 
-func (l *Lifecycle) reconcileVersion1Clone(ctx context.Context, target, cloneSource, branch string) (string, MutationResult, bool, error) {
+func (l *Lifecycle) reconcileVersion1Clone(ctx context.Context, target, cloneSource, branch string) (string, MutationResult, bool, bool, error) {
 	legacyIntent := fingerprint("clone", target, cloneSource, branch)
 	record, found, err := l.load(legacyIntent)
 	if err != nil || !found {
-		return cloneSource, MutationResult{}, false, err
+		return cloneSource, MutationResult{}, false, false, err
 	}
 	if record.Kind != "clone" || record.TargetPath != target {
-		return "", MutationResult{}, false, &Error{Code: CodeOutcomeUnknown, Message: "version-1 clone checkpoint does not match the requested repository"}
+		return "", MutationResult{}, false, false, &Error{Code: CodeOutcomeUnknown, Message: "version-1 clone checkpoint does not match the requested repository"}
 	}
 	if record.Checkpoint == "complete" {
 		inspected, inspectErr := Inspect(ctx, l.root, target)
 		if inspectErr != nil || !cloneMatchesRecord(inspected, &record, target) {
-			return "", MutationResult{}, false, &Error{Code: CodeOutcomeUnknown, Message: "completed version-1 clone checkpoint no longer matches its checkout", Cause: inspectErr}
+			return "", MutationResult{}, false, false, &Error{Code: CodeOutcomeUnknown, Message: "completed version-1 clone checkpoint no longer matches its checkout", Cause: inspectErr}
 		}
-		return cloneSource, MutationResult{Action: "clone", Recovered: true, WorktreeRoot: l.root, Inspection: &inspected, Path: inspected.Worktree.Path}, true, nil
+		return cloneSource, MutationResult{Action: "clone", Recovered: true, WorktreeRoot: l.root, Inspection: &inspected, Path: inspected.Worktree.Path}, true, false, nil
 	}
 	if record.Checkpoint == "aborted" {
-		return cloneSource, MutationResult{}, false, nil
+		return cloneSource, MutationResult{}, false, false, nil
+	}
+	if record.Checkpoint == "clone_finished" || record.Checkpoint == "promote_pending" {
+		return cloneSource, MutationResult{}, false, true, nil
 	}
 	if record.Checkpoint != "requested" && record.Checkpoint != "clone_pending" {
-		return "", MutationResult{}, false, &Error{Code: CodeConflict, Message: "version-1 clone recovery reached a checkpoint that must be reconciled before transport recovery"}
+		return "", MutationResult{}, false, false, &Error{Code: CodeConflict, Message: "version-1 clone recovery reached a checkpoint that must be reconciled before transport recovery"}
 	}
 	if record.StagingPath != "" {
 		if err = removeOwnedStage(&record); err != nil {
-			return "", MutationResult{}, false, err
+			return "", MutationResult{}, false, false, err
 		}
 	}
 	record.Checkpoint = "aborted"
 	if err = l.save(&record); err != nil {
-		return "", MutationResult{}, false, err
+		return "", MutationResult{}, false, false, err
 	}
 	if record.SuppliedOrigin != "" {
-		return record.SuppliedOrigin, MutationResult{}, false, nil
+		return record.SuppliedOrigin, MutationResult{}, false, false, nil
 	}
-	return cloneSource, MutationResult{}, false, nil
+	return cloneSource, MutationResult{}, false, false, nil
 }
 
 func (l *Lifecycle) Add(ctx context.Context, request AddRequest) (MutationResult, error) {

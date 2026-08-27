@@ -15,6 +15,7 @@ import (
 type RepositoryIdentity struct {
 	Host       string
 	Account    string
+	Scheme     string
 	Owner      string
 	Repository string
 	Absolute   bool
@@ -26,13 +27,18 @@ func (identity RepositoryIdentity) Key() string {
 		host = identity.Account + "@" + host
 	}
 	if !identity.IsGitHub() {
+		host = identity.Scheme + "://" + host
 		root := "relative"
 		if identity.Absolute {
 			root = "absolute"
 		}
 		host += "/" + root
 	}
-	return host + "/" + identity.Owner + "/" + identity.Repository
+	repositoryPath := identity.Repository
+	if identity.Owner != "" {
+		repositoryPath = identity.Owner + "/" + repositoryPath
+	}
+	return host + "/" + repositoryPath
 }
 
 func (identity RepositoryIdentity) IsGitHub() bool { return identity.Host == GitHubHost }
@@ -80,7 +86,7 @@ func RepositoryIdentityFor(raw string) (identity RepositoryIdentity, network boo
 		if host == GitHubHost {
 			username = ""
 		}
-		return normalizedRepositoryIdentity(host, username, "", repositoryPath)
+		return normalizedRepositoryIdentity(host, username, "ssh", "", repositoryPath)
 	}
 
 	parsed, parseErr := url.Parse(raw)
@@ -125,10 +131,10 @@ func RepositoryIdentityFor(raw string) (identity RepositoryIdentity, network boo
 	if host == GitHubHost || scheme != "ssh" {
 		username = ""
 	}
-	return normalizedRepositoryIdentity(host, username, explicitPort, repositoryPath)
+	return normalizedRepositoryIdentity(host, username, scheme, explicitPort, repositoryPath)
 }
 
-func normalizedRepositoryIdentity(host, account, explicitPort, repositoryPath string) (RepositoryIdentity, bool, error) {
+func normalizedRepositoryIdentity(host, account, scheme, explicitPort, repositoryPath string) (RepositoryIdentity, bool, error) {
 	if strings.TrimSpace(host) != host {
 		return RepositoryIdentity{}, true, NewError("invalid_input", "repository source has an invalid host", nil)
 	}
@@ -144,8 +150,8 @@ func normalizedRepositoryIdentity(host, account, explicitPort, repositoryPath st
 		return RepositoryIdentity{}, true, NewError("invalid_input", "repository source has no valid network identity", nil)
 	}
 	parts := strings.Split(cleaned, "/")
-	if len(parts) < 2 {
-		return RepositoryIdentity{}, true, NewError("invalid_input", "repository source must identify an owner and repository", nil)
+	if len(parts) == 0 {
+		return RepositoryIdentity{}, true, NewError("invalid_input", "repository source must identify a repository", nil)
 	}
 	for _, part := range parts {
 		if part == "" || part == "." || part == ".." || strings.ContainsAny(part, " @:\\") {
@@ -158,7 +164,7 @@ func normalizedRepositoryIdentity(host, account, explicitPort, repositoryPath st
 		}
 		return RepositoryIdentity{Host: host, Owner: strings.ToLower(parts[0]), Repository: strings.ToLower(parts[1])}, true, nil
 	}
-	return RepositoryIdentity{Host: host, Account: account, Owner: strings.Join(parts[:len(parts)-1], "/"), Repository: parts[len(parts)-1], Absolute: absolute}, true, nil
+	return RepositoryIdentity{Host: host, Account: account, Scheme: scheme, Owner: strings.Join(parts[:len(parts)-1], "/"), Repository: parts[len(parts)-1], Absolute: absolute}, true, nil
 }
 
 func splitAuthority(authority string) (username, host string) {
@@ -249,7 +255,7 @@ type CloneExecutor interface {
 }
 
 func ValidateCloneExecution(request CloneExecution) error {
-	if request.Repository.Host == "" || request.Repository.Owner == "" || request.Repository.Repository == "" || request.SuppliedOrigin == "" || request.WorktreeRoot == "" || request.Destination == "" {
+	if request.Repository.Host == "" || request.Repository.Repository == "" || request.Repository.IsGitHub() && request.Repository.Owner == "" || !request.Repository.IsGitHub() && request.Repository.Scheme == "" || request.SuppliedOrigin == "" || request.WorktreeRoot == "" || request.Destination == "" {
 		return fmt.Errorf("clone execution is incomplete")
 	}
 	return nil

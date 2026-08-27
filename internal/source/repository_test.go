@@ -45,8 +45,32 @@ func TestRepositoryIdentityRejectsCredentialBearingAndMalformedSources(t *testin
 
 func TestRepositoryIdentityPreservesGenericNestedNamespace(t *testing.T) {
 	identity, network, err := RepositoryIdentityFor("ssh://alice@gitlab.example.com/team/platform/tool.git")
-	if err != nil || !network || identity.Key() != "alice@gitlab.example.com/absolute/team/platform/tool" || identity.CanonicalSSH() != "" {
+	if err != nil || !network || identity.Key() != "ssh://alice@gitlab.example.com/absolute/team/platform/tool" || identity.CanonicalSSH() != "" {
 		t.Fatalf("RepositoryIdentityFor() = %+v, %t, %v", identity, network, err)
+	}
+}
+
+func TestRepositoryIdentityDistinguishesGenericSchemes(t *testing.T) {
+	keys := map[string]bool{}
+	for _, value := range []string{
+		"https://git.example/team/repo.git",
+		"git://git.example/team/repo.git",
+		"ssh://git.example/team/repo.git",
+	} {
+		identity, network, err := RepositoryIdentityFor(value)
+		if err != nil || !network || keys[identity.Key()] {
+			t.Fatalf("RepositoryIdentityFor(%q)=%+v network=%t err=%v", value, identity, network, err)
+		}
+		keys[identity.Key()] = true
+	}
+}
+
+func TestRepositoryIdentityAllowsOwnerlessGenericPaths(t *testing.T) {
+	for _, value := range []string{"https://git.example/repo.git", "git@git.example:repo.git"} {
+		identity, network, err := RepositoryIdentityFor(value)
+		if err != nil || !network || identity.Owner != "" || identity.Repository != "repo" {
+			t.Fatalf("RepositoryIdentityFor(%q)=%+v network=%t err=%v", value, identity, network, err)
+		}
 	}
 }
 

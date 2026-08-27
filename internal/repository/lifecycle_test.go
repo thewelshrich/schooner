@@ -307,6 +307,57 @@ func TestLifecycleCloneV2RecoversCompletedVersion1Checkout(t *testing.T) {
 	}
 }
 
+func TestLifecycleCloneV2ResumesPostCloneVersion1Checkpoints(t *testing.T) {
+	for _, checkpoint := range []string{"clone_finished", "promote_pending"} {
+		t.Run(checkpoint, func(t *testing.T) {
+			root := filepath.Join(t.TempDir(), "worktrees")
+			if err := os.MkdirAll(root, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			state := filepath.Join(t.TempDir(), "state")
+			executor := &lifecycleCloneExecutor{localSource: createLifecycleSource(t)}
+			lifecycle, err := NewLifecycleWithOptions(root, state, nil, LifecycleOptions{CloneExecutor: executor})
+			if err != nil {
+				t.Fatal(err)
+			}
+			origin := "https://github.com/Owner/Repo.git"
+			legacyTarget := filepath.Join(lifecycle.root, "Repo")
+			legacyIntent := fingerprint("clone", legacyTarget, origin, "")
+			legacy := operationRecord{
+				SchemaVersion: operationSchemaVersion,
+				ID:            legacyIntent[:24], Kind: "clone", IntentSHA256: legacyIntent,
+				TargetPath: legacyTarget, StagingPath: filepath.Join(lifecycle.root, ".schooner-stage-"+legacyIntent[:24], "Repo"),
+				Checkpoint: checkpoint, OwnershipToken: strings.Repeat("a", 64),
+			}
+			if err = lifecycle.createOwnedStage(&legacy); err != nil {
+				t.Fatal(err)
+			}
+			if output, cloneErr := exec.Command("git", "clone", executor.localSource, legacy.StagingPath).CombinedOutput(); cloneErr != nil {
+				t.Fatalf("git clone: %v\n%s", cloneErr, output)
+			}
+			if checkpoint == "promote_pending" {
+				inspected, inspectErr := Inspect(t.Context(), lifecycle.root, legacy.StagingPath)
+				if inspectErr != nil {
+					t.Fatal(inspectErr)
+				}
+				recordSnapshot(&legacy, inspected)
+			}
+			if err = lifecycle.save(&legacy); err != nil {
+				t.Fatal(err)
+			}
+
+			recovered, recoverErr := lifecycle.CloneV2(t.Context(), CloneRequest{Source: origin})
+			if recoverErr != nil || !recovered.Recovered || recovered.Path != legacyTarget || recovered.Inspection == nil || len(executor.requests) != 0 {
+				t.Fatalf("recovered=%+v requests=%d err=%v", recovered, len(executor.requests), recoverErr)
+			}
+			final, found, loadErr := lifecycle.load(legacyIntent)
+			if loadErr != nil || !found || final.Checkpoint != "complete" {
+				t.Fatalf("legacy=%+v found=%t err=%v", final, found, loadErr)
+			}
+		})
+	}
+}
+
 func TestLifecycleRejectsConcurrentTargetMutation(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "root")
 	state := filepath.Join(t.TempDir(), "state")
