@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/thewelshrich/schooner/internal/repository"
+	"github.com/thewelshrich/schooner/internal/source"
 )
 
 func TestBoundedOperationContractsAreExplicitUniqueAndAdvertised(t *testing.T) {
@@ -136,5 +137,77 @@ func TestSessionOperationCorrelatesResultToRequest(t *testing.T) {
 	result.SessionID = "session-two"
 	if err := operation.ValidateResult(request, result); ErrorCode(err) != CodeInvalidMessage {
 		t.Fatalf("mismatched Session result error = %v", err)
+	}
+}
+
+func TestSourceIdentityOperationsValidateKeysAndNeverCarryPrivateMaterial(t *testing.T) {
+	publicKey := "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4f"
+	fingerprint, err := source.PublicKeyFingerprint(publicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostKey := source.HostKey{Key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICAhIiMkJSYnKCkqKywtLi8wMTIzNDU2Nzg5Ojs8PT4/", Fingerprint: ""}
+	hostKey.Fingerprint, err = source.PublicKeyFingerprint(hostKey.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := NewSourceIdentityEnsureRequest(source.GitHub, testIdentity, []source.HostKey{hostKey})
+	if err = SourceIdentityEnsureOperation().ValidateRequest(request); err != nil {
+		t.Fatal(err)
+	}
+	result := SourceIdentityResult{SchemaVersion: SchemaVersion, ProtocolVersion: ProtocolVersion, BoxIdentity: testIdentity, HostIdentity: source.HostIdentity{Provider: source.GitHub, Exists: true, PublicKey: publicKey, Fingerprint: fingerprint, TrustConfigured: true, HostFingerprints: []string{hostKey.Fingerprint}}}
+	if err = SourceIdentityEnsureOperation().ValidateResult(request, result); err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(strings.ToLower(string(encoded)), "private") || strings.Contains(string(encoded), "/.local/state/") {
+		t.Fatalf("source identity result leaked private state: %s", encoded)
+	}
+	request.HostKeys[0].Fingerprint = "SHA256:wrong"
+	if err = SourceIdentityEnsureOperation().ValidateRequest(request); ErrorCode(err) != CodeInvalidInput {
+		t.Fatalf("invalid host key error=%v", err)
+	}
+}
+
+func TestOperationErrorCarriesBoundedSafeReasonContext(t *testing.T) {
+	document := NewOperationErrorWithContext(testIdentity, CodeAuthentication, "SAML authorization is required", map[string]string{"reason": "github_saml_sso"})
+	encoded, err := json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, present, err := DecodeOperationError(encoded, testIdentity)
+	if err != nil || !present || decoded.Error.Context["reason"] != "github_saml_sso" {
+		t.Fatalf("decoded=%+v present=%v err=%v", decoded, present, err)
+	}
+}
+
+func TestSourceOperationStrictlyRejectsUnknownRequestFields(t *testing.T) {
+	request := NewSourceIdentityRequest(source.GitHub, testIdentity)
+	encoded, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded = append(encoded[:len(encoded)-1], []byte(`,"private_key":"must-not-cross"}`)...)
+	if _, err = SourceIdentityInspectOperation().DecodeRequest(encoded); ErrorCode(err) != CodeInvalidMessage {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestOperationErrorRejectsUnboundedContextAndMessages(t *testing.T) {
+	for _, document := range []OperationError{
+		NewOperationErrorWithContext(testIdentity, CodeAuthentication, "failure", map[string]string{"reason": strings.Repeat("x", 257)}),
+		NewOperationErrorWithContext(testIdentity, CodeAuthentication, "failure", map[string]string{"managed_path": "/home/alice/.local/state/schooner"}),
+		NewOperationError(testIdentity, CodeAuthentication, strings.Repeat("x", 4097)),
+	} {
+		encoded, err := json.Marshal(document)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, present, decodeErr := DecodeOperationError(encoded, testIdentity); !present || ErrorCode(decodeErr) != CodeInvalidMessage {
+			t.Fatalf("present=%v err=%v", present, decodeErr)
+		}
 	}
 }

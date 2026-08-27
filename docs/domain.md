@@ -16,10 +16,38 @@ An SSH alias, hostname, address, or username is a connection locator, not Box
 identity. Schooner correlates a local Box record with a stable identity on the
 machine; OpenSSH host-key verification remains the authentication mechanism.
 
+### Source Account
+
+A **Source Account** is one locally authorized identity at a source provider.
+Schooner currently supports one GitHub Source Account shared by all Boxes.
+Access and refresh tokens live only in the operating-system credential store
+or invocation memory; local inventory contains an opaque credential reference
+and safe account metadata.
+
+### Box Source Identity
+
+A **Box Source Identity** is a provider-specific SSH identity owned by one Box.
+For GitHub, each connected Box owns one dedicated Ed25519 keypair. The private
+key never leaves that Box; Schooner carries only its public key and fingerprint
+across the typed runtime protocol.
+
 ### Repository
 
 A **Repository** is one Git common object and ref store. Git identifies it by
 its canonical common directory; Schooner does not assign it another identity.
+
+### Repository Identity
+
+A **Repository Identity** is the normalized source host, owner, and repository
+name used to recognize one network repository independently of a clone URL.
+It correlates transport forms such as HTTPS and SSH; it does not replace Git's
+live identity for an already cloned Repository.
+
+### Transport
+
+A **Transport** is an operation-scoped way to access a Repository Identity,
+such as HTTPS or SSH. A transport URL, credential, SSH option, or helper is not
+Repository identity and is not persisted as one.
 
 ### Worktree
 
@@ -131,6 +159,11 @@ An adopted Box cannot be destroyed by Schooner. Losing provider authorization
 makes destruction unavailable; it does not turn destruction into a local
 operation.
 
+Source access is a separate authority boundary. Remove and Destroy warn about
+active Box Source Identities but never call GitHub or remove source-key files.
+The retained binding permits later GitHub revocation by the former Box name;
+Box-file cleanup waits until the same machine is re-adopted.
+
 ### Credential Profile
 
 A **Credential Profile** is a named reference to provider credentials, scoped
@@ -138,8 +171,9 @@ by provider and external account or provider project. Secret values live in an
 operating-system credential store or the current process environment; local
 configuration and inventory store only references and safe metadata.
 
-Provider credential profiles are not source-host credentials. Git uses the
-configured local or remote user's existing credentials and SSH setup.
+Provider credential profiles are not Source Accounts. Source Account tokens
+use their own secure-store namespace and authorize only source-provider account
+operations; they are never copied to a Box or passed to Git.
 
 ### Provider Resource Reference
 
@@ -172,6 +206,10 @@ no background worker; later CLI invocations resume checkpointed Operations.
 | Box connection inventory and preferences | Local Schooner state |
 | SSH authentication and host trust | User's OpenSSH environment and explicit approval |
 | Remote Box identity | Identity stored on the Box |
+| Source Account authorization | Local operating-system credential store or invocation memory |
+| Box Source Identity private key | Filesystem on that Box |
+| GitHub SSH-key registration | GitHub account |
+| Source binding and recovery checkpoint | Local Schooner state plus verified Box and GitHub observations |
 | Repository and Worktree identity and lifecycle | Git and the filesystem on the Box |
 | Sessions, Agents, and capabilities | Live Box state |
 | Local checkout contents | Local filesystem and Git repository |

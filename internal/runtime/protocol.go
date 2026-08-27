@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/thewelshrich/schooner/internal/repository"
+	"github.com/thewelshrich/schooner/internal/source"
 )
 
 const (
@@ -20,23 +21,27 @@ const (
 	ProtocolVersion = "1"
 	MaxMessageBytes = 1 << 20
 
-	CapabilityHelloV1           = "host.hello.v1"
-	CapabilityInspectV2         = "host.inspect.v2"
-	CapabilityDoctorV1          = "host.doctor.v1"
-	CapabilityConfigureV1       = "host.configure.v1"
-	CapabilityWorktreeListV1    = "worktree.list.v1"
-	CapabilityOriginIdentityV1  = "repository.identity.v1"
-	CapabilityWorktreeInspectV1 = "worktree.inspect.v1"
-	CapabilityRepositoryCloneV1 = "repository.clone.v1"
-	CapabilityWorktreeAddV1     = "worktree.add.v1"
-	CapabilityWorktreeRemoveV1  = "worktree.remove.v1"
-	CapabilityWorktreePruneV1   = "worktree.prune.v1"
-	CapabilitySessionListV1     = "session.list.v1"
-	CapabilitySessionStartV1    = "session.start.v1"
-	CapabilitySessionResumeV1   = "session.resume.v1"
-	CapabilitySessionLogsV1     = "session.logs.v1"
-	CapabilitySessionStopV1     = "session.stop.v1"
-	CapabilityWorktreeShellV1   = "worktree.shell.v1"
+	CapabilityHelloV1                  = "host.hello.v1"
+	CapabilityInspectV2                = "host.inspect.v2"
+	CapabilityDoctorV1                 = "host.doctor.v1"
+	CapabilityConfigureV1              = "host.configure.v1"
+	CapabilityWorktreeListV1           = "worktree.list.v1"
+	CapabilityOriginIdentityV1         = "repository.identity.v1"
+	CapabilityWorktreeInspectV1        = "worktree.inspect.v1"
+	CapabilityRepositoryCloneV1        = "repository.clone.v1"
+	CapabilitySourceIdentityInspectV1  = "source.identity.inspect.v1"
+	CapabilitySourceIdentityEnsureV1   = "source.identity.ensure.v1"
+	CapabilitySourceIdentityRemoveV1   = "source.identity.remove.v1"
+	CapabilitySourceRepositoryVerifyV1 = "source.repository.verify.v1"
+	CapabilityWorktreeAddV1            = "worktree.add.v1"
+	CapabilityWorktreeRemoveV1         = "worktree.remove.v1"
+	CapabilityWorktreePruneV1          = "worktree.prune.v1"
+	CapabilitySessionListV1            = "session.list.v1"
+	CapabilitySessionStartV1           = "session.start.v1"
+	CapabilitySessionResumeV1          = "session.resume.v1"
+	CapabilitySessionLogsV1            = "session.logs.v1"
+	CapabilitySessionStopV1            = "session.stop.v1"
+	CapabilityWorktreeShellV1          = "worktree.shell.v1"
 )
 
 var (
@@ -140,6 +145,37 @@ type WorktreeMutationRequest struct {
 	NonInteractive  bool   `json:"-"`
 }
 
+type SourceIdentityRequest struct {
+	SchemaVersion   string `json:"schema_version"`
+	ProtocolVersion string `json:"protocol_version"`
+	BoxIdentity     string `json:"box_identity"`
+	Provider        string `json:"provider"`
+}
+
+type SourceIdentityEnsureRequest struct {
+	SchemaVersion   string           `json:"schema_version"`
+	ProtocolVersion string           `json:"protocol_version"`
+	BoxIdentity     string           `json:"box_identity"`
+	Provider        string           `json:"provider"`
+	HostKeys        []source.HostKey `json:"host_keys"`
+}
+
+type SourceIdentityRemoveRequest struct {
+	SchemaVersion       string `json:"schema_version"`
+	ProtocolVersion     string `json:"protocol_version"`
+	BoxIdentity         string `json:"box_identity"`
+	Provider            string `json:"provider"`
+	ExpectedFingerprint string `json:"expected_fingerprint"`
+}
+
+type SourceRepositoryVerifyRequest struct {
+	SchemaVersion   string `json:"schema_version"`
+	ProtocolVersion string `json:"protocol_version"`
+	BoxIdentity     string `json:"box_identity"`
+	Provider        string `json:"provider"`
+	Repository      string `json:"repository,omitempty"`
+}
+
 type ConfigureResult struct {
 	SchemaVersion   string `json:"schema_version"`
 	ProtocolVersion string `json:"protocol_version"`
@@ -168,9 +204,31 @@ type LifecycleResult struct {
 	repository.MutationResult
 }
 
+type SourceIdentityResult struct {
+	SchemaVersion   string `json:"schema_version"`
+	ProtocolVersion string `json:"protocol_version"`
+	BoxIdentity     string `json:"box_identity"`
+	source.HostIdentity
+}
+
+type SourceIdentityRemoveResult struct {
+	SchemaVersion   string `json:"schema_version"`
+	ProtocolVersion string `json:"protocol_version"`
+	BoxIdentity     string `json:"box_identity"`
+	source.RemoveIdentityResult
+}
+
+type SourceRepositoryVerifyResult struct {
+	SchemaVersion   string `json:"schema_version"`
+	ProtocolVersion string `json:"protocol_version"`
+	BoxIdentity     string `json:"box_identity"`
+	source.VerifyResult
+}
+
 type OperationErrorDetail struct {
-	Code    Code   `json:"code"`
-	Message string `json:"message"`
+	Code    Code              `json:"code"`
+	Message string            `json:"message"`
+	Context map[string]string `json:"context,omitempty"`
 }
 
 type OperationError struct {
@@ -238,10 +296,30 @@ func NewWorktreeMutationRequest(repositoryPath, pathValue, branch, worktreeRoot,
 	return WorktreeMutationRequest{SchemaVersion: SchemaVersion, ProtocolVersion: ProtocolVersion, BoxIdentity: boxIdentity, WorktreeRoot: worktreeRoot, RepositoryPath: repositoryPath, Path: pathValue, Branch: branch}
 }
 
+func NewSourceIdentityRequest(provider, boxIdentity string) SourceIdentityRequest {
+	return SourceIdentityRequest{SchemaVersion: SchemaVersion, ProtocolVersion: ProtocolVersion, BoxIdentity: boxIdentity, Provider: provider}
+}
+
+func NewSourceIdentityEnsureRequest(provider, boxIdentity string, hostKeys []source.HostKey) SourceIdentityEnsureRequest {
+	return SourceIdentityEnsureRequest{SchemaVersion: SchemaVersion, ProtocolVersion: ProtocolVersion, BoxIdentity: boxIdentity, Provider: provider, HostKeys: append([]source.HostKey(nil), hostKeys...)}
+}
+
+func NewSourceIdentityRemoveRequest(provider, boxIdentity, expectedFingerprint string) SourceIdentityRemoveRequest {
+	return SourceIdentityRemoveRequest{SchemaVersion: SchemaVersion, ProtocolVersion: ProtocolVersion, BoxIdentity: boxIdentity, Provider: provider, ExpectedFingerprint: expectedFingerprint}
+}
+
+func NewSourceRepositoryVerifyRequest(provider, repository, boxIdentity string) SourceRepositoryVerifyRequest {
+	return SourceRepositoryVerifyRequest{SchemaVersion: SchemaVersion, ProtocolVersion: ProtocolVersion, BoxIdentity: boxIdentity, Provider: provider, Repository: repository}
+}
+
 func NewOperationError(boxIdentity string, code Code, message string) OperationError {
+	return NewOperationErrorWithContext(boxIdentity, code, message, nil)
+}
+
+func NewOperationErrorWithContext(boxIdentity string, code Code, message string, contextValues map[string]string) OperationError {
 	return OperationError{
 		SchemaVersion: SchemaVersion, ProtocolVersion: ProtocolVersion, BoxIdentity: boxIdentity,
-		Error: OperationErrorDetail{Code: code, Message: message},
+		Error: OperationErrorDetail{Code: code, Message: message, Context: contextValues},
 	}
 }
 
@@ -262,10 +340,82 @@ func DecodeOperationError(data []byte, expectedIdentity string) (OperationError,
 	if result.BoxIdentity != expectedIdentity || !identityPattern.MatchString(result.BoxIdentity) {
 		return OperationError{}, true, &Error{Code: CodeInvalidIdentity, Message: "host operation error Box identity is invalid"}
 	}
-	if !slices.Contains([]Code{CodeNotFound, CodeInvalidInput, CodeConflict, CodeAuthentication, CodePermissionDenied, CodeOperationInProgress, CodeOutcomeUnknown}, result.Error.Code) || result.Error.Message == "" || strings.ContainsAny(result.Error.Message, "\x00\r\n") {
+	if !slices.Contains([]Code{CodeNotFound, CodeInvalidInput, CodeConflict, CodeAuthentication, CodePermissionDenied, CodeOperationInProgress, CodeOutcomeUnknown, CodeCapabilityUnavailable}, result.Error.Code) || result.Error.Message == "" || len(result.Error.Message) > 4096 || strings.ContainsAny(result.Error.Message, "\x00\r\n") {
 		return OperationError{}, true, &Error{Code: CodeInvalidMessage, Message: "host operation error is invalid"}
 	}
+	if len(result.Error.Context) > 8 {
+		return OperationError{}, true, &Error{Code: CodeInvalidMessage, Message: "host operation error context is invalid"}
+	}
+	for key, value := range result.Error.Context {
+		if !validOperationErrorContext(key, value) {
+			return OperationError{}, true, &Error{Code: CodeInvalidMessage, Message: "host operation error context is invalid"}
+		}
+	}
 	return result, true, nil
+}
+
+func validOperationErrorContext(key, value string) bool {
+	if len(value) > 256 || hasControl(value) {
+		return false
+	}
+	switch key {
+	case "reason":
+		return slices.Contains([]string{"credentials_missing", "github_saml_sso", "host_key_changed"}, value)
+	case "organization":
+		return platformPattern.MatchString(value)
+	default:
+		return false
+	}
+}
+
+func ValidateSourceIdentityRequest(request SourceIdentityRequest) error {
+	if err := validateSourceEnvelope(request.SchemaVersion, request.ProtocolVersion, request.BoxIdentity, request.Provider); err != nil {
+		return err
+	}
+	return nil
+}
+
+func ValidateSourceIdentityEnsureRequest(request SourceIdentityEnsureRequest) error {
+	if err := validateSourceEnvelope(request.SchemaVersion, request.ProtocolVersion, request.BoxIdentity, request.Provider); err != nil {
+		return err
+	}
+	if err := source.ValidateHostKeys(request.HostKeys); err != nil {
+		return &Error{Code: CodeInvalidInput, Message: "source identity host keys are invalid", Cause: err}
+	}
+	return nil
+}
+
+func ValidateSourceIdentityRemoveRequest(request SourceIdentityRemoveRequest) error {
+	if err := validateSourceEnvelope(request.SchemaVersion, request.ProtocolVersion, request.BoxIdentity, request.Provider); err != nil {
+		return err
+	}
+	if err := source.ValidateFingerprint(request.ExpectedFingerprint); err != nil {
+		return &Error{Code: CodeInvalidInput, Message: "source identity removal fingerprint is invalid", Cause: err}
+	}
+	return nil
+}
+
+func ValidateSourceRepositoryVerifyRequest(request SourceRepositoryVerifyRequest) error {
+	if err := validateSourceEnvelope(request.SchemaVersion, request.ProtocolVersion, request.BoxIdentity, request.Provider); err != nil {
+		return err
+	}
+	if len(request.Repository) > 4096 || hasControl(request.Repository) {
+		return &Error{Code: CodeInvalidInput, Message: "source repository verification request is invalid"}
+	}
+	return nil
+}
+
+func validateSourceEnvelope(schema, protocol, identity, provider string) error {
+	if schema != SchemaVersion || protocol != ProtocolVersion {
+		return &Error{Code: CodeUnsupportedProtocol, Message: "source operation request is incompatible"}
+	}
+	if !identityPattern.MatchString(identity) {
+		return &Error{Code: CodeInvalidIdentity, Message: "source operation Box identity is invalid"}
+	}
+	if provider != source.GitHub {
+		return &Error{Code: CodeInvalidInput, Message: "source provider is unsupported"}
+	}
+	return nil
 }
 
 func ValidateCloneRequest(request CloneRequest) error {

@@ -60,7 +60,7 @@ locator, or global registry.
 | Remote transport | User's system `ssh` executable |
 | Remote persistence | tmux for user-visible Sessions and their processes |
 | Testing | `testing`, `go-cmp`, fuzzing, golden files, and handwritten fakes |
-| Credential storage | `zalando/go-keyring` behind a credential-store seam |
+| Credential storage | `zalando/go-keyring` behind a provider-neutral secure-store seam |
 | Dependency wiring | Explicit constructors in one composition root |
 
 Dependencies are pinned deliberately. Provider SDKs are selected inside their
@@ -78,6 +78,9 @@ internal/boxtarget/           Box selection and bound direct/SSH execution
 internal/box/                 Box identity, inspection, and lifecycle
 internal/acquisition/         adopted and provider-created acquisition
 internal/repository/          live Git Repository and Worktree inspection
+internal/source/              source identity, authorization, and reconciliation
+internal/source/github/       bounded GitHub device-flow and SSH-key API adapter
+internal/source/boxgit/       Box-owned key files and strict managed SSH adapter
 internal/link/                Local Links and Sync Points
 internal/sync/                explicit push, pull, and sync behavior
 internal/session/             tmux-backed Sessions and optional Agents
@@ -90,6 +93,7 @@ internal/provider/hetzner/
 internal/inventory/           local persistence interface and behavior
 internal/inventory/sqlite/    SQLite adapter and migrations
 internal/credentials/         resolution, profiles, redaction, and storage
+internal/secretstore/         operating-system credential-store seam
 internal/process/             bounded local process execution
 internal/output/              human and versioned JSON presentation
 internal/config/              typed configuration and precedence
@@ -189,6 +193,8 @@ its own state separate from visible Worktrees:
 ```text
 ~/.local/bin/schooner          installed on-demand application
 ~/.local/state/schooner/       Box identity and operation checkpoints
+~/.local/state/schooner/source/github.com/
+                               Box-owned GitHub key and managed host trust
 ~/schooner/                    default configurable Worktree root
 ```
 
@@ -211,6 +217,42 @@ bounded filesystem traversal, fixed Git invocation, porcelain parsing, origin
 sanitization, grouping, and path confinement. Results are observations and may
 become stale immediately. A Session or Operation may annotate a canonical
 Worktree path, but must revalidate it against live Git state before use.
+
+## Source access
+
+`internal/source` is the deep module for source-provider authorization and Box
+identity lifecycle. Its small interface owns account resolution, token refresh
+and rotation, GitHub key reconciliation, local and remote observations,
+authority-first disconnect, persisted lifecycle checkpoints, and per-Box
+locking. GitHub HTTP behavior and Box filesystem behavior remain private
+adapters behind that module.
+
+One local GitHub Source Account is shared across Boxes. Its versioned token
+envelope is stored under a source-specific operating-system credential service;
+SQLite stores only the opaque reference, GitHub account ID and login, expiry
+metadata, and status. If secure storage is unavailable, the token is held only
+for the invoking process and a warning is returned. A different GitHub account
+cannot replace the Source Account while any Box binding remains.
+
+Every connected Box owns a dedicated Ed25519 key beneath
+`~/.local/state/schooner/source/github.com/`. Direct and SSH target adapters
+implement the same bounded host operations for inspecting, ensuring, removing,
+and verifying that identity. Key generation is staged and atomically promoted;
+managed directories are private, the private key is mode `0600`, symlinks are
+rejected, and only the public key and fingerprint cross the protocol.
+
+GitHub's HTTPS `/meta` response supplies the managed `known_hosts` data. Each
+key is decoded and matched to an advertised SHA-256 fingerprint before the Box
+writes a dedicated file. Managed SSH ignores user SSH configuration, uses the
+dedicated identity with `BatchMode` and `IdentitiesOnly`, and requires strict
+host-key checking. Missing, malformed, or changed trust fails closed.
+
+Key titles are display metadata (`Schooner / <box-name>`); fingerprints establish
+identity. A lost create response is reconciled by listing keys and matching the
+fingerprint before any retry. Disconnect lists and verifies the recorded
+fingerprint, revokes GitHub authority first, and only then removes Box files. A
+failed post-revocation Box cleanup succeeds with a security warning and remains
+`cleanup_pending` for a later status or disconnect invocation.
 
 ## Local Links and synchronization
 
@@ -256,6 +298,11 @@ inventory-backed Box resolution, direct-versus-SSH adapter binding, Worktree
 Root drift checks, and stable error normalization. Command modules provide
 domain intent and retain prompting and presentation; they do not construct
 remote protocol envelopes or branch on the selected adapter.
+
+Source commands use the same target seam. Interactive device authorization
+always presents GitHub's URL and user code and may best-effort open the system
+browser without a shell. JSON and non-interactive commands may use or refresh a
+stored credential but never prompt, open a browser, or begin authorization.
 
 Box resolution is a shared domain policy rather than command-specific logic:
 an explicit Box wins over the current Local Link, configured default, sole
@@ -306,15 +353,24 @@ outcome_unknown
 internal
 ```
 
-Secrets, authorization headers, raw provider responses, and unsafe remote
-output are redacted before entering error context or logs.
+Secrets, device codes after authorization, managed paths, authorization
+headers, raw provider responses, and unsafe remote output are redacted before
+entering output, error context, or logs. Typed operation errors may include a
+bounded stable `reason`, including `credentials_missing`, `github_saml_sso`,
+and `host_key_changed`.
 
 ## Persistence and authority
 
 SQLite stores Box inventory and its single optional default, Credential Profile
-references, Local Links, Sync Points, cached observations, schema version, and
-operation recovery metadata.
+and Source Account references, Box Source Identity fingerprints and GitHub key
+correlation metadata, Local Links, Sync Points, cached observations, schema
+version, and operation recovery metadata.
 It does not become authority for live remote or provider state.
+
+Source lifecycle rows use `connecting`, `connected`, `disconnecting`, and
+`cleanup_pending` checkpoints. Tokens, public keys, private keys, and managed
+filesystem paths never enter SQLite. Source rows deliberately do not cascade
+with Box removal so revocation remains possible after local inventory changes.
 
 The SQLite adapter uses WAL, a bounded busy timeout, short transactions, and
 explicit logical ownership for conflicting long mutations. It never holds a
@@ -364,10 +420,11 @@ Environment-provided credentials are never saved implicitly, secrets are never
 accepted as ordinary command-line arguments, and plaintext fallback files are
 not used.
 
-Provider Credential Profiles are distinct from source-host credentials. Git
-operations run as the configured local or remote user and use that user's
-existing Git and SSH setup. Schooner does not copy local Git credentials to a
-Box or persist source-host tokens.
+Provider Credential Profiles and Source Accounts use the same generic
+secure-store seam but separate service namespaces and domain lifecycles. A
+Source Account token authorizes account lookup and Git SSH-key management only;
+it is never copied to a Box or exposed to Git. Box Source Identity private keys
+remain Box-local.
 
 ## Extensibility and verification
 
@@ -380,6 +437,7 @@ The repository enforces:
 
 - import direction and forbidden framework or SDK imports in domain packages;
 - remote-runtime and provider conformance suites;
+- direct/SSH source-operation conformance and private-material boundary tests;
 - command-tree and external-output golden tests;
 - duplicate command, provider, profile, and migration identifiers;
 - migration history and checksum integrity;

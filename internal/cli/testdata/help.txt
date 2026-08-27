@@ -16,6 +16,7 @@ Available Commands:
   resume      Return to an existing live Session
   sessions    List live managed and unmanaged tmux Sessions
   shell       Open an ephemeral shell in a live Worktree
+  source      Manage source-host access for Boxes
   start       Open persistent work for a Repository
   stop        Stop a managed Session without changing its Worktree
   version     Show Schooner build information

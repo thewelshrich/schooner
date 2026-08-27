@@ -21,6 +21,7 @@ import (
 	hostruntime "github.com/thewelshrich/schooner/internal/runtime"
 	"github.com/thewelshrich/schooner/internal/semver"
 	"github.com/thewelshrich/schooner/internal/session"
+	"github.com/thewelshrich/schooner/internal/source"
 )
 
 const maxArtifactBytes = 256 << 20
@@ -291,6 +292,30 @@ func (r *Runtime) CloneRepository(ctx context.Context, connection box.Connection
 	return result.MutationResult, nil
 }
 
+func (r *Runtime) InspectSourceIdentity(ctx context.Context, connection box.Connection, installed box.HostRuntime, expectedIdentity, provider string) (source.HostIdentity, error) {
+	request := hostruntime.NewSourceIdentityRequest(provider, expectedIdentity)
+	result, err := invokeHostOperation(ctx, r, connection, installed, hostruntime.SourceIdentityInspectOperation(), request)
+	return result.HostIdentity, err
+}
+
+func (r *Runtime) EnsureSourceIdentity(ctx context.Context, connection box.Connection, installed box.HostRuntime, expectedIdentity string, request source.EnsureIdentityRequest) (source.HostIdentity, error) {
+	remote := hostruntime.NewSourceIdentityEnsureRequest(request.Provider, expectedIdentity, request.HostKeys)
+	result, err := invokeHostOperation(ctx, r, connection, installed, hostruntime.SourceIdentityEnsureOperation(), remote)
+	return result.HostIdentity, err
+}
+
+func (r *Runtime) RemoveSourceIdentity(ctx context.Context, connection box.Connection, installed box.HostRuntime, expectedIdentity string, request source.RemoveIdentityRequest) (source.RemoveIdentityResult, error) {
+	remote := hostruntime.NewSourceIdentityRemoveRequest(request.Provider, expectedIdentity, request.ExpectedFingerprint)
+	result, err := invokeHostOperation(ctx, r, connection, installed, hostruntime.SourceIdentityRemoveOperation(), remote)
+	return result.RemoveIdentityResult, err
+}
+
+func (r *Runtime) VerifySourceRepository(ctx context.Context, connection box.Connection, installed box.HostRuntime, expectedIdentity string, request source.VerifyRequest) (source.VerifyResult, error) {
+	remote := hostruntime.NewSourceRepositoryVerifyRequest(request.Provider, request.Repository, expectedIdentity)
+	result, err := invokeHostOperation(ctx, r, connection, installed, hostruntime.SourceRepositoryVerifyOperation(), remote)
+	return result.VerifyResult, err
+}
+
 func (r *Runtime) AddWorktree(ctx context.Context, connection box.Connection, installed box.HostRuntime, expectedIdentity, worktreeRoot, repositoryPath, pathValue, branch string) (repository.MutationResult, error) {
 	request := hostruntime.NewWorktreeMutationRequest(repositoryPath, pathValue, branch, worktreeRoot, expectedIdentity)
 	result, err := invokeHostOperation(ctx, r, connection, installed, hostruntime.WorktreeAddOperation(), request)
@@ -406,7 +431,7 @@ func invokeHostOperation[Request, Result any](ctx context.Context, r *Runtime, c
 		return zero, protocolError(err)
 	}
 	if operationError != nil {
-		return zero, box.NewError(string(operationError.Error.Code), operationError.Error.Message, nil)
+		return zero, &box.Error{Code: string(operationError.Error.Code), Message: operationError.Error.Message, Context: operationError.Error.Context}
 	}
 	return decoded, nil
 }

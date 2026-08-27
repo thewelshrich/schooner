@@ -145,7 +145,7 @@ func ConfirmRemove(ctx context.Context, options Options, record box.Record) (boo
 		Choice{Label: "SSH destination", Value: record.SSHDestination},
 		Choice{Label: "Remote machine", Value: "unchanged"},
 	)
-	_, _ = fmt.Fprintf(options.Output, "\nThe remote machine and its Schooner identity will remain unchanged.\n\n")
+	_, _ = fmt.Fprintf(options.Output, "\nThe remote machine and its Schooner identity will remain unchanged. Disconnect source access first; removal never calls GitHub or deletes Box source keys.\n\n")
 	confirmed := false
 	form := huh.NewForm(huh.NewGroup(huh.NewConfirm().Title("Remove this box?").Affirmative("Remove").Negative("Keep it").Value(&confirmed)))
 	if err := run(ctx, options, form); err != nil {
@@ -542,7 +542,7 @@ func ConfirmDestroy(ctx context.Context, options Options, record box.Record) (bo
 		Choice{Label: "Provider", Value: "DigitalOcean"},
 		Choice{Label: "Droplet ID", Value: record.ProviderResourceID},
 	)
-	_, _ = fmt.Fprintf(options.Output, "\nThe provider resource will be deleted before local inventory is removed.\n\n")
+	_, _ = fmt.Fprintf(options.Output, "\nThe provider resource will be deleted before local inventory is removed. Disconnect source access first; destruction never calls GitHub.\n\n")
 	confirmed := false
 	if err := run(ctx, options, huh.NewForm(huh.NewGroup(huh.NewConfirm().Title("Destroy this Droplet?").Affirmative("Destroy permanently").Negative("Keep it").Value(&confirmed)))); err != nil {
 		return false, err

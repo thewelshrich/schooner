@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/thewelshrich/schooner/internal/box"
@@ -14,7 +15,10 @@ import (
 	hostruntime "github.com/thewelshrich/schooner/internal/runtime"
 	"github.com/thewelshrich/schooner/internal/runtime/host"
 	"github.com/thewelshrich/schooner/internal/runtime/ssh"
+	"github.com/thewelshrich/schooner/internal/source"
 )
+
+const conformanceSourceKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4f"
 
 func TestDirectAndSSHAdaptersConformForWorktreeObservation(t *testing.T) {
 	direct := directConformanceTarget(t)
@@ -61,6 +65,56 @@ func TestDirectAndSSHAdaptersConformForWorktreeObservation(t *testing.T) {
 	}
 }
 
+func TestDirectAndSSHAdaptersConformForSourceIdentityLifecycle(t *testing.T) {
+	direct := directConformanceTarget(t)
+	bin := filepath.Clean(filepath.SplitList(os.Getenv("PATH"))[0])
+	if err := os.WriteFile(filepath.Join(bin, "ssh"), []byte("#!/bin/sh\nprintf 'Hi user! You have successfully authenticated, but GitHub does not provide shell access.\\n' >&2\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	remote := sshConformanceTarget(t)
+	fingerprint, err := source.PublicKeyFingerprint(conformanceSourceKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := source.EnsureIdentityRequest{Provider: source.GitHub, HostKeys: []source.HostKey{{Key: conformanceSourceKey, Fingerprint: fingerprint}}}
+	for _, harness := range []struct {
+		name   string
+		target Target
+	}{{name: "direct", target: direct}, {name: "ssh", target: remote}} {
+		t.Run(harness.name, func(t *testing.T) {
+			before, inspectErr := harness.target.InspectSourceIdentity(t.Context(), source.GitHub)
+			if inspectErr != nil || before.Exists {
+				t.Fatalf("initial identity=%+v err=%v", before, inspectErr)
+			}
+			identity, ensureErr := harness.target.EnsureSourceIdentity(t.Context(), request)
+			if ensureErr != nil || !identity.Exists || !identity.TrustConfigured || identity.Fingerprint == "" || identity.PublicKey == "" || strings.Contains(identity.PublicKey, "PRIVATE") {
+				t.Fatalf("ensured identity=%+v err=%v", identity, ensureErr)
+			}
+			observed, inspectErr := harness.target.InspectSourceIdentity(t.Context(), source.GitHub)
+			if inspectErr != nil || observed.Fingerprint != identity.Fingerprint {
+				t.Fatalf("observed identity=%+v err=%v", observed, inspectErr)
+			}
+			verified, verifyErr := harness.target.VerifySourceRepository(t.Context(), source.VerifyRequest{Provider: source.GitHub})
+			if verifyErr != nil || !verified.Authenticated {
+				t.Fatalf("verified=%+v err=%v", verified, verifyErr)
+			}
+			removed, removeErr := harness.target.RemoveSourceIdentity(t.Context(), source.RemoveIdentityRequest{Provider: source.GitHub, ExpectedFingerprint: identity.Fingerprint})
+			if removeErr != nil || !removed.Removed {
+				t.Fatalf("removed=%+v err=%v", removed, removeErr)
+			}
+			after, inspectErr := harness.target.InspectSourceIdentity(t.Context(), source.GitHub)
+			if inspectErr != nil || after.Exists {
+				t.Fatalf("final identity=%+v err=%v", after, inspectErr)
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			cancel()
+			if _, cancelErr := harness.target.EnsureSourceIdentity(ctx, request); !errors.Is(cancelErr, context.Canceled) {
+				t.Fatalf("cancellation error=%v", cancelErr)
+			}
+		})
+	}
+}
+
 func directConformanceTarget(t *testing.T) Target {
 	t.Helper()
 	home := t.TempDir()
@@ -95,22 +149,35 @@ func directConformanceTarget(t *testing.T) Target {
 func sshConformanceTarget(t *testing.T) Target {
 	t.Helper()
 	root := "/remote/worktrees"
+	sourceState := filepath.Join(t.TempDir(), "source-connected")
+	sourceFingerprint, err := source.PublicKeyFingerprint(conformanceSourceKey)
+	if err != nil {
+		t.Fatal(err)
+	}
 	repositoryValue := fmt.Sprintf(`{"common_directory":%q,"primary":{"path":%q,"relative_path":"repo","git_directory":%q,"kind":"primary","branch":"main","detached":false,"status":{"staged":0,"unstaged":0,"untracked":0,"conflicted":0}},"linked":[]}`, root+"/repo/.git", root+"/repo", root+"/repo/.git")
 	worktreeValue := fmt.Sprintf(`{"path":%q,"relative_path":"repo","git_directory":%q,"kind":"primary","branch":"main","detached":false,"status":{"staged":0,"unstaged":0,"untracked":0,"conflicted":0}}`, root+"/repo", root+"/repo/.git")
-	hello := fmt.Sprintf(`{"schema_version":"1","protocol_version":"1","schooner_version":"dev","commit":"test","box_identity":%q,"os":"linux","architecture":"amd64","capabilities":["session.list.v1","worktree.inspect.v1","worktree.list.v1"]}`, testIdentity)
+	hello := fmt.Sprintf(`{"schema_version":"1","protocol_version":"1","schooner_version":"dev","commit":"test","box_identity":%q,"os":"linux","architecture":"amd64","capabilities":["session.list.v1","source.identity.ensure.v1","source.identity.inspect.v1","source.identity.remove.v1","source.repository.verify.v1","worktree.inspect.v1","worktree.list.v1"]}`, testIdentity)
 	catalog := fmt.Sprintf(`{"schema_version":"1","protocol_version":"1","box_identity":%q,"worktree_root":%q,"repositories":[%s],"warnings":[]}`, testIdentity, root, repositoryValue)
 	inspection := fmt.Sprintf(`{"schema_version":"1","protocol_version":"1","box_identity":%q,"worktree_root":%q,"repository":%s,"worktree":%s,"warnings":[]}`, testIdentity, root, repositoryValue, worktreeValue)
 	invalid := fmt.Sprintf(`{"schema_version":"1","protocol_version":"1","box_identity":%q,"error":{"code":"invalid_input","message":"worktree selector is invalid"}}`, testIdentity)
 	sessions := fmt.Sprintf(`{"schema_version":"1","protocol_version":"1","box_identity":%q,"worktree_root":%q,"sessions":[]}`, testIdentity, root)
+	sourcePresent := fmt.Sprintf(`{"schema_version":"1","protocol_version":"1","box_identity":%q,"provider":"github","exists":true,"public_key":%q,"fingerprint":%q,"trust_configured":true,"host_fingerprints":[%q]}`, testIdentity, conformanceSourceKey, sourceFingerprint, sourceFingerprint)
+	sourceAbsent := fmt.Sprintf(`{"schema_version":"1","protocol_version":"1","box_identity":%q,"provider":"github","exists":false,"trust_configured":false}`, testIdentity)
+	sourceRemoved := fmt.Sprintf(`{"schema_version":"1","protocol_version":"1","box_identity":%q,"provider":"github","removed":true}`, testIdentity)
+	sourceVerified := fmt.Sprintf(`{"schema_version":"1","protocol_version":"1","box_identity":%q,"provider":"github","authenticated":true}`, testIdentity)
 	script := fmt.Sprintf(`#!/bin/sh
 case " $* " in
   *"host hello"*) printf '%%s\n' '%s' ;;
   *"host worktree list"*) cat >/dev/null; printf '%%s\n' '%s' ;;
   *"host worktree inspect"*) payload=$(cat); case "$payload" in *"../outside"*) printf '%%s\n' '%s' ;; *) printf '%%s\n' '%s' ;; esac ;;
   *"host session list"*) cat >/dev/null; printf '%%s\n' '%s' ;;
+  *"host source identity ensure"*) cat >/dev/null; : > '%s'; printf '%%s\n' '%s' ;;
+  *"host source identity inspect"*) cat >/dev/null; if test -f '%s'; then printf '%%s\n' '%s'; else printf '%%s\n' '%s'; fi ;;
+  *"host source identity remove"*) cat >/dev/null; rm -f '%s'; printf '%%s\n' '%s' ;;
+  *"host source repository verify"*) cat >/dev/null; printf '%%s\n' '%s' ;;
   *) exit 64 ;;
 esac
-`, hello, catalog, invalid, inspection, sessions)
+`, hello, catalog, invalid, inspection, sessions, sourceState, sourcePresent, sourceState, sourcePresent, sourceAbsent, sourceState, sourceRemoved, sourceVerified)
 	path := filepath.Join(t.TempDir(), "ssh")
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatal(err)

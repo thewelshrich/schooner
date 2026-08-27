@@ -1,6 +1,10 @@
 package runtime
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"github.com/thewelshrich/schooner/internal/source"
+)
 
 // Operation is the typed contract shared by the private host CLI and SSH
 // adapters for one bounded JSON operation. It owns the fixed command,
@@ -27,6 +31,10 @@ func boundedOperationContracts() []operationDescriptor {
 	return []operationDescriptor{
 		ConfigureOperation(),
 		RepositoryCloneOperation(),
+		SourceIdentityEnsureOperation(),
+		SourceIdentityInspectOperation(),
+		SourceIdentityRemoveOperation(),
+		SourceRepositoryVerifyOperation(),
 		SessionListOperation(),
 		SessionLogsOperation(),
 		SessionStartOperation(),
@@ -98,14 +106,18 @@ func (o Operation[Request, Result]) DecodeResult(data []byte, request Request) (
 	return result, nil, nil
 }
 
-func (request ConfigureRequest) operationIdentity() string        { return request.BoxIdentity }
-func (request WorktreeRequest) operationIdentity() string         { return request.BoxIdentity }
-func (request CloneRequest) operationIdentity() string            { return request.BoxIdentity }
-func (request WorktreeMutationRequest) operationIdentity() string { return request.BoxIdentity }
-func (request SessionListRequest) operationIdentity() string      { return request.BoxIdentity }
-func (request SessionStartRequest) operationIdentity() string     { return request.BoxIdentity }
-func (request SessionLogsRequest) operationIdentity() string      { return request.BoxIdentity }
-func (request SessionTargetRequest) operationIdentity() string    { return request.BoxIdentity }
+func (request ConfigureRequest) operationIdentity() string              { return request.BoxIdentity }
+func (request WorktreeRequest) operationIdentity() string               { return request.BoxIdentity }
+func (request CloneRequest) operationIdentity() string                  { return request.BoxIdentity }
+func (request WorktreeMutationRequest) operationIdentity() string       { return request.BoxIdentity }
+func (request SessionListRequest) operationIdentity() string            { return request.BoxIdentity }
+func (request SessionStartRequest) operationIdentity() string           { return request.BoxIdentity }
+func (request SessionLogsRequest) operationIdentity() string            { return request.BoxIdentity }
+func (request SessionTargetRequest) operationIdentity() string          { return request.BoxIdentity }
+func (request SourceIdentityRequest) operationIdentity() string         { return request.BoxIdentity }
+func (request SourceIdentityEnsureRequest) operationIdentity() string   { return request.BoxIdentity }
+func (request SourceIdentityRemoveRequest) operationIdentity() string   { return request.BoxIdentity }
+func (request SourceRepositoryVerifyRequest) operationIdentity() string { return request.BoxIdentity }
 
 func ConfigureOperation() Operation[ConfigureRequest, ConfigureResult] {
 	return newOperation(
@@ -158,6 +170,84 @@ func WorktreeInspectOperation() Operation[WorktreeRequest, WorktreeInspection] {
 
 func RepositoryCloneOperation() Operation[CloneRequest, LifecycleResult] {
 	return newLifecycleOperation("host repository clone", CapabilityRepositoryCloneV1, "clone", ValidateCloneRequest)
+}
+
+func SourceIdentityInspectOperation() Operation[SourceIdentityRequest, SourceIdentityResult] {
+	return newOperation(
+		"host source identity inspect", CapabilitySourceIdentityInspectV1, ValidateSourceIdentityRequest,
+		func(request SourceIdentityRequest, result SourceIdentityResult) error {
+			if err := validateOperationEnvelope(result.SchemaVersion, result.ProtocolVersion, result.BoxIdentity, request.BoxIdentity, "source identity inspection returned an incompatible result"); err != nil {
+				return err
+			}
+			return validateSourceIdentityResult(request.Provider, result.HostIdentity, false)
+		},
+	)
+}
+
+func SourceIdentityEnsureOperation() Operation[SourceIdentityEnsureRequest, SourceIdentityResult] {
+	return newOperation(
+		"host source identity ensure", CapabilitySourceIdentityEnsureV1, ValidateSourceIdentityEnsureRequest,
+		func(request SourceIdentityEnsureRequest, result SourceIdentityResult) error {
+			if err := validateOperationEnvelope(result.SchemaVersion, result.ProtocolVersion, result.BoxIdentity, request.BoxIdentity, "source identity ensure returned an incompatible result"); err != nil {
+				return err
+			}
+			return validateSourceIdentityResult(request.Provider, result.HostIdentity, true)
+		},
+	)
+}
+
+func SourceIdentityRemoveOperation() Operation[SourceIdentityRemoveRequest, SourceIdentityRemoveResult] {
+	return newOperation(
+		"host source identity remove", CapabilitySourceIdentityRemoveV1, ValidateSourceIdentityRemoveRequest,
+		func(request SourceIdentityRemoveRequest, result SourceIdentityRemoveResult) error {
+			if err := validateOperationEnvelope(result.SchemaVersion, result.ProtocolVersion, result.BoxIdentity, request.BoxIdentity, "source identity removal returned an incompatible result"); err != nil {
+				return err
+			}
+			if result.Provider != request.Provider || !result.Removed {
+				return invalidOperationResult("source identity removal returned an invalid result")
+			}
+			return nil
+		},
+	)
+}
+
+func SourceRepositoryVerifyOperation() Operation[SourceRepositoryVerifyRequest, SourceRepositoryVerifyResult] {
+	return newOperation(
+		"host source repository verify", CapabilitySourceRepositoryVerifyV1, ValidateSourceRepositoryVerifyRequest,
+		func(request SourceRepositoryVerifyRequest, result SourceRepositoryVerifyResult) error {
+			if err := validateOperationEnvelope(result.SchemaVersion, result.ProtocolVersion, result.BoxIdentity, request.BoxIdentity, "source repository verification returned an incompatible result"); err != nil {
+				return err
+			}
+			if result.Provider != request.Provider || !result.Authenticated {
+				return invalidOperationResult("source repository verification returned an invalid result")
+			}
+			return nil
+		},
+	)
+}
+
+func validateSourceIdentityResult(provider string, result source.HostIdentity, required bool) error {
+	if result.Provider != provider || (required && (!result.Exists || !result.TrustConfigured || result.PublicKey == "" || result.Fingerprint == "" || len(result.HostFingerprints) == 0)) {
+		return invalidOperationResult("source identity operation returned an invalid result")
+	}
+	if result.TrustConfigured {
+		if source.ValidateHostFingerprints(result.HostFingerprints) != nil {
+			return invalidOperationResult("source identity operation returned an invalid result")
+		}
+	} else if len(result.HostFingerprints) != 0 {
+		return invalidOperationResult("source identity operation returned an invalid result")
+	}
+	if !result.Exists {
+		if result.PublicKey != "" || result.Fingerprint != "" {
+			return invalidOperationResult("source identity operation returned an invalid result")
+		}
+		return nil
+	}
+	fingerprint, err := source.PublicKeyFingerprint(result.PublicKey)
+	if err != nil || fingerprint != result.Fingerprint {
+		return invalidOperationResult("source identity operation returned an invalid result")
+	}
+	return nil
 }
 
 func WorktreeAddOperation() Operation[WorktreeMutationRequest, LifecycleResult] {

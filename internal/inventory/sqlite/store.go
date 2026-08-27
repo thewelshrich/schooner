@@ -21,6 +21,7 @@ import (
 	"github.com/thewelshrich/schooner/internal/box"
 	"github.com/thewelshrich/schooner/internal/credentials"
 	"github.com/thewelshrich/schooner/internal/provider"
+	"github.com/thewelshrich/schooner/internal/source"
 )
 
 //go:embed migrations/*.sql
@@ -410,6 +411,141 @@ func (s *Store) SaveCredentialProfile(ctx context.Context, profile credentials.P
 		return mapConflict("save credential profile", err)
 	}
 	return tx.Commit()
+}
+
+func (s *Store) FindSourceAccount(ctx context.Context, providerID string) (source.Account, error) {
+	result, err := scanSourceAccount(s.db.QueryRowContext(ctx, `SELECT provider,external_account_id,login,credential_key,credential_generation,access_expires_at,refresh_expires_at,status,created_at,updated_at FROM source_accounts WHERE provider=?`, providerID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return source.Account{}, source.NewError("not_found", fmt.Sprintf("source account %q was not found", providerID), nil)
+	}
+	return result, err
+}
+
+func scanSourceAccount(row scanner) (source.Account, error) {
+	var result source.Account
+	var accessExpiry, refreshExpiry, created, updated string
+	if err := row.Scan(&result.Provider, &result.ExternalID, &result.Login, &result.CredentialKey, &result.CredentialGeneration, &accessExpiry, &refreshExpiry, &result.Status, &created, &updated); err != nil {
+		return source.Account{}, err
+	}
+	var err error
+	if result.AccessExpiresAt, err = parseOptionalTime(accessExpiry); err == nil {
+		result.RefreshExpiresAt, err = parseOptionalTime(refreshExpiry)
+	}
+	if err == nil {
+		result.CreatedAt, err = time.Parse(time.RFC3339Nano, created)
+	}
+	if err == nil {
+		result.UpdatedAt, err = time.Parse(time.RFC3339Nano, updated)
+	}
+	return result, err
+}
+
+func (s *Store) SaveSourceAccount(ctx context.Context, account source.Account) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO source_accounts(provider,external_account_id,login,credential_key,credential_generation,access_expires_at,refresh_expires_at,status,created_at,updated_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?)
+		ON CONFLICT(provider) DO UPDATE SET external_account_id=excluded.external_account_id,login=excluded.login,credential_key=excluded.credential_key,credential_generation=excluded.credential_generation,access_expires_at=excluded.access_expires_at,refresh_expires_at=excluded.refresh_expires_at,status=excluded.status,updated_at=excluded.updated_at`, account.Provider, account.ExternalID, account.Login, account.CredentialKey, account.CredentialGeneration, formatOptionalTime(account.AccessExpiresAt), formatOptionalTime(account.RefreshExpiresAt), account.Status, formatTime(account.CreatedAt), formatTime(account.UpdatedAt))
+	if err != nil {
+		return fmt.Errorf("save source account: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) DeleteSourceAccount(ctx context.Context, providerID string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM source_accounts WHERE provider=?`, providerID)
+	return err
+}
+
+func (s *Store) FindBoxSourceIdentity(ctx context.Context, boxIdentity, providerID string) (source.BoxIdentity, error) {
+	result, err := scanBoxSourceIdentity(s.db.QueryRowContext(ctx, `SELECT box_identity,box_name,provider,external_account_id,fingerprint,remote_key_id,remote_key_title,state,created_at,updated_at FROM box_source_identities WHERE box_identity=? AND provider=?`, boxIdentity, providerID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return source.BoxIdentity{}, source.NewError("not_found", "Box source identity was not found", nil)
+	}
+	return result, err
+}
+
+func (s *Store) FindBoxSourceIdentityByName(ctx context.Context, boxName, providerID string) (source.BoxIdentity, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT box_identity,box_name,provider,external_account_id,fingerprint,remote_key_id,remote_key_title,state,created_at,updated_at FROM box_source_identities WHERE box_name=? AND provider=? ORDER BY updated_at DESC LIMIT 2`, boxName, providerID)
+	if err != nil {
+		return source.BoxIdentity{}, err
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		if err = rows.Err(); err != nil {
+			return source.BoxIdentity{}, err
+		}
+		return source.BoxIdentity{}, source.NewError("not_found", fmt.Sprintf("Box source identity for %q was not found", boxName), nil)
+	}
+	result, err := scanBoxSourceIdentity(rows)
+	if err != nil {
+		return source.BoxIdentity{}, err
+	}
+	if rows.Next() {
+		return source.BoxIdentity{}, source.NewError("conflict", fmt.Sprintf("multiple retained Box source identities use the former name %q", boxName), nil)
+	}
+	return result, rows.Err()
+}
+
+func (s *Store) ListBoxSourceIdentities(ctx context.Context, providerID string) ([]source.BoxIdentity, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT box_identity,box_name,provider,external_account_id,fingerprint,remote_key_id,remote_key_title,state,created_at,updated_at FROM box_source_identities WHERE provider=? ORDER BY box_name,box_identity`, providerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := []source.BoxIdentity{}
+	for rows.Next() {
+		value, scanErr := scanBoxSourceIdentity(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		result = append(result, value)
+	}
+	return result, rows.Err()
+}
+
+func scanBoxSourceIdentity(row scanner) (source.BoxIdentity, error) {
+	var result source.BoxIdentity
+	var state, created, updated string
+	if err := row.Scan(&result.BoxIdentity, &result.BoxName, &result.Provider, &result.AccountExternalID, &result.Fingerprint, &result.RemoteKeyID, &result.RemoteKeyTitle, &state, &created, &updated); err != nil {
+		return source.BoxIdentity{}, err
+	}
+	result.State = source.State(state)
+	var err error
+	if result.CreatedAt, err = time.Parse(time.RFC3339Nano, created); err == nil {
+		result.UpdatedAt, err = time.Parse(time.RFC3339Nano, updated)
+	}
+	return result, err
+}
+
+func (s *Store) SaveBoxSourceIdentity(ctx context.Context, identity source.BoxIdentity) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO box_source_identities(box_identity,box_name,provider,external_account_id,fingerprint,remote_key_id,remote_key_title,state,created_at,updated_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?)
+		ON CONFLICT(box_identity,provider) DO UPDATE SET box_name=excluded.box_name,external_account_id=excluded.external_account_id,fingerprint=excluded.fingerprint,remote_key_id=excluded.remote_key_id,remote_key_title=excluded.remote_key_title,state=excluded.state,updated_at=excluded.updated_at`, identity.BoxIdentity, identity.BoxName, identity.Provider, identity.AccountExternalID, identity.Fingerprint, identity.RemoteKeyID, identity.RemoteKeyTitle, identity.State, formatTime(identity.CreatedAt), formatTime(identity.UpdatedAt))
+	if err != nil {
+		if strings.Contains(err.Error(), "constraint failed") || strings.Contains(err.Error(), "UNIQUE") {
+			return source.NewError("conflict", "source identity metadata conflicts with an existing Box or GitHub key", err)
+		}
+		return fmt.Errorf("save Box source identity: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) DeleteBoxSourceIdentity(ctx context.Context, boxIdentity, providerID string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM box_source_identities WHERE box_identity=? AND provider=?`, boxIdentity, providerID)
+	return err
+}
+
+func formatOptionalTime(value time.Time) string {
+	if value.IsZero() {
+		return ""
+	}
+	return formatTime(value)
+}
+
+func parseOptionalTime(value string) (time.Time, error) {
+	if value == "" {
+		return time.Time{}, nil
+	}
+	return time.Parse(time.RFC3339Nano, value)
 }
 
 func (s *Store) BeginProvision(ctx context.Context, requested acquisition.ProvisionOperation) (acquisition.ProvisionOperation, error) {

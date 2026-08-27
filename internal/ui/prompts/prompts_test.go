@@ -203,6 +203,20 @@ func TestConfirmRemoveStatesRemoteIsUnchanged(t *testing.T) {
 	if !strings.Contains(output.String(), "remote machine") || !strings.Contains(output.String(), "remain unchanged") {
 		t.Fatalf("output = %q", output.String())
 	}
+	if !strings.Contains(output.String(), "Disconnect source access first") || !strings.Contains(output.String(), "never calls GitHub") {
+		t.Fatalf("output = %q", output.String())
+	}
+}
+
+func TestConfirmDestroyWarnsAboutSeparateSourceCleanup(t *testing.T) {
+	var output bytes.Buffer
+	confirmed, err := ConfirmDestroy(t.Context(), Options{Input: strings.NewReader("y\n"), Output: &output, Accessible: true}, box.Record{Name: "work", ProviderResourceID: "42"})
+	if err != nil || !confirmed {
+		t.Fatalf("confirmed = %v, err = %v", confirmed, err)
+	}
+	if !strings.Contains(output.String(), "Disconnect source access first") || !strings.Contains(output.String(), "never calls GitHub") {
+		t.Fatalf("output = %q", output.String())
+	}
 }
 
 func TestConfirmDatabaseDestroyStatesExternalResourcesAreUnchanged(t *testing.T) {

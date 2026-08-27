@@ -66,6 +66,16 @@ schooner box destroy work-cloud --yes  # permanent Droplet deletion
 `box destroy` verifies the provider resource against Schooner's recorded
 identity before requesting deletion.
 
+Disconnect GitHub source access before either command when it is configured:
+
+```bash
+schooner source disconnect github --box work-cloud --yes
+```
+
+Box removal and destruction never make automatic GitHub calls. Source binding
+metadata is retained so a key can still be revoked by the former Box name;
+Box-file cleanup remains pending until the same machine is re-adopted.
+
 Disconnecting a profile removes its locally stored secret but retains safe
 metadata so referenced boxes can be reconnected without changing accounts:
 

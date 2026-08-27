@@ -1,0 +1,1 @@
+{"schema_version":"1","provider":"github","box_name":"work","state":"unknown","account":{},"local":{"state":"connected","fingerprint":"SHA256:safe"},"box":{"state":"present","fingerprint":"SHA256:safe"},"github":{"state":"unknown"},"warnings":["GitHub unavailable"]}

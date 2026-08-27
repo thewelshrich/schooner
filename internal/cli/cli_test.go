@@ -20,6 +20,7 @@ import (
 	"github.com/thewelshrich/schooner/internal/cli"
 	"github.com/thewelshrich/schooner/internal/config"
 	"github.com/thewelshrich/schooner/internal/inventory/sqlite"
+	"github.com/thewelshrich/schooner/internal/source"
 )
 
 func TestHelp(t *testing.T) {
@@ -98,6 +99,60 @@ func TestWorktreeHelpListsDiscoveryAndLifecycleCommands(t *testing.T) {
 		if !strings.Contains(stdout, command) {
 			t.Fatalf("worktree help missing %q: %s", command, stdout)
 		}
+	}
+}
+
+func TestSourceHelpListsExplicitLifecycleCommands(t *testing.T) {
+	code, stdout, stderr := run(t.Context(), []string{"source", "--help"}, testBuild(), nil)
+	if code != 0 || stderr != "" {
+		t.Fatalf("code=%d stderr=%q", code, stderr)
+	}
+	for _, command := range []string{"connect", "status", "disconnect"} {
+		if !strings.Contains(stdout, command) {
+			t.Fatalf("source help missing %q: %s", command, stdout)
+		}
+	}
+}
+
+func TestBoxRemoveWarnsAndRetainsSourceBindingWithoutCallingGitHub(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_STATE_HOME", filepath.Join(home, "state"))
+	saveTestBox(t, box.Record{Name: "work", Acquisition: "adopted", SSHDestination: "work-host"})
+	path, err := sqlite.DefaultPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := sqlite.Open(t.Context(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := store.FindByName(t.Context(), "work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err = store.SaveBoxSourceIdentity(t.Context(), source.BoxIdentity{
+		BoxIdentity: record.RemoteIdentity, BoxName: record.Name, Provider: source.GitHub,
+		AccountExternalID: "42", Fingerprint: "SHA256:safe", RemoteKeyID: 7,
+		RemoteKeyTitle: "Schooner / work", State: source.StateConnected, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err = store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	code, _, stderr := run(t.Context(), []string{"box", "remove", "work", "--yes", "--output", "json"}, testBuild(), nil)
+	if code != 0 || !strings.Contains(stderr, "source disconnect github") || !strings.Contains(stderr, "will not call GitHub") {
+		t.Fatalf("code=%d stderr=%q", code, stderr)
+	}
+	store, err = sqlite.Open(t.Context(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, err = store.FindBoxSourceIdentity(t.Context(), record.RemoteIdentity, source.GitHub); err != nil {
+		t.Fatalf("source binding was removed with Box inventory: %v", err)
 	}
 }
 

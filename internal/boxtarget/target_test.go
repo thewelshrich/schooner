@@ -15,6 +15,7 @@ import (
 	"github.com/thewelshrich/schooner/internal/runtime/host"
 	"github.com/thewelshrich/schooner/internal/runtime/ssh"
 	"github.com/thewelshrich/schooner/internal/session"
+	"github.com/thewelshrich/schooner/internal/source"
 )
 
 const testIdentity = "11111111-1111-4111-8111-111111111111"
@@ -95,6 +96,13 @@ func TestTargetValidatesRootsAndNormalizesAdapterErrors(t *testing.T) {
 	}
 	if _, err := (Target{}).ListWorktrees(t.Context()); box.ErrorCode(err) != "internal" {
 		t.Fatalf("zero target error = %v", err)
+	}
+}
+
+func TestSourceCapabilityUnavailableNormalizesToUnsupported(t *testing.T) {
+	err := normalizeSourceError(&box.Error{Code: "capability_unavailable", Message: "ssh-keygen is unavailable"})
+	if source.ErrorCode(err) != "unsupported" || !strings.Contains(err.Error(), "does not support") {
+		t.Fatalf("normalized error = %v", err)
 	}
 }
 
@@ -185,4 +193,16 @@ func (*fakeExecutionAdapter) stopSession(context.Context, string) (session.StopR
 }
 func (*fakeExecutionAdapter) openWorktreeShell(context.Context, string, Terminal) (HandoffResult, error) {
 	return HandoffResult{}, nil
+}
+func (*fakeExecutionAdapter) inspectSourceIdentity(context.Context, string) (source.HostIdentity, error) {
+	return source.HostIdentity{}, nil
+}
+func (*fakeExecutionAdapter) ensureSourceIdentity(context.Context, source.EnsureIdentityRequest) (source.HostIdentity, error) {
+	return source.HostIdentity{}, nil
+}
+func (*fakeExecutionAdapter) removeSourceIdentity(context.Context, source.RemoveIdentityRequest) (source.RemoveIdentityResult, error) {
+	return source.RemoveIdentityResult{}, nil
+}
+func (*fakeExecutionAdapter) verifySourceRepository(context.Context, source.VerifyRequest) (source.VerifyResult, error) {
+	return source.VerifyResult{}, nil
 }

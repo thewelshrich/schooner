@@ -19,6 +19,21 @@ GitHub build-provenance attestations.
 A manual workflow run performs the same build and verification but uploads a
 workflow artifact instead of publishing a release.
 
+## GitHub source-access registration
+
+Release binaries require the public client ID of the GitHub App registration
+used only by the Schooner Go CLI. Configure the registration with device flow
+enabled, expiring user authorization tokens enabled, and the account permission
+`Git SSH keys: Read and write`. No repository Contents permission or client
+secret is used.
+
+Set the public client ID as the repository Actions variable
+`SCHOONER_GITHUB_CLIENT_ID`. The release workflow fails before producing a
+binary when that variable is empty and links the value into
+`main.githubClientID`. Development builds may instead set
+`SCHOONER_GITHUB_CLIENT_ID` in the invoking environment; this override is read
+at runtime and is intended only for local development.
+
 Before the first public tag, repository administrators must enable GitHub
 Immutable Releases. Homebrew packaging, archives, remote installation,
 automatic updates, and Apple signing or notarization remain separate work.
