@@ -433,6 +433,101 @@ func TestLifecycleCloneV2IgnoresAbortedExactIntentWhenEquivalentVersion1Checkout
 	}
 }
 
+func TestLifecycleCloneV2RetiresPreCloneExactIntentBeforeEquivalentScan(t *testing.T) {
+	for _, checkpoint := range []string{"requested", "clone_pending"} {
+		t.Run(checkpoint, func(t *testing.T) {
+			root := filepath.Join(t.TempDir(), "worktrees")
+			if err := os.MkdirAll(root, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			state := filepath.Join(t.TempDir(), "state")
+			executor := &lifecycleCloneExecutor{localSource: createLifecycleSource(t)}
+			lifecycle, err := NewLifecycleWithOptions(root, state, nil, LifecycleOptions{CloneExecutor: executor})
+			if err != nil {
+				t.Fatal(err)
+			}
+			exactSource := "https://github.com/Owner/Repo.git"
+			exactTarget := filepath.Join(lifecycle.root, "Repo")
+			exactIntent := fingerprint("clone", exactTarget, exactSource, "")
+			exact := operationRecord{
+				SchemaVersion: operationSchemaVersion, ID: exactIntent[:24], Kind: "clone", IntentSHA256: exactIntent,
+				TargetPath: exactTarget, Checkpoint: checkpoint, OwnershipToken: strings.Repeat("a", 64),
+			}
+			if checkpoint == "clone_pending" {
+				exact.StagingPath = filepath.Join(lifecycle.root, ".schooner-stage-"+exactIntent[:24], "Repo")
+				if err = lifecycle.createOwnedStage(&exact); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err = lifecycle.save(&exact); err != nil {
+				t.Fatal(err)
+			}
+
+			equivalentSource := "git@github.com:owner/repo.git"
+			equivalentTarget := filepath.Join(lifecycle.root, "repo")
+			if output, cloneErr := exec.Command("git", "clone", executor.localSource, equivalentTarget).CombinedOutput(); cloneErr != nil {
+				t.Fatalf("git clone: %v\n%s", cloneErr, output)
+			}
+			runLifecycleGit(t, equivalentTarget, "remote", "set-url", "origin", equivalentSource)
+			inspected, err := Inspect(t.Context(), lifecycle.root, equivalentTarget)
+			if err != nil {
+				t.Fatal(err)
+			}
+			equivalentIntent := fingerprint("clone", equivalentTarget, equivalentSource, "")
+			equivalent := operationRecord{
+				SchemaVersion: operationSchemaVersion, ID: equivalentIntent[:24], Kind: "clone", IntentSHA256: equivalentIntent,
+				TargetPath: equivalentTarget, Checkpoint: "complete", OwnershipToken: strings.Repeat("b", 64),
+			}
+			recordSnapshot(&equivalent, inspected)
+			if err = lifecycle.save(&equivalent); err != nil {
+				t.Fatal(err)
+			}
+
+			recovered, err := lifecycle.CloneV2(t.Context(), CloneRequest{Source: exactSource})
+			if err != nil || !recovered.Recovered || recovered.Path != equivalentTarget || len(executor.requests) != 0 {
+				t.Fatalf("recovered=%+v requests=%d err=%v", recovered, len(executor.requests), err)
+			}
+			retired, found, loadErr := lifecycle.load(exactIntent)
+			if loadErr != nil || !found || retired.Checkpoint != "aborted" {
+				t.Fatalf("retired=%+v found=%t err=%v", retired, found, loadErr)
+			}
+			if exact.StagingPath != "" {
+				if _, statErr := os.Stat(exact.StagingPath); !errors.Is(statErr, os.ErrNotExist) {
+					t.Fatalf("retired staging path survived: %v", statErr)
+				}
+			}
+		})
+	}
+}
+
+func TestLifecycleCloneV2IgnoresVersion1RecordsFromFormerRoot(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "worktrees")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	state := filepath.Join(t.TempDir(), "state")
+	executor := &lifecycleCloneExecutor{localSource: createLifecycleSource(t)}
+	lifecycle, err := NewLifecycleWithOptions(root, state, nil, LifecycleOptions{CloneExecutor: executor})
+	if err != nil {
+		t.Fatal(err)
+	}
+	origin := "https://github.com/owner/repo.git"
+	formerTarget := filepath.Join(t.TempDir(), "former-worktrees", "repo")
+	formerIntent := fingerprint("clone", formerTarget, origin, "")
+	former := operationRecord{
+		SchemaVersion: operationSchemaVersion, ID: formerIntent[:24], Kind: "clone", IntentSHA256: formerIntent,
+		TargetPath: formerTarget, Origin: origin, Branch: "main", Checkpoint: "complete", OwnershipToken: strings.Repeat("a", 64),
+	}
+	if err = lifecycle.save(&former); err != nil {
+		t.Fatal(err)
+	}
+
+	cloned, err := lifecycle.CloneV2(t.Context(), CloneRequest{Source: origin})
+	if err != nil || cloned.Recovered || cloned.Path != filepath.Join(lifecycle.root, "repo") || len(executor.requests) != 1 {
+		t.Fatalf("cloned=%+v requests=%d err=%v", cloned, len(executor.requests), err)
+	}
+}
+
 func TestLifecycleCloneV2ResumesPostCloneVersion1Checkpoints(t *testing.T) {
 	for _, checkpoint := range []string{"clone_finished", "promote_pending"} {
 		t.Run(checkpoint, func(t *testing.T) {

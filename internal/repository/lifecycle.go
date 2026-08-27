@@ -239,12 +239,37 @@ func (l *Lifecycle) CloneV2(ctx context.Context, request CloneRequest) (Mutation
 	if err != nil {
 		return MutationResult{}, err
 	}
+	var legacyResult MutationResult
+	var legacyComplete, resumeLegacy bool
+	var legacyResumeIntent string
 	if identity.IsGitHub() {
 		exactIntent := fingerprint("clone", legacyTarget, cloneSource, request.Branch)
 		exactRecord, exact, loadErr := l.load(exactIntent)
 		if loadErr != nil {
 			return MutationResult{}, loadErr
-		} else if !exact || exactRecord.Checkpoint == "aborted" {
+		}
+		retireExact := exact && (exactRecord.Checkpoint == "requested" || exactRecord.Checkpoint == "clone_pending")
+		if retireExact {
+			exactLock, lockErr := acquireMutationLock(l.state, legacyTarget)
+			if lockErr != nil {
+				return MutationResult{}, lockErr
+			}
+			cloneSource, legacyResumeIntent, legacyResult, legacyComplete, resumeLegacy, err = l.reconcileVersion1Clone(ctx, legacyTarget, cloneSource, request.Branch, identity)
+			closeErr := exactLock.Close()
+			if err != nil {
+				return MutationResult{}, err
+			}
+			if closeErr != nil {
+				return MutationResult{}, closeErr
+			}
+			if legacyComplete {
+				return legacyResult, nil
+			}
+			if resumeLegacy {
+				return l.clone(ctx, request, cloneSource, legacyTarget, legacyResumeIntent, source.RepositoryIdentity{})
+			}
+		}
+		if !exact || exactRecord.Checkpoint == "aborted" || retireExact {
 			if equivalent, _, found, findErr := l.findEquivalentVersion1Clone(ctx, "", request.Branch, identity); findErr != nil {
 				return MutationResult{}, findErr
 			} else if found {
@@ -256,9 +281,6 @@ func (l *Lifecycle) CloneV2(ctx context.Context, request CloneRequest) (Mutation
 	if lockErr != nil {
 		return MutationResult{}, lockErr
 	}
-	var legacyResult MutationResult
-	var legacyComplete, resumeLegacy bool
-	var legacyResumeIntent string
 	cloneSource, legacyResumeIntent, legacyResult, legacyComplete, resumeLegacy, err = l.reconcileVersion1Clone(ctx, legacyTarget, cloneSource, request.Branch, identity)
 	closeErr := legacyLock.Close()
 	if err != nil {
@@ -483,7 +505,13 @@ func (l *Lifecycle) findEquivalentVersion1Clone(ctx context.Context, target, bra
 		if !present || record.Kind != "clone" || target != "" && record.TargetPath != target || record.Checkpoint == "aborted" || record.SuppliedOrigin != "" {
 			continue
 		}
-		if filepath.Dir(record.TargetPath) != l.root || filepath.Clean(record.TargetPath) != record.TargetPath {
+		if filepath.Dir(record.TargetPath) != l.root {
+			if target == "" {
+				continue
+			}
+			return operationRecord{}, "", false, &Error{Code: CodeOutcomeUnknown, Message: "version-1 clone checkpoint has an invalid target"}
+		}
+		if filepath.Clean(record.TargetPath) != record.TargetPath {
 			return operationRecord{}, "", false, &Error{Code: CodeOutcomeUnknown, Message: "version-1 clone checkpoint has an invalid target"}
 		}
 		origin := record.Origin
