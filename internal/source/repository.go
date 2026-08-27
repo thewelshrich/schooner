@@ -123,7 +123,7 @@ func RepositoryIdentityFor(raw string) (identity RepositoryIdentity, network boo
 		return RepositoryIdentity{}, true, NewError("invalid_input", "GitHub repository transport must use HTTPS or SSH on the standard port", nil)
 	}
 	explicitPort := ""
-	if port != "" && !defaultRepositoryPort(scheme, port) {
+	if port != "" && host != GitHubHost {
 		host = net.JoinHostPort(host, port)
 		explicitPort = port
 	}
@@ -144,7 +144,9 @@ func normalizedRepositoryIdentity(host, account, scheme, explicitPort, repositor
 	}
 	absolute := strings.HasPrefix(repositoryPath, "/")
 	repositoryPath = strings.Trim(repositoryPath, "/")
-	repositoryPath = strings.TrimSuffix(repositoryPath, ".git")
+	if host == GitHubHost {
+		repositoryPath = strings.TrimSuffix(repositoryPath, ".git")
+	}
 	cleaned := path.Clean(repositoryPath)
 	if host == "" || repositoryPath == "" || cleaned != repositoryPath || cleaned == "." || strings.HasPrefix(cleaned, "../") || containsControl(cleaned) {
 		return RepositoryIdentity{}, true, NewError("invalid_input", "repository source has no valid network identity", nil)

@@ -45,7 +45,7 @@ func TestRepositoryIdentityRejectsCredentialBearingAndMalformedSources(t *testin
 
 func TestRepositoryIdentityPreservesGenericNestedNamespace(t *testing.T) {
 	identity, network, err := RepositoryIdentityFor("ssh://alice@gitlab.example.com/team/platform/tool.git")
-	if err != nil || !network || identity.Key() != "ssh://alice@gitlab.example.com/absolute/team/platform/tool" || identity.CanonicalSSH() != "" {
+	if err != nil || !network || identity.Key() != "ssh://alice@gitlab.example.com/absolute/team/platform/tool.git" || identity.CanonicalSSH() != "" {
 		t.Fatalf("RepositoryIdentityFor() = %+v, %t, %v", identity, network, err)
 	}
 }
@@ -68,9 +68,25 @@ func TestRepositoryIdentityDistinguishesGenericSchemes(t *testing.T) {
 func TestRepositoryIdentityAllowsOwnerlessGenericPaths(t *testing.T) {
 	for _, value := range []string{"https://git.example/repo.git", "git@git.example:repo.git"} {
 		identity, network, err := RepositoryIdentityFor(value)
-		if err != nil || !network || identity.Owner != "" || identity.Repository != "repo" {
+		if err != nil || !network || identity.Owner != "" || identity.Repository != "repo.git" {
 			t.Fatalf("RepositoryIdentityFor(%q)=%+v network=%t err=%v", value, identity, network, err)
 		}
+	}
+}
+
+func TestRepositoryIdentityDistinguishesGenericGitSuffixes(t *testing.T) {
+	plain, plainNetwork, plainErr := RepositoryIdentityFor("https://git.example/team/repo")
+	suffixed, suffixedNetwork, suffixedErr := RepositoryIdentityFor("https://git.example/team/repo.git")
+	if plainErr != nil || suffixedErr != nil || !plainNetwork || !suffixedNetwork || plain.Key() == suffixed.Key() {
+		t.Fatalf("plain=%+v network=%t err=%v, suffixed=%+v network=%t err=%v", plain, plainNetwork, plainErr, suffixed, suffixedNetwork, suffixedErr)
+	}
+}
+
+func TestRepositoryIdentityDistinguishesExplicitGenericDefaultPort(t *testing.T) {
+	implicit, implicitNetwork, implicitErr := RepositoryIdentityFor("ssh://alice@git.example/team/repo.git")
+	explicit, explicitNetwork, explicitErr := RepositoryIdentityFor("ssh://alice@git.example:22/team/repo.git")
+	if implicitErr != nil || explicitErr != nil || !implicitNetwork || !explicitNetwork || implicit.Key() == explicit.Key() {
+		t.Fatalf("implicit=%+v network=%t err=%v, explicit=%+v network=%t err=%v", implicit, implicitNetwork, implicitErr, explicit, explicitNetwork, explicitErr)
 	}
 }
 
