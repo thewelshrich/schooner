@@ -92,6 +92,9 @@ func RepositoryIdentityFor(raw string) (identity RepositoryIdentity, network boo
 			return RepositoryIdentity{}, true, NewError("invalid_input", "GitHub SSH transport must use the git account", nil)
 		}
 		if host == GitHubHost {
+			if strings.HasPrefix(repositoryPath, "/") || strings.HasSuffix(repositoryPath, "/") {
+				return RepositoryIdentity{}, true, NewError("invalid_input", "GitHub repository source has an invalid path", nil)
+			}
 			username = ""
 		}
 		return normalizedRepositoryIdentity(host, username, "ssh", "", repositoryPath)
@@ -105,7 +108,7 @@ func RepositoryIdentityFor(raw string) (identity RepositoryIdentity, network boo
 	if scheme != "https" && scheme != "http" && scheme != "ssh" && scheme != "git" {
 		return RepositoryIdentity{}, false, nil
 	}
-	if parsed.RawQuery != "" || parsed.Fragment != "" {
+	if parsed.ForceQuery || parsed.RawQuery != "" || strings.ContainsRune(raw, '#') {
 		return RepositoryIdentity{}, true, NewError("invalid_input", "repository source must not contain query parameters or fragments", nil)
 	}
 	if containsWhitespace(raw) {
@@ -135,6 +138,9 @@ func RepositoryIdentityFor(raw string) (identity RepositoryIdentity, network boo
 	}
 	if host == GitHubHost && (scheme != "https" && scheme != "ssh" || port != "" && !defaultRepositoryPort(scheme, port)) {
 		return RepositoryIdentity{}, true, NewError("invalid_input", "GitHub repository transport must use HTTPS or SSH on the standard port", nil)
+	}
+	if host == GitHubHost && (!strings.HasPrefix(parsed.Path, "/") || strings.HasPrefix(parsed.Path, "//") || strings.HasSuffix(parsed.Path, "/")) {
+		return RepositoryIdentity{}, true, NewError("invalid_input", "GitHub repository source has an invalid path", nil)
 	}
 	explicitPort := ""
 	if port != "" && host != GitHubHost {
