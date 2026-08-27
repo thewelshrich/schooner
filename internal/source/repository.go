@@ -195,7 +195,7 @@ func normalizedRepositoryIdentity(host, account, scheme, explicitPort, repositor
 		return RepositoryIdentity{}, true, NewError("invalid_input", "repository source must identify a repository", nil)
 	}
 	for _, part := range parts {
-		if part == "" || part == "." || part == ".." || strings.ContainsAny(part, " @:\\") {
+		if part == "" || part == "." || part == ".." || strings.ContainsAny(part, " @:#?%\\") {
 			return RepositoryIdentity{}, true, NewError("invalid_input", "repository source has an invalid identity", nil)
 		}
 	}

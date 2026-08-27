@@ -288,7 +288,7 @@ func TestLifecycleCloneV2ReconcilesMatchingVersion1Checkpoint(t *testing.T) {
 	}
 }
 
-func TestLifecycleCloneV2RecoversCompletedVersion1Checkout(t *testing.T) {
+func TestLifecycleCloneV2RecoversCompletedVersion1CheckoutAcrossGitHubTransports(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "worktrees")
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		t.Fatal(err)
@@ -299,11 +299,12 @@ func TestLifecycleCloneV2RecoversCompletedVersion1Checkout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	origin := "https://github.com/Owner/Repo.git"
-	legacyTarget := filepath.Join(lifecycle.root, "Repo")
+	origin := "https://github.com/owner/repo.git"
+	legacyTarget := filepath.Join(lifecycle.root, "repo")
 	if output, cloneErr := exec.Command("git", "clone", executor.localSource, legacyTarget).CombinedOutput(); cloneErr != nil {
 		t.Fatalf("git clone: %v\n%s", cloneErr, output)
 	}
+	runLifecycleGit(t, legacyTarget, "remote", "set-url", "origin", origin)
 	inspected, err := Inspect(t.Context(), lifecycle.root, legacyTarget)
 	if err != nil {
 		t.Fatal(err)
@@ -318,8 +319,17 @@ func TestLifecycleCloneV2RecoversCompletedVersion1Checkout(t *testing.T) {
 	if err = lifecycle.save(&legacy); err != nil {
 		t.Fatal(err)
 	}
+	requested := "git@github.com:owner/repo.git"
+	identity, network, identityErr := source.RepositoryIdentityFor(requested)
+	if identityErr != nil || !network {
+		t.Fatalf("identity=%+v network=%t err=%v", identity, network, identityErr)
+	}
+	matched, matchedSource, found, findErr := lifecycle.findEquivalentVersion1Clone(t.Context(), legacyTarget, "", identity)
+	if findErr != nil || !found || matched.IntentSHA256 != legacyIntent || matchedSource == "" {
+		t.Fatalf("matched=%+v source=%q found=%t err=%v", matched, matchedSource, found, findErr)
+	}
 
-	recovered, err := lifecycle.CloneV2(t.Context(), CloneRequest{Source: origin})
+	recovered, err := lifecycle.CloneV2(t.Context(), CloneRequest{Source: requested})
 	if err != nil || !recovered.Recovered || recovered.Path != legacyTarget || recovered.Inspection == nil || len(executor.requests) != 0 {
 		t.Fatalf("recovered=%+v requests=%d err=%v", recovered, len(executor.requests), err)
 	}
@@ -353,6 +363,7 @@ func TestLifecycleCloneV2ResumesPostCloneVersion1Checkpoints(t *testing.T) {
 			if output, cloneErr := exec.Command("git", "clone", executor.localSource, legacy.StagingPath).CombinedOutput(); cloneErr != nil {
 				t.Fatalf("git clone: %v\n%s", cloneErr, output)
 			}
+			runLifecycleGit(t, legacy.StagingPath, "remote", "set-url", "origin", origin)
 			if checkpoint == "promote_pending" {
 				inspected, inspectErr := Inspect(t.Context(), lifecycle.root, legacy.StagingPath)
 				if inspectErr != nil {
@@ -364,7 +375,7 @@ func TestLifecycleCloneV2ResumesPostCloneVersion1Checkpoints(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			recovered, recoverErr := lifecycle.CloneV2(t.Context(), CloneRequest{Source: origin})
+			recovered, recoverErr := lifecycle.CloneV2(t.Context(), CloneRequest{Source: "git@github.com:Owner/Repo.git"})
 			if recoverErr != nil || !recovered.Recovered || recovered.Path != legacyTarget || recovered.Inspection == nil || len(executor.requests) != 0 {
 				t.Fatalf("recovered=%+v requests=%d err=%v", recovered, len(executor.requests), recoverErr)
 			}

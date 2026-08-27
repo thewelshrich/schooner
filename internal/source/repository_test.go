@@ -33,6 +33,8 @@ func TestRepositoryIdentityRejectsCredentialBearingAndMalformedSources(t *testin
 		"https://github.com/openai%2Fcodex.git",
 		"https://github.com/openai%5Ccodex.git",
 		"https://github.com/openai/../codex.git",
+		"https://github.com/openai/codex%23suffix.git",
+		"https://github.com/openai/codex%3Fsuffix.git",
 		"ssh://@git.example/team/repo.git",
 		"@git.example:team/repo.git",
 		"https://@git.example/team/repo.git",
