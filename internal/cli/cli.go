@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/thewelshrich/schooner/internal/acquisition"
@@ -20,6 +21,9 @@ import (
 	digitalOcean "github.com/thewelshrich/schooner/internal/provider/digitalocean"
 	localHost "github.com/thewelshrich/schooner/internal/runtime/host"
 	sshRuntime "github.com/thewelshrich/schooner/internal/runtime/ssh"
+	"github.com/thewelshrich/schooner/internal/secretstore"
+	"github.com/thewelshrich/schooner/internal/source"
+	sourcegithub "github.com/thewelshrich/schooner/internal/source/github"
 	"github.com/thewelshrich/schooner/internal/ui/prompts"
 	uitheme "github.com/thewelshrich/schooner/internal/ui/theme"
 )
@@ -41,12 +45,13 @@ type Streams struct {
 }
 
 type BuildInfo struct {
-	Version   string
-	Commit    string
-	BuiltAt   string
-	GoVersion string
-	OS        string
-	Arch      string
+	Version        string
+	Commit         string
+	BuiltAt        string
+	GoVersion      string
+	OS             string
+	Arch           string
+	GitHubClientID string
 }
 
 type globalOptions struct {
@@ -151,6 +156,7 @@ func newRootCommand(build BuildInfo, streams Streams, options *globalOptions) *c
 	root.AddCommand(newCloneCommand(streams, options, targets))
 	root.AddCommand(newWorktreeCommand(streams, options, targets))
 	root.AddCommand(newSessionCommands(streams, options, targets)...)
+	root.AddCommand(newSourceCommand(streams, options, targets))
 	return root
 }
 
@@ -196,6 +202,7 @@ type application struct {
 	credentials *credentials.Manager
 	acquisition *acquisition.Service
 	ssh         *sshRuntime.Runtime
+	sources     *source.Manager
 }
 
 type sshIdentitySource struct{ stateDirectory string }
@@ -220,7 +227,19 @@ func openApplication(ctx context.Context, streams Streams, build BuildInfo) (*ap
 	cloud := digitalOcean.New()
 	credentialManager := credentials.New(store, credentials.KeyringStore{}, cloud)
 	acquisitionService := acquisition.New(boxes, store, credentialManager, cloud, sshIdentitySource{stateDirectory: filepath.Dir(path)}, runtime)
-	return &application{boxes: boxes, boxResolver: box.NewResolver(store), credentials: credentialManager, acquisition: acquisitionService, ssh: runtime}, func() { _ = store.Close() }, nil
+	githubClientID := strings.TrimSpace(build.GitHubClientID)
+	if defaultString(build.Version, "dev") == "dev" {
+		if developmentClientID := strings.TrimSpace(os.Getenv("SCHOONER_GITHUB_CLIENT_ID")); developmentClientID != "" {
+			githubClientID = developmentClientID
+		}
+	}
+	githubClient := sourcegithub.New(sourcegithub.Options{ClientID: githubClientID, Presenter: newDevicePresenter(streams)})
+	sourceManager, err := source.NewManager(store, secretstore.Keyring{Service: source.SourceKeyringService}, githubClient, filepath.Join(filepath.Dir(path), "locks", "source"))
+	if err != nil {
+		_ = store.Close()
+		return nil, nil, err
+	}
+	return &application{boxes: boxes, boxResolver: box.NewResolver(store), credentials: credentialManager, acquisition: acquisitionService, ssh: runtime, sources: sourceManager}, func() { _ = store.Close() }, nil
 }
 
 type executionError struct{ cause error }
@@ -273,6 +292,9 @@ func normalizedStreams(streams Streams) Streams {
 func printError(w io.Writer, err error, output string, theme *uitheme.Theme) {
 	if output == "json" {
 		code := box.ErrorCode(err)
+		if sourceCode := source.ErrorCode(err); sourceCode != "" {
+			code = sourceCode
+		}
 		var usage usageError
 		if errors.As(err, &usage) {
 			code = "invalid_input"
@@ -281,6 +303,10 @@ func printError(w io.Writer, err error, output string, theme *uitheme.Theme) {
 		contextValues := map[string]string{}
 		if errors.As(err, &domain) && domain.Context != nil {
 			contextValues = domain.Context
+		}
+		var sourceDomain *source.Error
+		if errors.As(err, &sourceDomain) && sourceDomain.Context != nil {
+			contextValues = sourceDomain.Context
 		}
 		document := struct {
 			SchemaVersion string `json:"schema_version"`
@@ -304,6 +330,12 @@ func printError(w io.Writer, err error, output string, theme *uitheme.Theme) {
 		if observed := domain.Context["last_observed_at"]; observed != "" {
 			_ = writeMutedNotice(w, theme, "Last known observation: "+observed+" (stale)")
 			_ = writeMutedNotice(w, theme, "Last known capabilities: "+domain.Context["last_os"]+", "+domain.Context["last_architecture"]+"; "+domain.Context["last_git"]+"; "+domain.Context["last_tmux"])
+		}
+	}
+	var sourceDomain *source.Error
+	if errors.As(err, &sourceDomain) {
+		if reason := sourceDomain.Context["reason"]; reason != "" {
+			_ = writeMutedNotice(w, theme, "Reason: "+reason)
 		}
 	}
 }

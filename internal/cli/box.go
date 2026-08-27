@@ -18,6 +18,7 @@ import (
 	"github.com/thewelshrich/schooner/internal/credentials"
 	providerdomain "github.com/thewelshrich/schooner/internal/provider"
 	sshRuntime "github.com/thewelshrich/schooner/internal/runtime/ssh"
+	"github.com/thewelshrich/schooner/internal/source"
 	"github.com/thewelshrich/schooner/internal/ui/intro"
 	"github.com/thewelshrich/schooner/internal/ui/prompts"
 	uitheme "github.com/thewelshrich/schooner/internal/ui/theme"
@@ -694,11 +695,12 @@ func newBoxRemoveCommand(streams Streams, global *globalOptions) *cobra.Command 
 	cmd := &cobra.Command{
 		Use: "remove [name]", Short: "Forget a box without changing its machine", Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			service, closeService, err := openBoxService(cmd.Context(), streams, global.build)
+			services, closeServices, err := openApplication(cmd.Context(), streams, global.build)
 			if err != nil {
 				return executionError{cause: err}
 			}
-			defer closeService()
+			defer closeServices()
+			service := services.boxes
 			interactive := interactionAllowed(streams, global)
 			name := ""
 			if len(args) == 1 {
@@ -731,15 +733,19 @@ func newBoxRemoveCommand(streams Streams, global *globalOptions) *cobra.Command 
 					return executionError{cause: err}
 				}
 			}
+			index := slices.IndexFunc(records, func(record box.Record) bool { return record.Name == name })
+			if index < 0 {
+				return executionError{cause: box.NotFound(name)}
+			}
+			record := records[index]
+			if err = warnRetainedSourceAccess(cmd.Context(), streams, global, services.sources, record, "removing"); err != nil {
+				return executionError{cause: err}
+			}
 			if !yes {
 				if !interactive {
 					return usageError{cause: fmt.Errorf("--yes is required when prompts are unavailable")}
 				}
-				index := slices.IndexFunc(records, func(record box.Record) bool { return record.Name == name })
-				if index < 0 {
-					return executionError{cause: box.NotFound(name)}
-				}
-				confirmed, confirmErr := prompts.ConfirmRemove(cmd.Context(), promptOptions(streams, global), records[index])
+				confirmed, confirmErr := prompts.ConfirmRemove(cmd.Context(), promptOptions(streams, global), record)
 				if errors.Is(confirmErr, prompts.ErrAborted) {
 					return abortError{cause: confirmErr}
 				}
@@ -807,6 +813,9 @@ func newBoxDestroyCommand(streams Streams, global *globalOptions) *cobra.Command
 		if err != nil {
 			return executionError{cause: err}
 		}
+		if err = warnRetainedSourceAccess(cmd.Context(), streams, global, services.sources, record, "destroying"); err != nil {
+			return executionError{cause: err}
+		}
 		if !yes {
 			if !interactive {
 				return usageError{cause: fmt.Errorf("--yes is required when prompts are unavailable")}
@@ -831,6 +840,17 @@ func newBoxDestroyCommand(streams Streams, global *globalOptions) *cobra.Command
 	}}
 	cmd.Flags().BoolVar(&yes, "yes", false, "confirm permanent provider destruction")
 	return cmd
+}
+
+func warnRetainedSourceAccess(ctx context.Context, streams Streams, global *globalOptions, manager *source.Manager, record box.Record, action string) error {
+	bound, err := manager.HasBinding(ctx, record.RemoteIdentity)
+	if err != nil {
+		return writeWarningLine(streams.Err, terminalTheme(global, streams), "Could not inspect retained source-access metadata; this Box command will not call GitHub.")
+	}
+	if !bound {
+		return nil
+	}
+	return writeWarningLine(streams.Err, terminalTheme(global, streams), fmt.Sprintf("GitHub source access is managed separately. Run `schooner source disconnect github --box %s` before %s this Box; this command will not call GitHub or remove Box key files.", record.Name, action))
 }
 
 func interactionAllowed(streams Streams, options *globalOptions) bool {

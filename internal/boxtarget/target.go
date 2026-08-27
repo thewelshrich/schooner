@@ -10,6 +10,7 @@ import (
 	"github.com/thewelshrich/schooner/internal/repository"
 	hostruntime "github.com/thewelshrich/schooner/internal/runtime"
 	"github.com/thewelshrich/schooner/internal/session"
+	"github.com/thewelshrich/schooner/internal/source"
 )
 
 type executionAdapter interface {
@@ -26,6 +27,10 @@ type executionAdapter interface {
 	sessionLogs(context.Context, string, int) (session.LogsResult, error)
 	stopSession(context.Context, string) (session.StopResult, error)
 	openWorktreeShell(context.Context, string, Terminal) (HandoffResult, error)
+	inspectSourceIdentity(context.Context, string) (source.HostIdentity, error)
+	ensureSourceIdentity(context.Context, source.EnsureIdentityRequest) (source.HostIdentity, error)
+	removeSourceIdentity(context.Context, source.RemoveIdentityRequest) (source.RemoveIdentityResult, error)
+	verifySourceRepository(context.Context, source.VerifyRequest) (source.VerifyResult, error)
 }
 
 type targetState struct {
@@ -60,6 +65,76 @@ func (t Target) BoxName() string {
 		return ""
 	}
 	return t.state.boxName
+}
+
+func (t Target) BoxIdentity() string {
+	if t.state == nil {
+		return ""
+	}
+	return t.state.boxIdentity
+}
+
+func (t Target) InspectSourceIdentity(ctx context.Context, provider string) (source.HostIdentity, error) {
+	if err := t.valid(); err != nil {
+		return source.HostIdentity{}, err
+	}
+	result, err := t.state.run.inspectSourceIdentity(ctx, provider)
+	return result, normalizeSourceError(err)
+}
+
+func (t Target) EnsureSourceIdentity(ctx context.Context, request source.EnsureIdentityRequest) (source.HostIdentity, error) {
+	if err := t.valid(); err != nil {
+		return source.HostIdentity{}, err
+	}
+	result, err := t.state.run.ensureSourceIdentity(ctx, request)
+	return result, normalizeSourceError(err)
+}
+
+func (t Target) RemoveSourceIdentity(ctx context.Context, request source.RemoveIdentityRequest) (source.RemoveIdentityResult, error) {
+	if err := t.valid(); err != nil {
+		return source.RemoveIdentityResult{}, err
+	}
+	result, err := t.state.run.removeSourceIdentity(ctx, request)
+	return result, normalizeSourceError(err)
+}
+
+func (t Target) VerifySourceRepository(ctx context.Context, request source.VerifyRequest) (source.VerifyResult, error) {
+	if err := t.valid(); err != nil {
+		return source.VerifyResult{}, err
+	}
+	result, err := t.state.run.verifySourceRepository(ctx, request)
+	return result, normalizeSourceError(err)
+}
+
+func normalizeSourceError(err error) error {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	var sourceDomain *source.Error
+	if errors.As(err, &sourceDomain) {
+		return err
+	}
+	var boxDomain *box.Error
+	if errors.As(err, &boxDomain) {
+		code := boxDomain.Code
+		switch code {
+		case "not_found", "invalid_input", "conflict", "authentication_required", "permission_denied", "operation_in_progress", "outcome_unknown":
+			return &source.Error{Code: code, Message: boxDomain.Message, Context: boxDomain.Context, Cause: err}
+		case "host_runtime_missing", "host_runtime_incompatible", "host_runtime_install_failed", "unsupported":
+			return source.NewError("unsupported", "the Box runtime does not support this source operation", err)
+		}
+	}
+	if code := hostruntime.ErrorCode(err); code != "" {
+		switch code {
+		case hostruntime.CodeNotFound, hostruntime.CodeInvalidInput, hostruntime.CodeConflict, hostruntime.CodeAuthentication, hostruntime.CodePermissionDenied, hostruntime.CodeOperationInProgress, hostruntime.CodeOutcomeUnknown:
+			return source.NewError(string(code), err.Error(), err)
+		case hostruntime.CodeInvalidIdentity:
+			return source.NewError("conflict", err.Error(), err)
+		case hostruntime.CodeUnsupportedProtocol, hostruntime.CodeCapabilityUnavailable, hostruntime.CodeInvalidMessage:
+			return source.NewError("unsupported", "the Box runtime does not support this source operation", err)
+		}
+	}
+	return source.NewError("outcome_unknown", "the Box source operation could not be completed", err)
 }
 
 func (t Target) ListWorktrees(ctx context.Context) (repository.Catalog, error) {
@@ -222,6 +297,14 @@ func normalizeError(err error) error {
 		switch code {
 		case repository.CodeNotFound, repository.CodeInvalidInput, repository.CodeConflict, repository.CodeAuthentication, repository.CodePermissionDenied, repository.CodeOperationInProgress, repository.CodeOutcomeUnknown:
 			return box.NewError(string(code), err.Error(), err)
+		}
+	}
+	if code := source.ErrorCode(err); code != "" {
+		var domain *source.Error
+		_ = errors.As(err, &domain)
+		switch code {
+		case "not_found", "invalid_input", "conflict", "authentication_required", "permission_denied", "operation_in_progress", "outcome_unknown":
+			return &box.Error{Code: code, Message: err.Error(), Context: domain.Context, Cause: err}
 		}
 	}
 	if code := hostruntime.ErrorCode(err); code != "" {

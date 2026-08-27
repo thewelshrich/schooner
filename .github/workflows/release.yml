@@ -104,7 +104,16 @@ jobs:
           VERSION: ${{ needs.prepare.outputs.version }}
           COMMIT: ${{ needs.prepare.outputs.commit }}
           BUILT_AT: ${{ needs.prepare.outputs.built_at }}
+          GITHUB_CLIENT_ID: ${{ vars.SCHOONER_GITHUB_CLIENT_ID }}
         run: |
+          if [[ -z "${GITHUB_CLIENT_ID}" ]]; then
+            echo "SCHOONER_GITHUB_CLIENT_ID repository variable is required" >&2
+            exit 1
+          fi
+          if [[ ! "${GITHUB_CLIENT_ID}" =~ ^[A-Za-z0-9._-]+$ || "${#GITHUB_CLIENT_ID}" -gt 128 ]]; then
+            echo "SCHOONER_GITHUB_CLIENT_ID repository variable is invalid" >&2
+            exit 1
+          fi
           if [[ "$(go env GOOS)/$(go env GOARCH)" != "${TARGET_OS}/${TARGET_ARCH}" ]]; then
             echo "runner architecture does not match release target" >&2
             exit 1
@@ -113,7 +122,7 @@ jobs:
           artifact="dist/schooner_${VERSION}_${TARGET_OS}_${TARGET_ARCH}"
           CGO_ENABLED=0 go build \
             -trimpath \
-            -ldflags "-s -w -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.builtAt=${BUILT_AT}" \
+            -ldflags "-s -w -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.builtAt=${BUILT_AT} -X main.githubClientID=${GITHUB_CLIENT_ID}" \
             -o "${artifact}" \
             ./cmd/schooner
 

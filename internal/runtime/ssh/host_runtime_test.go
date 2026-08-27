@@ -14,6 +14,7 @@ import (
 	"github.com/thewelshrich/schooner/internal/artifact"
 	"github.com/thewelshrich/schooner/internal/box"
 	hostruntime "github.com/thewelshrich/schooner/internal/runtime"
+	"github.com/thewelshrich/schooner/internal/source"
 )
 
 const hostTestIdentity = "11111111-1111-4111-8111-111111111111"
@@ -66,6 +67,46 @@ func TestCloneRepositoryUsesTypedHostLifecycleOperation(t *testing.T) {
 	}
 	if _, err = runtime.CloneRepository(t.Context(), box.Connection{Destination: "trusted-host", BatchMode: true}, box.HostRuntime{Path: target}, hostTestIdentity, "/worktrees", "git@example.com:owner/repo.git", "main"); err != nil {
 		t.Fatalf("noninteractive clone = %v", err)
+	}
+}
+
+func TestSourceOperationRejectsLegacyRuntimeBeforeSendingRequest(t *testing.T) {
+	testRemoteShell(t)
+	target := filepath.Join(t.TempDir(), "host-runtime")
+	requestMarker := filepath.Join(t.TempDir(), "source-requested")
+	hello := fmt.Sprintf(`{"schema_version":"1","protocol_version":"1","schooner_version":"v1.2.3","commit":"abc123","box_identity":%q,"os":"linux","architecture":"amd64","capabilities":["worktree.list.v1"]}`, hostTestIdentity)
+	contents := fmt.Sprintf("#!/bin/sh\ncase \"$1 $2 $3 $4\" in\n  'host hello  '*) printf '%%s\\n' '%s' ;;\n  *'host source'*) : > '%s'; exit 64 ;;\n  *) exit 64 ;;\nesac\n", hello, requestMarker)
+	if err := os.WriteFile(target, []byte(contents), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runtime := NewHost(testSSHExecutable(t), nil, "v1.2.3", nil)
+	_, err := runtime.InspectSourceIdentity(t.Context(), box.Connection{Destination: "trusted-host"}, box.HostRuntime{Path: target}, hostTestIdentity, source.GitHub)
+	if box.ErrorCode(err) != "host_runtime_incompatible" || !strings.Contains(err.Error(), "box update") {
+		t.Fatalf("err=%v", err)
+	}
+	if _, statErr := os.Stat(requestMarker); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("legacy runtime received source request: %v", statErr)
+	}
+}
+
+func TestSourceOperationPreservesBoundedReasonContext(t *testing.T) {
+	testRemoteShell(t)
+	target := filepath.Join(t.TempDir(), "host-runtime")
+	hello := fmt.Sprintf(`{"schema_version":"1","protocol_version":"1","schooner_version":"v1.2.3","commit":"abc123","box_identity":%q,"os":"linux","architecture":"amd64","capabilities":["source.repository.verify.v1"]}`, hostTestIdentity)
+	failure := hostruntime.NewOperationErrorWithContext(hostTestIdentity, hostruntime.CodeAuthentication, "SAML authorization is required", map[string]string{"reason": "github_saml_sso", "organization": "acme-tools"})
+	encoded, err := json.Marshal(failure)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contents := fmt.Sprintf("#!/bin/sh\ncase \"$1 $2 $3 $4\" in\n  'host hello  '*) printf '%%s\\n' '%s' ;;\n  'host source repository verify') cat >/dev/null; printf '%%s\\n' '%s' ;;\n  *) exit 64 ;;\nesac\n", hello, encoded)
+	if err = os.WriteFile(target, []byte(contents), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runtime := NewHost(testSSHExecutable(t), nil, "v1.2.3", nil)
+	_, err = runtime.VerifySourceRepository(t.Context(), box.Connection{Destination: "trusted-host"}, box.HostRuntime{Path: target}, hostTestIdentity, source.VerifyRequest{Provider: source.GitHub})
+	var domain *box.Error
+	if box.ErrorCode(err) != "authentication_required" || !errors.As(err, &domain) || domain.Context["reason"] != "github_saml_sso" || domain.Context["organization"] != "acme-tools" {
+		t.Fatalf("err=%+v", err)
 	}
 }
 

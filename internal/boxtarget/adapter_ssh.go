@@ -7,6 +7,7 @@ import (
 	"github.com/thewelshrich/schooner/internal/repository"
 	sshruntime "github.com/thewelshrich/schooner/internal/runtime/ssh"
 	"github.com/thewelshrich/schooner/internal/session"
+	"github.com/thewelshrich/schooner/internal/source"
 )
 
 type sshAdapter struct {
@@ -73,4 +74,20 @@ func (a sshAdapter) openWorktreeShell(ctx context.Context, worktree string, term
 	connection.BatchMode = a.interactiveBatchMode
 	result, err := a.runtime.OpenWorktreeShell(ctx, connection, a.installed, a.state.boxIdentity, a.state.worktreeRoot, worktree, sshruntime.TerminalIO{In: terminal.In, Out: terminal.Out, Err: terminal.Err})
 	return HandoffResult{ExitCode: result.ExitCode, DiagnosticsReported: result.DiagnosticsReported}, err
+}
+
+func (a sshAdapter) inspectSourceIdentity(ctx context.Context, provider string) (source.HostIdentity, error) {
+	return a.runtime.InspectSourceIdentity(ctx, a.connection, a.installed, a.state.boxIdentity, provider)
+}
+
+func (a sshAdapter) ensureSourceIdentity(ctx context.Context, request source.EnsureIdentityRequest) (source.HostIdentity, error) {
+	return a.runtime.EnsureSourceIdentity(ctx, a.connection, a.installed, a.state.boxIdentity, request)
+}
+
+func (a sshAdapter) removeSourceIdentity(ctx context.Context, request source.RemoveIdentityRequest) (source.RemoveIdentityResult, error) {
+	return a.runtime.RemoveSourceIdentity(ctx, a.connection, a.installed, a.state.boxIdentity, request)
+}
+
+func (a sshAdapter) verifySourceRepository(ctx context.Context, request source.VerifyRequest) (source.VerifyResult, error) {
+	return a.runtime.VerifySourceRepository(ctx, a.connection, a.installed, a.state.boxIdentity, request)
 }

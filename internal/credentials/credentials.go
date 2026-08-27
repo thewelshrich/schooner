@@ -6,7 +6,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"os"
 	"regexp"
@@ -17,7 +16,7 @@ import (
 
 	"github.com/thewelshrich/schooner/internal/box"
 	"github.com/thewelshrich/schooner/internal/provider"
-	"github.com/zalando/go-keyring"
+	"github.com/thewelshrich/schooner/internal/secretstore"
 )
 
 const keyringService = "app.schooner.cli.providers"
@@ -59,30 +58,20 @@ type Store interface {
 	SaveCredentialProfile(context.Context, Profile) error
 }
 
-type SecretStore interface {
-	Get(string) (string, error)
-	Set(string, string) error
-	Delete(string) error
-}
+type SecretStore = secretstore.Store
 
 type KeyringStore struct{}
 
 func (KeyringStore) Get(key string) (string, error) {
-	value, err := keyring.Get(keyringService, key)
-	if errors.Is(err, keyring.ErrNotFound) {
-		return "", nil
-	}
-	return value, err
+	return (secretstore.Keyring{Service: keyringService}).Get(key)
 }
 
-func (KeyringStore) Set(key, value string) error { return keyring.Set(keyringService, key, value) }
+func (KeyringStore) Set(key, value string) error {
+	return (secretstore.Keyring{Service: keyringService}).Set(key, value)
+}
 
 func (KeyringStore) Delete(key string) error {
-	err := keyring.Delete(keyringService, key)
-	if errors.Is(err, keyring.ErrNotFound) {
-		return nil
-	}
-	return err
+	return (secretstore.Keyring{Service: keyringService}).Delete(key)
 }
 
 type Manager struct {

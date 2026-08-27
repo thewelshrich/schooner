@@ -7,6 +7,7 @@ import (
 	hostruntime "github.com/thewelshrich/schooner/internal/runtime"
 	"github.com/thewelshrich/schooner/internal/runtime/host"
 	"github.com/thewelshrich/schooner/internal/session"
+	"github.com/thewelshrich/schooner/internal/source"
 )
 
 type directAdapter struct {
@@ -94,4 +95,26 @@ func (a directAdapter) stopSession(ctx context.Context, id string) (session.Stop
 func (a directAdapter) openWorktreeShell(ctx context.Context, worktree string, terminal Terminal) (HandoffResult, error) {
 	result, err := a.runtime.OpenWorktreeShell(ctx, hostruntime.NewWorktreeShellRequest(a.state.worktreeRoot, a.state.boxIdentity, worktree), host.TerminalIO{In: terminal.In, Out: terminal.Out, Err: terminal.Err})
 	return HandoffResult{ExitCode: result.ExitCode}, err
+}
+
+func (a directAdapter) inspectSourceIdentity(ctx context.Context, provider string) (source.HostIdentity, error) {
+	result, err := a.runtime.InspectSourceIdentity(ctx, hostruntime.NewSourceIdentityRequest(provider, a.state.boxIdentity))
+	return result.HostIdentity, err
+}
+
+func (a directAdapter) ensureSourceIdentity(ctx context.Context, request source.EnsureIdentityRequest) (source.HostIdentity, error) {
+	remote := hostruntime.NewSourceIdentityEnsureRequest(request.Provider, a.state.boxIdentity, request.HostKeys)
+	result, err := a.runtime.EnsureSourceIdentity(ctx, remote)
+	return result.HostIdentity, err
+}
+
+func (a directAdapter) removeSourceIdentity(ctx context.Context, request source.RemoveIdentityRequest) (source.RemoveIdentityResult, error) {
+	result, err := a.runtime.RemoveSourceIdentity(ctx, hostruntime.NewSourceIdentityRemoveRequest(request.Provider, a.state.boxIdentity, request.ExpectedFingerprint))
+	return result.RemoveIdentityResult, err
+}
+
+func (a directAdapter) verifySourceRepository(ctx context.Context, request source.VerifyRequest) (source.VerifyResult, error) {
+	remote := hostruntime.NewSourceRepositoryVerifyRequest(request.Provider, request.Repository, a.state.boxIdentity)
+	result, err := a.runtime.VerifySourceRepository(ctx, remote)
+	return result.VerifyResult, err
 }

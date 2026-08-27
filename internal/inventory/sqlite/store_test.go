@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/thewelshrich/schooner/internal/box"
 	"github.com/thewelshrich/schooner/internal/credentials"
 	"github.com/thewelshrich/schooner/internal/provider"
+	"github.com/thewelshrich/schooner/internal/source"
 )
 
 func TestStoreLifecycleAndMigrationHistory(t *testing.T) {
@@ -60,7 +62,7 @@ func TestStoreLifecycleAndMigrationHistory(t *testing.T) {
 	}
 	defer store.Close()
 	var count int
-	if err = store.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil || count != 6 {
+	if err = store.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil || count != 7 {
 		t.Fatalf("migration count = %d, err = %v", count, err)
 	}
 }
@@ -105,6 +107,89 @@ func TestDefaultBoxSwitchingAndRemoval(t *testing.T) {
 	alpha, _ = store.FindByName(t.Context(), "alpha")
 	if alpha.Default {
 		t.Fatalf("default was promoted after removal: %+v", alpha)
+	}
+}
+
+func TestSourceAccountAndBoxIdentitySurviveBoxRemoval(t *testing.T) {
+	store, err := Open(t.Context(), filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)
+	account := source.Account{Provider: source.GitHub, ExternalID: "42", Login: "octocat", CredentialKey: "opaque", CredentialGeneration: "generation", Status: "connected", CreatedAt: now, UpdatedAt: now}
+	if err = store.SaveSourceAccount(t.Context(), account); err != nil {
+		t.Fatal(err)
+	}
+	identity := source.BoxIdentity{BoxIdentity: "remote-source", BoxName: "work", Provider: source.GitHub, AccountExternalID: "42", Fingerprint: "SHA256:test", RemoteKeyID: 99, RemoteKeyTitle: "Schooner / work", State: source.StateConnected, CreatedAt: now, UpdatedAt: now}
+	if err = store.SaveBoxSourceIdentity(t.Context(), identity); err != nil {
+		t.Fatal(err)
+	}
+	gotAccount, err := store.FindSourceAccount(t.Context(), source.GitHub)
+	if err != nil || gotAccount.Login != "octocat" || gotAccount.CredentialKey != "opaque" || gotAccount.CredentialGeneration != "generation" {
+		t.Fatalf("account=%+v err=%v", gotAccount, err)
+	}
+	gotIdentity, err := store.FindBoxSourceIdentityByName(t.Context(), "work", source.GitHub)
+	if err != nil || gotIdentity.BoxIdentity != "remote-source" || gotIdentity.State != source.StateConnected {
+		t.Fatalf("identity=%+v err=%v", gotIdentity, err)
+	}
+
+	saveStoreBox(t, store, box.Record{ID: "box-source", Name: "work", Acquisition: "adopted", SSHDestination: "work", RemoteIdentity: "remote-source", WorktreeRoot: "/home/alice/schooner"})
+	if _, err = store.Remove(t.Context(), "work"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.FindBoxSourceIdentity(t.Context(), "remote-source", source.GitHub); err != nil {
+		t.Fatalf("source identity should survive ordinary Box removal: %v", err)
+	}
+	if err = store.DeleteBoxSourceIdentity(t.Context(), "remote-source", source.GitHub); err != nil {
+		t.Fatal(err)
+	}
+	if err = store.DeleteSourceAccount(t.Context(), source.GitHub); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.FindSourceAccount(t.Context(), source.GitHub); !source.IsNotFound(err) {
+		t.Fatalf("source account survived delete: %v", err)
+	}
+}
+
+func TestSourceTablesContainOnlySafeCorrelationMetadata(t *testing.T) {
+	store, err := Open(t.Context(), filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	for _, table := range []string{"source_accounts", "box_source_identities"} {
+		var schema string
+		if err = store.db.QueryRowContext(t.Context(), `SELECT sql FROM sqlite_schema WHERE type='table' AND name=?`, table).Scan(&schema); err != nil {
+			t.Fatal(err)
+		}
+		lower := strings.ToLower(schema)
+		for _, forbidden := range []string{"access_token", "refresh_token", "public_key", "private_key", "filesystem_path", "known_hosts"} {
+			if strings.Contains(lower, forbidden) {
+				t.Fatalf("%s schema contains forbidden source material %q: %s", table, forbidden, schema)
+			}
+		}
+	}
+}
+
+func TestFormerBoxNameLookupFailsClosedWhenRetainedBindingsAreAmbiguous(t *testing.T) {
+	store, err := Open(t.Context(), filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	now := time.Now().UTC()
+	for index, identity := range []string{"11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"} {
+		if err = store.SaveBoxSourceIdentity(t.Context(), source.BoxIdentity{
+			BoxIdentity: identity, BoxName: "former", Provider: source.GitHub,
+			AccountExternalID: "42", Fingerprint: fmt.Sprintf("SHA256:key-%d", index),
+			State: source.StateConnected, CreatedAt: now, UpdatedAt: now.Add(time.Duration(index) * time.Second),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err = store.FindBoxSourceIdentityByName(t.Context(), "former", source.GitHub); source.ErrorCode(err) != "conflict" {
+		t.Fatalf("err = %v", err)
 	}
 }
 

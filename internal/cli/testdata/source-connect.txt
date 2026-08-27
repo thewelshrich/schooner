@@ -1,0 +1,6 @@
+
+✓ GitHub source access connected
+  Box          work
+  Account      octocat
+  SSH key      Schooner / work
+  Fingerprint  SHA256:safe

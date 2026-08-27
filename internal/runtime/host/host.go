@@ -21,6 +21,8 @@ import (
 	"github.com/thewelshrich/schooner/internal/repository"
 	hostruntime "github.com/thewelshrich/schooner/internal/runtime"
 	"github.com/thewelshrich/schooner/internal/session"
+	"github.com/thewelshrich/schooner/internal/source"
+	"github.com/thewelshrich/schooner/internal/source/boxgit"
 )
 
 const commandOutputLimit = 64 << 10
@@ -268,6 +270,70 @@ func (r *Runtime) CloneRepository(ctx context.Context, request hostruntime.Clone
 	return hostruntime.LifecycleResult{SchemaVersion: hostruntime.SchemaVersion, ProtocolVersion: hostruntime.ProtocolVersion, BoxIdentity: identity, MutationResult: result}, nil
 }
 
+func (r *Runtime) InspectSourceIdentity(ctx context.Context, request hostruntime.SourceIdentityRequest) (hostruntime.SourceIdentityResult, error) {
+	operation := hostruntime.SourceIdentityInspectOperation()
+	if err := operation.ValidateRequest(request); err != nil {
+		return hostruntime.SourceIdentityResult{}, err
+	}
+	identity, manager, err := r.sourceIdentityManager(request.BoxIdentity)
+	if err != nil {
+		return hostruntime.SourceIdentityResult{}, err
+	}
+	result, err := manager.Inspect(ctx, request.Provider)
+	if err != nil {
+		return hostruntime.SourceIdentityResult{}, err
+	}
+	return hostruntime.SourceIdentityResult{SchemaVersion: hostruntime.SchemaVersion, ProtocolVersion: hostruntime.ProtocolVersion, BoxIdentity: identity, HostIdentity: result}, nil
+}
+
+func (r *Runtime) EnsureSourceIdentity(ctx context.Context, request hostruntime.SourceIdentityEnsureRequest) (hostruntime.SourceIdentityResult, error) {
+	operation := hostruntime.SourceIdentityEnsureOperation()
+	if err := operation.ValidateRequest(request); err != nil {
+		return hostruntime.SourceIdentityResult{}, err
+	}
+	identity, manager, err := r.sourceIdentityManager(request.BoxIdentity)
+	if err != nil {
+		return hostruntime.SourceIdentityResult{}, err
+	}
+	result, err := manager.Ensure(ctx, source.EnsureIdentityRequest{Provider: request.Provider, HostKeys: request.HostKeys})
+	if err != nil {
+		return hostruntime.SourceIdentityResult{}, err
+	}
+	return hostruntime.SourceIdentityResult{SchemaVersion: hostruntime.SchemaVersion, ProtocolVersion: hostruntime.ProtocolVersion, BoxIdentity: identity, HostIdentity: result}, nil
+}
+
+func (r *Runtime) RemoveSourceIdentity(ctx context.Context, request hostruntime.SourceIdentityRemoveRequest) (hostruntime.SourceIdentityRemoveResult, error) {
+	operation := hostruntime.SourceIdentityRemoveOperation()
+	if err := operation.ValidateRequest(request); err != nil {
+		return hostruntime.SourceIdentityRemoveResult{}, err
+	}
+	identity, manager, err := r.sourceIdentityManager(request.BoxIdentity)
+	if err != nil {
+		return hostruntime.SourceIdentityRemoveResult{}, err
+	}
+	result, err := manager.Remove(ctx, source.RemoveIdentityRequest{Provider: request.Provider, ExpectedFingerprint: request.ExpectedFingerprint})
+	if err != nil {
+		return hostruntime.SourceIdentityRemoveResult{}, err
+	}
+	return hostruntime.SourceIdentityRemoveResult{SchemaVersion: hostruntime.SchemaVersion, ProtocolVersion: hostruntime.ProtocolVersion, BoxIdentity: identity, RemoveIdentityResult: result}, nil
+}
+
+func (r *Runtime) VerifySourceRepository(ctx context.Context, request hostruntime.SourceRepositoryVerifyRequest) (hostruntime.SourceRepositoryVerifyResult, error) {
+	operation := hostruntime.SourceRepositoryVerifyOperation()
+	if err := operation.ValidateRequest(request); err != nil {
+		return hostruntime.SourceRepositoryVerifyResult{}, err
+	}
+	identity, manager, err := r.sourceIdentityManager(request.BoxIdentity)
+	if err != nil {
+		return hostruntime.SourceRepositoryVerifyResult{}, err
+	}
+	result, err := manager.Verify(ctx, source.VerifyRequest{Provider: request.Provider, Repository: request.Repository})
+	if err != nil {
+		return hostruntime.SourceRepositoryVerifyResult{}, err
+	}
+	return hostruntime.SourceRepositoryVerifyResult{SchemaVersion: hostruntime.SchemaVersion, ProtocolVersion: hostruntime.ProtocolVersion, BoxIdentity: identity, VerifyResult: result}, nil
+}
+
 func (r *Runtime) AddWorktree(ctx context.Context, request hostruntime.WorktreeMutationRequest) (hostruntime.LifecycleResult, error) {
 	if err := hostruntime.WorktreeAddOperation().ValidateRequest(request); err != nil {
 		return hostruntime.LifecycleResult{}, err
@@ -458,6 +524,19 @@ func (r *Runtime) sessionManager(expectedIdentity, expectedWorktreeRoot string) 
 	}
 	manager, err := session.New(configured.WorktreeRoot, stateDirectory)
 	return manager, identity, err
+}
+
+func (r *Runtime) sourceIdentityManager(expectedIdentity string) (string, *boxgit.Manager, error) {
+	identity, err := r.operationIdentity(expectedIdentity)
+	if err != nil {
+		return "", nil, err
+	}
+	home, err := r.home()
+	if err != nil {
+		return "", nil, err
+	}
+	manager, err := boxgit.New(home)
+	return identity, manager, err
 }
 
 func runInteractive(ctx context.Context, directory, name string, args []string, terminal TerminalIO) (InteractiveResult, error) {

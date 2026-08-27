@@ -11,9 +11,10 @@ import (
 )
 
 var (
-	version = "dev"
-	commit  = "unknown"
-	builtAt = ""
+	version        = "dev"
+	commit         = "unknown"
+	builtAt        = ""
+	githubClientID = ""
 )
 
 func main() {
@@ -28,12 +29,13 @@ func main() {
 		OutIsTerminal: term.IsTerminal(int(os.Stdout.Fd())),
 		ErrIsTerminal: term.IsTerminal(int(os.Stderr.Fd())),
 	}, cli.BuildInfo{
-		Version:   version,
-		Commit:    commit,
-		BuiltAt:   builtAt,
-		GoVersion: runtime.Version(),
-		OS:        runtime.GOOS,
-		Arch:      runtime.GOARCH,
+		Version:        version,
+		Commit:         commit,
+		BuiltAt:        builtAt,
+		GoVersion:      runtime.Version(),
+		OS:             runtime.GOOS,
+		Arch:           runtime.GOARCH,
+		GitHubClientID: githubClientID,
 	})
 
 	os.Exit(code)

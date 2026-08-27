@@ -3,6 +3,7 @@ package cli
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"slices"
@@ -13,6 +14,7 @@ import (
 	"github.com/thewelshrich/schooner/internal/repository"
 	hostruntime "github.com/thewelshrich/schooner/internal/runtime"
 	"github.com/thewelshrich/schooner/internal/runtime/host"
+	"github.com/thewelshrich/schooner/internal/source"
 	uitheme "github.com/thewelshrich/schooner/internal/ui/theme"
 )
 
@@ -232,6 +234,61 @@ func newHostCommand(streams Streams, options *globalOptions) *cobra.Command {
 		},
 	})
 	cmd.AddCommand(repositoryCommand)
+	sourceCommand := &cobra.Command{Use: "source", Hidden: true, Args: cobra.NoArgs, RunE: helpRun}
+	identityCommand := &cobra.Command{Use: "identity", Hidden: true, Args: cobra.NoArgs, RunE: helpRun}
+	identityCommand.AddCommand(
+		&cobra.Command{Use: "inspect", Args: cobra.NoArgs, SilenceUsage: true, RunE: func(cmd *cobra.Command, _ []string) error {
+			operation := hostruntime.SourceIdentityInspectOperation()
+			request, err := readHostOperationRequest(streams, operation)
+			if err != nil {
+				return executionError{cause: err}
+			}
+			result, err := runtime.InspectSourceIdentity(cmd.Context(), request)
+			if err != nil {
+				return encodeSourceOperationError(cmd.OutOrStdout(), request.BoxIdentity, err)
+			}
+			return encodeHostOperationResult(cmd.OutOrStdout(), operation, request, result)
+		}},
+		&cobra.Command{Use: "ensure", Args: cobra.NoArgs, SilenceUsage: true, RunE: func(cmd *cobra.Command, _ []string) error {
+			operation := hostruntime.SourceIdentityEnsureOperation()
+			request, err := readHostOperationRequest(streams, operation)
+			if err != nil {
+				return executionError{cause: err}
+			}
+			result, err := runtime.EnsureSourceIdentity(cmd.Context(), request)
+			if err != nil {
+				return encodeSourceOperationError(cmd.OutOrStdout(), request.BoxIdentity, err)
+			}
+			return encodeHostOperationResult(cmd.OutOrStdout(), operation, request, result)
+		}},
+		&cobra.Command{Use: "remove", Args: cobra.NoArgs, SilenceUsage: true, RunE: func(cmd *cobra.Command, _ []string) error {
+			operation := hostruntime.SourceIdentityRemoveOperation()
+			request, err := readHostOperationRequest(streams, operation)
+			if err != nil {
+				return executionError{cause: err}
+			}
+			result, err := runtime.RemoveSourceIdentity(cmd.Context(), request)
+			if err != nil {
+				return encodeSourceOperationError(cmd.OutOrStdout(), request.BoxIdentity, err)
+			}
+			return encodeHostOperationResult(cmd.OutOrStdout(), operation, request, result)
+		}},
+	)
+	sourceRepositoryCommand := &cobra.Command{Use: "repository", Hidden: true, Args: cobra.NoArgs, RunE: helpRun}
+	sourceRepositoryCommand.AddCommand(&cobra.Command{Use: "verify", Args: cobra.NoArgs, SilenceUsage: true, RunE: func(cmd *cobra.Command, _ []string) error {
+		operation := hostruntime.SourceRepositoryVerifyOperation()
+		request, err := readHostOperationRequest(streams, operation)
+		if err != nil {
+			return executionError{cause: err}
+		}
+		result, err := runtime.VerifySourceRepository(cmd.Context(), request)
+		if err != nil {
+			return encodeSourceOperationError(cmd.OutOrStdout(), request.BoxIdentity, err)
+		}
+		return encodeHostOperationResult(cmd.OutOrStdout(), operation, request, result)
+	}})
+	sourceCommand.AddCommand(identityCommand, sourceRepositoryCommand)
+	cmd.AddCommand(sourceCommand)
 	worktree.AddCommand(
 		&cobra.Command{
 			Use: "add", Args: cobra.NoArgs, SilenceUsage: true,
@@ -311,6 +368,30 @@ func encodeLifecycleError(writer io.Writer, identity string, err error) error {
 		}
 		return executionError{cause: err}
 	}
+}
+
+func encodeSourceOperationError(writer io.Writer, identity string, err error) error {
+	code := source.ErrorCode(err)
+	allowed := map[string]hostruntime.Code{
+		"not_found": hostruntime.CodeNotFound, "invalid_input": hostruntime.CodeInvalidInput,
+		"conflict": hostruntime.CodeConflict, "authentication_required": hostruntime.CodeAuthentication,
+		"permission_denied": hostruntime.CodePermissionDenied, "operation_in_progress": hostruntime.CodeOperationInProgress,
+		"outcome_unknown": hostruntime.CodeOutcomeUnknown, "unsupported": hostruntime.CodeCapabilityUnavailable,
+	}
+	if runtimeCode, ok := allowed[code]; ok {
+		var domain *source.Error
+		contextValues := map[string]string(nil)
+		if errors.As(err, &domain) {
+			contextValues = domain.Context
+		}
+		return encodeHostResult(writer, hostruntime.NewOperationErrorWithContext(identity, runtimeCode, err.Error(), contextValues))
+	}
+	if hostCode := hostruntime.ErrorCode(err); hostCode != "" {
+		if slices.Contains([]hostruntime.Code{hostruntime.CodeInvalidInput, hostruntime.CodeConflict, hostruntime.CodeAuthentication, hostruntime.CodePermissionDenied, hostruntime.CodeOperationInProgress, hostruntime.CodeOutcomeUnknown}, hostCode) {
+			return encodeHostResult(writer, hostruntime.NewOperationError(identity, hostCode, err.Error()))
+		}
+	}
+	return executionError{cause: err}
 }
 
 func newDoctorCommand(streams Streams, options *globalOptions) *cobra.Command {

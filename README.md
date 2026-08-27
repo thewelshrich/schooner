@@ -125,7 +125,28 @@ schooner worktree prune --box work-api
 ```
 
 The Box user's existing Git and SSH credentials are used. Schooner does not
-store source-host credentials or require a repository configuration file.
+copy local Git credentials to a Box or require a repository configuration
+file.
+
+### Connect a Box to private GitHub repositories
+
+When the Box does not already have suitable GitHub credentials, connect a
+dedicated Box-owned SSH identity:
+
+```bash
+schooner source connect github --box work-api
+schooner source status --box work-api
+schooner source disconnect github --box work-api --yes
+```
+
+Schooner authorizes one local GitHub account through device flow. Tokens remain
+in the operating-system credential store, while each Box generates and keeps
+its own Ed25519 private key. Schooner registers only the public key, validates
+GitHub host keys from HTTPS metadata, and uses strict managed SSH settings.
+JSON and non-interactive commands never launch authorization; they return
+`authentication_required` if no stored credential can satisfy the request.
+See the [source access guide](docs/source-access.md) for permissions, status,
+recovery, and cleanup behavior.
 
 ### Start and resume persistent sessions
 
@@ -198,6 +219,10 @@ Two safety boundaries are deliberate:
 - `schooner box destroy` is a separate command available only for supported
   provider-created infrastructure.
 
+Source access is managed separately. Disconnect it before removing or
+destroying a Box. Those Box commands never call GitHub, and retained local
+source metadata permits later revocation by the former Box name.
+
 Schooner does not expose generic remote command execution or a `schooner run`
 escape hatch.
 
@@ -209,6 +234,7 @@ The technical preview currently includes:
 - provisioning and destroying DigitalOcean Droplets;
 - remote runtime setup, status, repair, and updates;
 - remote repository and Git worktree lifecycle;
+- explicit Box-owned access to private GitHub repositories;
 - persistent tmux session lifecycle; and
 - human-readable and versioned JSON output.
 
@@ -225,6 +251,7 @@ Supported remote systems are Ubuntu 24.04 and 26.04 on amd64 and arm64.
 - [Architecture](docs/architecture.md)
 - [Development guide](docs/development.md)
 - [DigitalOcean guide](docs/digitalocean.md)
+- [Private GitHub source access](docs/source-access.md)
 - [Release process](docs/releasing.md)
 - [Architecture decisions](docs/adr/)
 
