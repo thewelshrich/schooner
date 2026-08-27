@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"path"
 	"strings"
+	"unicode"
 )
 
 // RepositoryIdentity is the transport-independent identity of a network
@@ -19,6 +20,10 @@ type RepositoryIdentity struct {
 	Owner      string
 	Repository string
 	Absolute   bool
+	// Slash counts preserve generic remote-path semantics. Absolute remains the
+	// convenient single-bit observation used by callers.
+	LeadingSlashes  int
+	TrailingSlashes int
 }
 
 func (identity RepositoryIdentity) Key() string {
@@ -29,8 +34,14 @@ func (identity RepositoryIdentity) Key() string {
 	if !identity.IsGitHub() {
 		host = identity.Scheme + "://" + host
 		root := "relative"
-		if identity.Absolute {
+		leadingSlashes := identity.LeadingSlashes
+		if leadingSlashes == 0 && identity.Absolute {
+			leadingSlashes = 1
+		}
+		if leadingSlashes == 1 {
 			root = "absolute"
+		} else if leadingSlashes > 1 {
+			root = fmt.Sprintf("absolute-%d", leadingSlashes)
 		}
 		host += "/" + root
 	}
@@ -38,7 +49,7 @@ func (identity RepositoryIdentity) Key() string {
 	if identity.Owner != "" {
 		repositoryPath = identity.Owner + "/" + repositoryPath
 	}
-	return host + "/" + repositoryPath
+	return host + "/" + repositoryPath + strings.Repeat("/", identity.TrailingSlashes)
 }
 
 func (identity RepositoryIdentity) IsGitHub() bool { return identity.Host == GitHubHost }
@@ -73,7 +84,7 @@ func RepositoryIdentityFor(raw string) (identity RepositoryIdentity, network boo
 		}
 		authority, repositoryPath := raw[:separator], raw[separator+1:]
 		username, host := splitAuthority(authority)
-		if !validTransportUsername(username) {
+		if (strings.ContainsRune(authority, '@') && username == "") || !validTransportUsername(username) {
 			return RepositoryIdentity{}, true, NewError("invalid_input", "repository SSH source uses an invalid account", nil)
 		}
 		if strings.TrimSpace(host) != host {
@@ -100,6 +111,9 @@ func RepositoryIdentityFor(raw string) (identity RepositoryIdentity, network boo
 	if parsed.RawQuery != "" || parsed.Fragment != "" {
 		return RepositoryIdentity{}, true, NewError("invalid_input", "repository source must not contain query parameters or fragments", nil)
 	}
+	if containsWhitespace(raw) {
+		return RepositoryIdentity{}, true, NewError("invalid_input", "repository source URL must percent-encode whitespace", nil)
+	}
 	escapedPath := strings.ToLower(parsed.EscapedPath())
 	if strings.Contains(escapedPath, "%2f") || strings.Contains(escapedPath, "%5c") {
 		return RepositoryIdentity{}, true, NewError("invalid_input", "repository source must not contain encoded path separators", nil)
@@ -107,8 +121,11 @@ func RepositoryIdentityFor(raw string) (identity RepositoryIdentity, network boo
 	username := ""
 	if parsed.User != nil {
 		username = parsed.User.Username()
-		if _, present := parsed.User.Password(); present || (scheme != "ssh" && username != "") {
+		if _, present := parsed.User.Password(); present || scheme != "ssh" {
 			return RepositoryIdentity{}, true, NewError("invalid_input", "repository source must not contain embedded credentials", nil)
+		}
+		if username == "" {
+			return RepositoryIdentity{}, true, NewError("invalid_input", "repository SSH source uses an invalid account", nil)
 		}
 	}
 	if scheme == "ssh" && !validTransportUsername(username) {
@@ -142,16 +159,35 @@ func normalizedRepositoryIdentity(host, account, scheme, explicitPort, repositor
 	if strings.ContainsRune(repositoryPath, '\\') {
 		return RepositoryIdentity{}, true, NewError("invalid_input", "repository source has an invalid identity", nil)
 	}
-	absolute := strings.HasPrefix(repositoryPath, "/")
-	if host != GitHubHost && scheme == "ssh" && strings.HasPrefix(repositoryPath, "/~/") {
+	leadingSlashes := 0
+	for leadingSlashes < len(repositoryPath) && repositoryPath[leadingSlashes] == '/' {
+		leadingSlashes++
+	}
+	trailingSlashes := 0
+	for trailingSlashes < len(repositoryPath)-leadingSlashes && repositoryPath[len(repositoryPath)-trailingSlashes-1] == '/' {
+		trailingSlashes++
+	}
+	absolute := leadingSlashes != 0
+	if host != GitHubHost && scheme == "ssh" && leadingSlashes == 1 && strings.HasPrefix(repositoryPath, "/~") {
 		absolute = false
+		leadingSlashes = 0
 	}
 	repositoryPath = strings.Trim(repositoryPath, "/")
-	if host == GitHubHost {
-		repositoryPath = strings.TrimSuffix(repositoryPath, ".git")
+	if host == "" || repositoryPath == "" || containsControl(repositoryPath) || strings.ContainsRune(repositoryPath, '\\') {
+		return RepositoryIdentity{}, true, NewError("invalid_input", "repository source has no valid network identity", nil)
 	}
+	if host != GitHubHost {
+		parts := strings.Split(repositoryPath, "/")
+		return RepositoryIdentity{
+			Host: host, Account: account, Scheme: scheme,
+			Owner: strings.Join(parts[:len(parts)-1], "/"), Repository: parts[len(parts)-1],
+			Absolute: absolute, LeadingSlashes: leadingSlashes, TrailingSlashes: trailingSlashes,
+		}, true, nil
+	}
+
+	repositoryPath = strings.TrimSuffix(repositoryPath, ".git")
 	cleaned := path.Clean(repositoryPath)
-	if host == "" || repositoryPath == "" || cleaned != repositoryPath || cleaned == "." || strings.HasPrefix(cleaned, "../") || containsControl(cleaned) {
+	if cleaned != repositoryPath || cleaned == "." || strings.HasPrefix(cleaned, "../") {
 		return RepositoryIdentity{}, true, NewError("invalid_input", "repository source has no valid network identity", nil)
 	}
 	parts := strings.Split(cleaned, "/")
@@ -159,17 +195,14 @@ func normalizedRepositoryIdentity(host, account, scheme, explicitPort, repositor
 		return RepositoryIdentity{}, true, NewError("invalid_input", "repository source must identify a repository", nil)
 	}
 	for _, part := range parts {
-		if part == "" || part == "." || part == ".." || strings.ContainsAny(part, "@:\\") {
+		if part == "" || part == "." || part == ".." || strings.ContainsAny(part, " @:\\") {
 			return RepositoryIdentity{}, true, NewError("invalid_input", "repository source has an invalid identity", nil)
 		}
 	}
-	if host == GitHubHost {
-		if explicitPort != "" || len(parts) != 2 {
-			return RepositoryIdentity{}, true, NewError("invalid_input", "GitHub repository source is invalid", nil)
-		}
-		return RepositoryIdentity{Host: host, Owner: strings.ToLower(parts[0]), Repository: strings.ToLower(parts[1])}, true, nil
+	if explicitPort != "" || len(parts) != 2 {
+		return RepositoryIdentity{}, true, NewError("invalid_input", "GitHub repository source is invalid", nil)
 	}
-	return RepositoryIdentity{Host: host, Account: account, Scheme: scheme, Owner: strings.Join(parts[:len(parts)-1], "/"), Repository: parts[len(parts)-1], Absolute: absolute}, true, nil
+	return RepositoryIdentity{Host: host, Owner: strings.ToLower(parts[0]), Repository: strings.ToLower(parts[1])}, true, nil
 }
 
 func splitAuthority(authority string) (username, host string) {
@@ -234,6 +267,15 @@ func defaultRepositoryPort(scheme, port string) bool {
 func containsControl(value string) bool {
 	for _, character := range value {
 		if character < 0x20 || character == 0x7f {
+			return true
+		}
+	}
+	return false
+}
+
+func containsWhitespace(value string) bool {
+	for _, character := range value {
+		if unicode.IsSpace(character) {
 			return true
 		}
 	}

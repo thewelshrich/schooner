@@ -33,6 +33,10 @@ func TestRepositoryIdentityRejectsCredentialBearingAndMalformedSources(t *testin
 		"https://github.com/openai%2Fcodex.git",
 		"https://github.com/openai%5Ccodex.git",
 		"https://github.com/openai/../codex.git",
+		"ssh://@git.example/team/repo.git",
+		"@git.example:team/repo.git",
+		"https://@git.example/team/repo.git",
+		"https://git.example/team/my repo.git",
 	} {
 		if _, network, err := RepositoryIdentityFor(value); !network || err == nil {
 			t.Errorf("RepositoryIdentityFor(%q) network=%t err=%v", value, network, err)
@@ -99,10 +103,12 @@ func TestRepositoryIdentityDistinguishesGenericSSHPathRoots(t *testing.T) {
 }
 
 func TestRepositoryIdentityMatchesSSHTildeAndSCPHomeRelativePaths(t *testing.T) {
-	urlIdentity, urlNetwork, urlErr := RepositoryIdentityFor("ssh://alice@git.example/~/repo.git")
-	scpIdentity, scpNetwork, scpErr := RepositoryIdentityFor("alice@git.example:~/repo.git")
-	if urlErr != nil || scpErr != nil || !urlNetwork || !scpNetwork || urlIdentity.Key() != scpIdentity.Key() || urlIdentity.Absolute || scpIdentity.Absolute {
-		t.Fatalf("url=%+v network=%t err=%v, scp=%+v network=%t err=%v", urlIdentity, urlNetwork, urlErr, scpIdentity, scpNetwork, scpErr)
+	for _, home := range []string{"~", "~bob"} {
+		urlIdentity, urlNetwork, urlErr := RepositoryIdentityFor("ssh://alice@git.example/" + home + "/repo.git")
+		scpIdentity, scpNetwork, scpErr := RepositoryIdentityFor("alice@git.example:" + home + "/repo.git")
+		if urlErr != nil || scpErr != nil || !urlNetwork || !scpNetwork || urlIdentity.Key() != scpIdentity.Key() || urlIdentity.Absolute || scpIdentity.Absolute || urlIdentity.LeadingSlashes != 0 || scpIdentity.LeadingSlashes != 0 {
+			t.Fatalf("home=%q url=%+v network=%t err=%v, scp=%+v network=%t err=%v", home, urlIdentity, urlNetwork, urlErr, scpIdentity, scpNetwork, scpErr)
+		}
 	}
 }
 
@@ -110,6 +116,39 @@ func TestRepositoryIdentityAllowsEscapedSpacesInGenericPaths(t *testing.T) {
 	identity, network, err := RepositoryIdentityFor("https://git.example/team/my%20repo.git")
 	if err != nil || !network || identity.Owner != "team" || identity.Repository != "my repo.git" {
 		t.Fatalf("RepositoryIdentityFor()=%+v network=%t err=%v", identity, network, err)
+	}
+}
+
+func TestRepositoryIdentityAllowsURLSafePunctuationInGenericPaths(t *testing.T) {
+	for _, repository := range []string{"repo:archive.git", "repo@v2.git"} {
+		identity, network, err := RepositoryIdentityFor("https://git.example/team/" + repository)
+		if err != nil || !network || identity.Repository != repository {
+			t.Fatalf("repository=%q identity=%+v network=%t err=%v", repository, identity, network, err)
+		}
+	}
+}
+
+func TestRepositoryIdentityPreservesRepeatedGenericLeadingSlashes(t *testing.T) {
+	single, singleNetwork, singleErr := RepositoryIdentityFor("ssh://alice@git.example/team/repo.git")
+	repeated, repeatedNetwork, repeatedErr := RepositoryIdentityFor("ssh://alice@git.example//team/repo.git")
+	if singleErr != nil || repeatedErr != nil || !singleNetwork || !repeatedNetwork || single.Key() == repeated.Key() || single.LeadingSlashes != 1 || repeated.LeadingSlashes != 2 {
+		t.Fatalf("single=%+v network=%t err=%v, repeated=%+v network=%t err=%v", single, singleNetwork, singleErr, repeated, repeatedNetwork, repeatedErr)
+	}
+}
+
+func TestRepositoryIdentityPreservesGenericRemotePathShape(t *testing.T) {
+	keys := map[string]bool{}
+	for _, value := range []string{
+		"ssh://alice@git.example/team/repo.git",
+		"ssh://alice@git.example/team//repo.git",
+		"ssh://alice@git.example/team/repo.git/",
+		"ssh://alice@git.example/team/./repo.git",
+	} {
+		identity, network, err := RepositoryIdentityFor(value)
+		if err != nil || !network || keys[identity.Key()] {
+			t.Fatalf("RepositoryIdentityFor(%q)=%+v network=%t err=%v", value, identity, network, err)
+		}
+		keys[identity.Key()] = true
 	}
 }
 

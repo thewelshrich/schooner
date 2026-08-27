@@ -24,17 +24,17 @@ func cloneWithRecovery(ctx context.Context, streams Streams, global *globalOptio
 	}
 	err = ensureCloneAuthenticationReason(err)
 	if box.ErrorCode(err) != "authentication_required" {
-		return repository.MutationResult{}, withCloneSourceGuidance(err, target.BoxName())
+		return repository.MutationResult{}, withCloneSourceGuidance(err, target.BoxName(), request.Source)
 	}
 	identity, network, identityErr := source.RepositoryIdentityFor(request.Source)
 	if identityErr != nil || !network || !identity.IsGitHub() {
 		return repository.MutationResult{}, err
 	}
 	if cloneErrorReason(err) == "github_saml_sso" || cloneErrorReason(err) == "host_runtime_update_required" {
-		return repository.MutationResult{}, withCloneSourceGuidance(err, target.BoxName())
+		return repository.MutationResult{}, withCloneSourceGuidance(err, target.BoxName(), request.Source)
 	}
 	if !interactionAllowed(streams, global) {
-		return repository.MutationResult{}, withCloneSourceGuidance(err, target.BoxName())
+		return repository.MutationResult{}, withCloneSourceGuidance(err, target.BoxName(), request.Source)
 	}
 
 	confirmed, promptErr := prompts.Confirm(ctx, promptOptions(streams, global), "Connect this Box to GitHub and retry the clone?", "Connect and retry", "Cancel")
@@ -45,7 +45,7 @@ func cloneWithRecovery(ctx context.Context, streams Streams, global *globalOptio
 		return repository.MutationResult{}, promptErr
 	}
 	if !confirmed {
-		return repository.MutationResult{}, withCloneSourceGuidance(err, target.BoxName())
+		return repository.MutationResult{}, withCloneSourceGuidance(err, target.BoxName(), request.Source)
 	}
 	if connector == nil {
 		connector = func(connectCtx context.Context, connectTarget source.Target, repositoryURL string) (source.ConnectResult, error) {
@@ -65,7 +65,7 @@ func cloneWithRecovery(ctx context.Context, streams Streams, global *globalOptio
 		_ = writeWarningLine(streams.Err, terminalTheme(global, streams), connected.Warning)
 	}
 	result, err = cloneAttempt(ctx, streams, global, target, request, waitLabel)
-	return result, withCloneSourceGuidance(ensureCloneAuthenticationReason(err), target.BoxName())
+	return result, withCloneSourceGuidance(ensureCloneAuthenticationReason(err), target.BoxName(), request.Source)
 }
 
 func cloneAttempt(ctx context.Context, streams Streams, global *globalOptions, target cloneExecutionTarget, request repository.CloneRequest, waitLabel string) (result repository.MutationResult, err error) {
@@ -104,7 +104,7 @@ func cloneErrorReason(err error) string {
 	return sourceReasonContext(err)["reason"]
 }
 
-func withCloneSourceGuidance(err error, boxName string) error {
+func withCloneSourceGuidance(err error, boxName, repositoryURL string) error {
 	if err == nil {
 		return nil
 	}
@@ -118,7 +118,11 @@ func withCloneSourceGuidance(err error, boxName string) error {
 	case "host_key_changed":
 		return guidanceError{cause: err, guidance: "run `schooner source connect github --box " + firstNonEmpty(boxName, "<box>") + "` to refresh managed GitHub host trust"}
 	case "ambient_host_key_changed":
-		return guidanceError{cause: err, guidance: "inspect and repair the Box user's SSH known_hosts entry for github.com, then retry"}
+		host := "the repository host"
+		if identity, network, identityErr := source.RepositoryIdentityFor(repositoryURL); identityErr == nil && network && identity.Host != "" {
+			host = identity.Host
+		}
+		return guidanceError{cause: err, guidance: "inspect and repair the Box user's SSH known_hosts entry for " + host + ", then retry"}
 	case "host_runtime_update_required":
 		return guidanceError{cause: err, guidance: "run `schooner box update " + firstNonEmpty(boxName, "<box>") + "` to add managed GitHub clone support, then retry"}
 	case "credentials_missing":
