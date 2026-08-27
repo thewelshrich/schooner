@@ -527,6 +527,19 @@ func (l *Lifecycle) findEquivalentVersion1Clone(ctx context.Context, target, bra
 			checkoutPath = record.StagingPath
 		} else if record.Checkpoint != "complete" {
 			checkoutPath = record.StagingPath
+			if record.Checkpoint == "promote_pending" && record.StagingPath != "" {
+				if _, stageErr := os.Lstat(record.StagingPath); errors.Is(stageErr, os.ErrNotExist) {
+					inspected, inspectErr := Inspect(ctx, l.root, record.TargetPath)
+					if inspectErr != nil {
+						continue
+					}
+					origin = inspected.Repository.Origin
+					observedBranch = inspected.Worktree.Branch
+					checkoutPath = record.TargetPath
+				} else if stageErr != nil {
+					continue
+				}
+			}
 		}
 		if origin == "" {
 			continue

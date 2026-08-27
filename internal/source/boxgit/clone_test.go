@@ -138,11 +138,15 @@ func TestCloneDoesNotAttributeAmbientSAMLToManagedKey(t *testing.T) {
 }
 
 func TestCloneDoesNotInferSAMLFromRepositoryName(t *testing.T) {
-	failure := errors.New("exit 128")
-	err := classifyCloneFailure(process.Result{Stderr: []byte("Repository not found: https://github.com/owner/saml-client.git")}, failure, true, false)
-	var domain *source.Error
-	if !errors.As(err, &domain) || domain.Code != "authentication_required" || domain.Context["reason"] == "github_saml_sso" {
-		t.Fatalf("error = %#v", err)
+	for _, repository := range []string{"saml-client", "saml-sso"} {
+		t.Run(repository, func(t *testing.T) {
+			failure := errors.New("exit 128")
+			err := classifyCloneFailure(process.Result{Stderr: []byte("Repository not found: https://github.com/owner/" + repository + ".git")}, failure, true, false)
+			var domain *source.Error
+			if !errors.As(err, &domain) || domain.Code != "authentication_required" || domain.Context["reason"] == "github_saml_sso" {
+				t.Fatalf("error = %#v", err)
+			}
+		})
 	}
 }
 

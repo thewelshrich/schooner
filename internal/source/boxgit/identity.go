@@ -620,7 +620,7 @@ func verifyError(result process.Result, cause error) error {
 
 func githubSAMLDiagnostic(message string) bool {
 	message = strings.ToLower(message)
-	return strings.Contains(message, "saml") && (strings.Contains(message, "single sign-on") || strings.Contains(message, "sso"))
+	return strings.Contains(message, "saml single sign-on") || strings.Contains(message, "saml-based single sign-on") || strings.Contains(message, "saml sso")
 }
 
 var githubOrganizationPattern = regexp.MustCompile(`(?:the\s+)?['\"]([a-z0-9](?:[a-z0-9._-]{0,37}[a-z0-9])?)['\"]\s+organization`)

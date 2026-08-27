@@ -529,8 +529,16 @@ func TestLifecycleCloneV2IgnoresVersion1RecordsFromFormerRoot(t *testing.T) {
 }
 
 func TestLifecycleCloneV2ResumesPostCloneVersion1Checkpoints(t *testing.T) {
-	for _, checkpoint := range []string{"clone_finished", "promote_pending"} {
-		t.Run(checkpoint, func(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		checkpoint string
+		moved      bool
+	}{
+		{name: "clone_finished", checkpoint: "clone_finished"},
+		{name: "promote_pending", checkpoint: "promote_pending"},
+		{name: "promote_pending_after_move", checkpoint: "promote_pending", moved: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
 			root := filepath.Join(t.TempDir(), "worktrees")
 			if err := os.MkdirAll(root, 0o755); err != nil {
 				t.Fatal(err)
@@ -548,7 +556,7 @@ func TestLifecycleCloneV2ResumesPostCloneVersion1Checkpoints(t *testing.T) {
 				SchemaVersion: operationSchemaVersion,
 				ID:            legacyIntent[:24], Kind: "clone", IntentSHA256: legacyIntent,
 				TargetPath: legacyTarget, StagingPath: filepath.Join(lifecycle.root, ".schooner-stage-"+legacyIntent[:24], "Repo"),
-				Checkpoint: checkpoint, OwnershipToken: strings.Repeat("a", 64),
+				Checkpoint: test.checkpoint, OwnershipToken: strings.Repeat("a", 64),
 			}
 			if err = lifecycle.createOwnedStage(&legacy); err != nil {
 				t.Fatal(err)
@@ -557,7 +565,7 @@ func TestLifecycleCloneV2ResumesPostCloneVersion1Checkpoints(t *testing.T) {
 				t.Fatalf("git clone: %v\n%s", cloneErr, output)
 			}
 			runLifecycleGit(t, legacy.StagingPath, "remote", "set-url", "origin", origin)
-			if checkpoint == "promote_pending" {
+			if test.checkpoint == "promote_pending" {
 				inspected, inspectErr := Inspect(t.Context(), lifecycle.root, legacy.StagingPath)
 				if inspectErr != nil {
 					t.Fatal(inspectErr)
@@ -566,6 +574,11 @@ func TestLifecycleCloneV2ResumesPostCloneVersion1Checkpoints(t *testing.T) {
 			}
 			if err = lifecycle.save(&legacy); err != nil {
 				t.Fatal(err)
+			}
+			if test.moved {
+				if err = movePathNoReplace(lifecycle.root, legacy.StagingPath, legacy.TargetPath); err != nil {
+					t.Fatal(err)
+				}
 			}
 
 			recovered, recoverErr := lifecycle.CloneV2(t.Context(), CloneRequest{Source: "git@github.com:Owner/Repo.git"})
