@@ -98,6 +98,21 @@ func TestRepositoryIdentityDistinguishesGenericSSHPathRoots(t *testing.T) {
 	}
 }
 
+func TestRepositoryIdentityMatchesSSHTildeAndSCPHomeRelativePaths(t *testing.T) {
+	urlIdentity, urlNetwork, urlErr := RepositoryIdentityFor("ssh://alice@git.example/~/repo.git")
+	scpIdentity, scpNetwork, scpErr := RepositoryIdentityFor("alice@git.example:~/repo.git")
+	if urlErr != nil || scpErr != nil || !urlNetwork || !scpNetwork || urlIdentity.Key() != scpIdentity.Key() || urlIdentity.Absolute || scpIdentity.Absolute {
+		t.Fatalf("url=%+v network=%t err=%v, scp=%+v network=%t err=%v", urlIdentity, urlNetwork, urlErr, scpIdentity, scpNetwork, scpErr)
+	}
+}
+
+func TestRepositoryIdentityAllowsEscapedSpacesInGenericPaths(t *testing.T) {
+	identity, network, err := RepositoryIdentityFor("https://git.example/team/my%20repo.git")
+	if err != nil || !network || identity.Owner != "team" || identity.Repository != "my repo.git" {
+		t.Fatalf("RepositoryIdentityFor()=%+v network=%t err=%v", identity, network, err)
+	}
+}
+
 func TestRepositoryIdentityDistinguishesGenericSSHAccounts(t *testing.T) {
 	alice, aliceNetwork, aliceErr := RepositoryIdentityFor("alice@git.example:team/repo.git")
 	bob, bobNetwork, bobErr := RepositoryIdentityFor("bob@git.example:team/repo.git")

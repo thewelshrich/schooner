@@ -226,7 +226,9 @@ func (l *Lifecycle) CloneV2(ctx context.Context, request CloneRequest) (Mutation
 	if err != nil {
 		return MutationResult{}, err
 	}
-	name = identity.Repository
+	if identity.IsGitHub() {
+		name = identity.Repository
+	}
 	if l.cloneExecutor == nil {
 		return MutationResult{}, &Error{Code: CodeConflict, Message: "source transport support is unavailable on this Box"}
 	}

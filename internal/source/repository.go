@@ -143,6 +143,9 @@ func normalizedRepositoryIdentity(host, account, scheme, explicitPort, repositor
 		return RepositoryIdentity{}, true, NewError("invalid_input", "repository source has an invalid identity", nil)
 	}
 	absolute := strings.HasPrefix(repositoryPath, "/")
+	if host != GitHubHost && scheme == "ssh" && strings.HasPrefix(repositoryPath, "/~/") {
+		absolute = false
+	}
 	repositoryPath = strings.Trim(repositoryPath, "/")
 	if host == GitHubHost {
 		repositoryPath = strings.TrimSuffix(repositoryPath, ".git")
@@ -156,7 +159,7 @@ func normalizedRepositoryIdentity(host, account, scheme, explicitPort, repositor
 		return RepositoryIdentity{}, true, NewError("invalid_input", "repository source must identify a repository", nil)
 	}
 	for _, part := range parts {
-		if part == "" || part == "." || part == ".." || strings.ContainsAny(part, " @:\\") {
+		if part == "" || part == "." || part == ".." || strings.ContainsAny(part, "@:\\") {
 			return RepositoryIdentity{}, true, NewError("invalid_input", "repository source has an invalid identity", nil)
 		}
 	}
