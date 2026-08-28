@@ -15,9 +15,9 @@ and tmux sessions into one resumable workflow.
 **No account. No hosted control plane. No loss of ordinary SSH access.**
 
 > [!IMPORTANT]
-> Schooner is currently a technical preview with no tagged public release. The
-> implemented workflows are usable, but commands and stored data may change
-> before the first stable release.
+> Schooner is currently a technical preview. The implemented workflows are
+> usable, but commands and stored data may change before the first stable
+> release.
 
 ## Why Schooner?
 
@@ -86,7 +86,7 @@ schooner doctor
 
 Make sure Go's binary directory is on your `PATH`. It is normally `~/go/bin`.
 
-Tagged binaries for macOS and Linux will be published through
+Tagged binaries for macOS and Linux are published through
 [GitHub Releases](https://github.com/thewelshrich/schooner/releases). A simpler
 packaged installation path is planned before the first general release.
 
@@ -249,9 +249,9 @@ The technical preview currently includes:
 - persistent tmux session lifecycle; and
 - human-readable and versioned JSON output.
 
-The initial-release direction also includes Hetzner provisioning, local links
-and explicit synchronization, optional coding-agent sessions, private SSH
-previews, and recovery improvements. These are not all implemented yet.
+The first general-release direction also includes Hetzner provisioning, local
+links and explicit synchronization, optional coding-agent sessions, private
+SSH previews, and recovery improvements. These are not all implemented yet.
 
 Supported remote systems are Ubuntu 24.04 and 26.04 on amd64 and arm64.
 
