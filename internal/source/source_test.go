@@ -100,7 +100,7 @@ func TestCredentialStoreReadFailureNeverReauthorizes(t *testing.T) {
 	generation := store.account.CredentialGeneration
 	secrets.getErr = errors.New("keyring locked")
 
-	_, _, _, err := manager.resolveAccount(t.Context(), true)
+	_, _, _, err := manager.resolveAccount(t.Context(), true, nil)
 	if ErrorCode(err) != CodeSourceUnavailable || github.authorizeCalls != 1 || store.account.CredentialGeneration != generation {
 		t.Fatalf("err=%v authorizeCalls=%d account=%+v", err, github.authorizeCalls, store.account)
 	}
@@ -117,10 +117,33 @@ func TestInteractiveConnectReauthorizesARejectedUnexpiredToken(t *testing.T) {
 	}
 	previousGeneration := store.account.CredentialGeneration
 	github.accountErrOnce = authenticationRequired("GitHub rejected the access token")
+	confirmations := 0
 
-	result, err := manager.Connect(t.Context(), ConnectRequest{Target: target, AllowAuthorization: true})
-	if err != nil || result.State != StateConnected || github.authorizeCalls != 2 || store.account.CredentialGeneration == previousGeneration {
-		t.Fatalf("result=%+v authorizeCalls=%d account=%+v err=%v", result, github.authorizeCalls, store.account, err)
+	result, err := manager.Connect(t.Context(), ConnectRequest{Target: target, AllowAuthorization: true, BeforeAuthorization: func(_ context.Context, account RemoteAccount) error {
+		confirmations++
+		if account.ID != "42" || account.Login != "octocat" {
+			t.Fatalf("account=%+v", account)
+		}
+		return nil
+	}})
+	if err != nil || result.State != StateConnected || github.authorizeCalls != 2 || confirmations != 1 || store.account.CredentialGeneration == previousGeneration {
+		t.Fatalf("result=%+v authorizeCalls=%d confirmations=%d account=%+v err=%v", result, github.authorizeCalls, confirmations, store.account, err)
+	}
+}
+
+func TestInteractiveConnectDoesNotReauthorizeWhenConfirmationFails(t *testing.T) {
+	manager, _, _, github, target := testManager(t)
+	if _, err := manager.Connect(t.Context(), ConnectRequest{Target: target, AllowAuthorization: true}); err != nil {
+		t.Fatal(err)
+	}
+	github.accountErrOnce = authenticationRequired("GitHub rejected the access token")
+	declined := errors.New("authorization not confirmed")
+
+	_, err := manager.Connect(t.Context(), ConnectRequest{Target: target, AllowAuthorization: true, BeforeAuthorization: func(context.Context, RemoteAccount) error {
+		return declined
+	}})
+	if !errors.Is(err, declined) || github.authorizeCalls != 1 {
+		t.Fatalf("err=%v authorizeCalls=%d", err, github.authorizeCalls)
 	}
 }
 
@@ -176,12 +199,16 @@ func TestDisconnectRevokesBeforeRecoverableBoxCleanup(t *testing.T) {
 		t.Fatal(err)
 	}
 	target.removeErr = errors.New("Box unavailable")
-	result, err := manager.Disconnect(t.Context(), DisconnectRequest{Target: target})
+	var phases []DisconnectPhase
+	result, err := manager.Disconnect(t.Context(), DisconnectRequest{Target: target, RunPhase: func(phase DisconnectPhase, fn func() error) error {
+		phases = append(phases, phase)
+		return fn()
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !result.Revoked || !result.CleanupPending || result.Warning == "" || github.deleteCalls != 1 {
-		t.Fatalf("result=%+v deleteCalls=%d", result, github.deleteCalls)
+	if !result.Revoked || !result.CleanupPending || result.Warning == "" || github.deleteCalls != 1 || len(phases) != 2 || phases[0] != DisconnectPhaseRevokingKey || phases[1] != DisconnectPhaseRemovingKey {
+		t.Fatalf("result=%+v deleteCalls=%d phases=%v", result, github.deleteCalls, phases)
 	}
 	if store.identities[target.boxIdentity].State != StateCleanupPending {
 		t.Fatalf("binding=%+v", store.identities[target.boxIdentity])
@@ -194,6 +221,27 @@ func TestDisconnectRevokesBeforeRecoverableBoxCleanup(t *testing.T) {
 	}
 	if status.State != StatusNotConnected || store.account.Provider != "" || len(store.identities) != 0 {
 		t.Fatalf("status=%+v account=%+v identities=%v", status, store.account, store.identities)
+	}
+}
+
+func TestDisconnectPreviewDoesNotResumePendingCleanup(t *testing.T) {
+	manager, store, _, _, target := testManager(t)
+	if _, err := manager.Connect(t.Context(), ConnectRequest{Target: target, AllowAuthorization: true}); err != nil {
+		t.Fatal(err)
+	}
+	binding := store.identities[target.boxIdentity]
+	binding.State = StateCleanupPending
+	store.identities[target.boxIdentity] = binding
+
+	preview, err := manager.PreviewDisconnect(t.Context(), StatusRequest{Target: target})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preview.BoxName != "work" || preview.Account.Login != "octocat" || preview.RemoteKeyTitle != "Schooner / work" || !preview.LastBox {
+		t.Fatalf("preview=%+v", preview)
+	}
+	if target.removeCalls != 0 || store.identities[target.boxIdentity].State != StateCleanupPending || store.account.Provider == "" {
+		t.Fatalf("removeCalls=%d binding=%+v account=%+v", target.removeCalls, store.identities[target.boxIdentity], store.account)
 	}
 }
 
@@ -566,7 +614,7 @@ func TestMalformedStoredCredentialNeverLeaksSecretMaterial(t *testing.T) {
 	manager, store, secrets, _, _ := testManager(t)
 	store.account = Account{Provider: GitHub, ExternalID: "42", Login: "octocat", CredentialKey: "opaque", CredentialGeneration: "generation", Status: "connected"}
 	secrets.values["opaque"] = `{"schema_version":"1","generation":"generation","access_token":"must-not-leak"}`
-	_, _, _, err := manager.resolveAccount(t.Context(), false)
+	_, _, _, err := manager.resolveAccount(t.Context(), false, nil)
 	if ErrorCode(err) != "authentication_required" || strings.Contains(err.Error(), "must-not-leak") {
 		t.Fatalf("err=%v", err)
 	}
@@ -599,7 +647,7 @@ func TestInterruptedCredentialRotationNeverTrustsThePreviousEnvelope(t *testing.
 		CredentialGeneration: "new-generation", Status: "action_required",
 	}
 	secrets.values["opaque"] = `{"schema_version":"1","generation":"old-generation","access_token":"must-not-be-used","refresh_token":"refresh","access_expires_at":"2026-08-27T14:00:00Z","refresh_expires_at":"2026-08-28T14:00:00Z"}`
-	_, _, _, err := manager.resolveAccount(t.Context(), false)
+	_, _, _, err := manager.resolveAccount(t.Context(), false, nil)
 	if ErrorCode(err) != "authentication_required" || strings.Contains(err.Error(), "must-not-be-used") || store.account.Status != "action_required" {
 		t.Fatalf("err=%v account=%+v", err, store.account)
 	}
@@ -938,6 +986,7 @@ type fakeTarget struct {
 	boxIdentity       string
 	identity          HostIdentity
 	ensureCalls       int
+	removeCalls       int
 	removeErr         error
 	removeUnconfirmed bool
 	verifyErr         error
@@ -955,6 +1004,7 @@ func (f *fakeTarget) EnsureSourceIdentity(_ context.Context, request EnsureIdent
 	return f.identity, nil
 }
 func (f *fakeTarget) RemoveSourceIdentity(_ context.Context, request RemoveIdentityRequest) (RemoveIdentityResult, error) {
+	f.removeCalls++
 	if f.removeErr != nil {
 		return RemoveIdentityResult{}, f.removeErr
 	}

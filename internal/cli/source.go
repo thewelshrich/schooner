@@ -41,6 +41,7 @@ func newSourceConnectCommand(streams Streams, global *globalOptions, targets *bo
 		}
 		defer closeServices()
 		interactive := interactionAllowed(streams, global)
+		authorizationConfirmed := false
 		if interactive {
 			state, stateErr := services.sources.AuthorizationState(cmd.Context())
 			if stateErr != nil {
@@ -59,10 +60,16 @@ func newSourceConnectCommand(streams Streams, global *globalOptions, targets *bo
 				writeCancelled(streams.Out)
 				return nil
 			}
+			authorizationConfirmed = state.NeedsDeviceFlow
 		}
 		result, err := services.sources.Connect(cmd.Context(), source.ConnectRequest{
-			Target: target, AllowAuthorization: interactive, RunPhase: githubConnectPhaseRunner(cmd.Context(), streams, global, target.BoxName()),
+			Target: target, AllowAuthorization: interactive,
+			BeforeAuthorization: githubAuthorizationConfirmation(streams, global, target.BoxName(), authorizationConfirmed),
+			RunPhase:            githubConnectPhaseRunner(cmd.Context(), streams, global, target.BoxName()),
 		})
+		if errors.Is(err, prompts.ErrAborted) {
+			return abortError{cause: err}
+		}
 		if err != nil {
 			return executionError{cause: withSourceGuidance(err, target.BoxName())}
 		}
@@ -119,13 +126,11 @@ func newSourceDisconnectCommand(streams Streams, global *globalOptions, targets 
 		defer closeServices()
 		if !yes {
 			draft := prompts.GitHubDisconnectDraft{BoxName: firstNonEmpty(explicitBox, boxNameOf(target))}
-			if status, statusErr := services.sources.Status(cmd.Context(), source.StatusRequest{Target: target, BoxName: explicitBox}); statusErr == nil {
-				draft.BoxName = firstNonEmpty(status.BoxName, draft.BoxName)
-				draft.AccountLogin = status.Account.Login
-				draft.KeyTitle = status.RemoteKeyTitle
-			}
-			if count, countErr := services.sources.BindingCount(cmd.Context()); countErr == nil {
-				draft.LastBox = count == 1
+			if preview, previewErr := services.sources.PreviewDisconnect(cmd.Context(), source.StatusRequest{Target: target, BoxName: explicitBox}); previewErr == nil {
+				draft.BoxName = firstNonEmpty(preview.BoxName, draft.BoxName)
+				draft.AccountLogin = preview.Account.Login
+				draft.KeyTitle = preview.RemoteKeyTitle
+				draft.LastBox = preview.LastBox
 			}
 			confirmed, confirmErr := prompts.ConfirmGitHubDisconnect(cmd.Context(), promptOptions(streams, global), draft)
 			if errors.Is(confirmErr, prompts.ErrAborted) {
@@ -139,20 +144,10 @@ func newSourceDisconnectCommand(streams Streams, global *globalOptions, targets 
 				return nil
 			}
 		}
-		var result source.DisconnectResult
-		disconnect := func(disconnectCtx context.Context) error {
-			var disconnectErr error
-			result, disconnectErr = services.sources.Disconnect(disconnectCtx, source.DisconnectRequest{Target: target, BoxName: explicitBox, AllowAuthorization: interactive})
-			return disconnectErr
-		}
-		if interactive && global.output != "json" {
-			err = prompts.Wait(cmd.Context(), promptOptions(streams, global), "Disconnecting GitHub from "+firstNonEmpty(explicitBox, boxNameOf(target), "the Box"), disconnect)
-			if errors.Is(err, prompts.ErrAborted) {
-				return abortError{cause: err}
-			}
-		} else {
-			err = disconnect(cmd.Context())
-		}
+		result, err := services.sources.Disconnect(cmd.Context(), source.DisconnectRequest{
+			Target: target, BoxName: explicitBox, AllowAuthorization: interactive,
+			RunPhase: githubDisconnectPhaseRunner(cmd.Context(), streams, global, firstNonEmpty(explicitBox, boxNameOf(target))),
+		})
 		if err != nil {
 			return executionError{cause: err}
 		}
@@ -211,6 +206,29 @@ func githubKeyTitle(boxName string) string {
 	return "Schooner / " + firstNonEmpty(boxName, "Box")
 }
 
+func githubAuthorizationConfirmation(streams Streams, global *globalOptions, boxName string, alreadyConfirmed bool) func(context.Context, source.RemoteAccount) error {
+	if global == nil || !interactionAllowed(streams, global) {
+		return nil
+	}
+	confirmed := alreadyConfirmed
+	return func(ctx context.Context, account source.RemoteAccount) error {
+		if confirmed {
+			return nil
+		}
+		approved, err := prompts.ConfirmGitHubConnect(ctx, promptOptions(streams, global), prompts.GitHubConnectDraft{
+			BoxName: boxName, AccountLogin: account.Login, NeedsDeviceFlow: true,
+		})
+		if err != nil {
+			return err
+		}
+		if !approved {
+			return prompts.ErrAborted
+		}
+		confirmed = true
+		return nil
+	}
+}
+
 func githubConnectPhaseRunner(ctx context.Context, streams Streams, global *globalOptions, boxName string) func(source.ConnectPhase, func() error) error {
 	if global == nil || global.output == "json" || !interactionAllowed(streams, global) {
 		return nil
@@ -224,6 +242,29 @@ func githubConnectPhaseRunner(ctx context.Context, streams Streams, global *glob
 			label = "Registering the public key with GitHub…"
 		case source.ConnectPhaseVerifying:
 			label = "Checking that " + firstNonEmpty(boxName, "the Box") + " can reach GitHub…"
+		}
+		if label == "" {
+			return fn()
+		}
+		err := prompts.Wait(ctx, promptOptions(streams, global), label, func(context.Context) error { return fn() })
+		if errors.Is(err, prompts.ErrAborted) {
+			return abortError{cause: err}
+		}
+		return err
+	}
+}
+
+func githubDisconnectPhaseRunner(ctx context.Context, streams Streams, global *globalOptions, boxName string) func(source.DisconnectPhase, func() error) error {
+	if global == nil || global.output == "json" || !interactionAllowed(streams, global) {
+		return nil
+	}
+	return func(phase source.DisconnectPhase, fn func() error) error {
+		label := ""
+		switch phase {
+		case source.DisconnectPhaseRevokingKey:
+			label = "Revoking the Box key from GitHub…"
+		case source.DisconnectPhaseRemovingKey:
+			label = "Removing the SSH key from " + firstNonEmpty(boxName, "the Box") + "…"
 		}
 		if label == "" {
 			return fn()

@@ -185,6 +185,21 @@ func TestDevicePresenterRejectsUntrustedAuthorizationURL(t *testing.T) {
 	}
 }
 
+func TestGitHubAuthorizationConfirmationReconfirmsUnexpectedDeviceFlow(t *testing.T) {
+	var output bytes.Buffer
+	streams := Streams{
+		In: &oneByteReader{reader: strings.NewReader("y\n")}, Out: &output, Err: &output,
+		InIsTerminal: true, OutIsTerminal: true, ErrIsTerminal: true,
+	}
+	confirm := githubAuthorizationConfirmation(streams, &globalOptions{output: "human", accessible: true}, "work", false)
+	if err := confirm(t.Context(), source.RemoteAccount{ID: "42", Login: "octocat"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := output.String(); !strings.Contains(got, "Authorize Schooner with GitHub?") || !strings.Contains(got, "needs reauthorization") {
+		t.Fatalf("output=%q", got)
+	}
+}
+
 func TestNonInteractiveDisconnectRequiresExplicitConfirmation(t *testing.T) {
 	command := newSourceDisconnectCommand(Streams{}, &globalOptions{output: "human", noInput: true}, nil)
 	command.SetArgs([]string{source.GitHub})

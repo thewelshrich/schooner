@@ -191,10 +191,11 @@ const (
 )
 
 type ConnectRequest struct {
-	Target             Target
-	AllowAuthorization bool
-	Repository         string
-	RunPhase           func(ConnectPhase, func() error) error
+	Target              Target
+	AllowAuthorization  bool
+	Repository          string
+	BeforeAuthorization func(context.Context, RemoteAccount) error
+	RunPhase            func(ConnectPhase, func() error) error
 }
 
 type ConnectResult struct {
@@ -246,6 +247,21 @@ type DisconnectRequest struct {
 	Target             Target
 	BoxName            string
 	AllowAuthorization bool
+	RunPhase           func(DisconnectPhase, func() error) error
+}
+
+type DisconnectPhase string
+
+const (
+	DisconnectPhaseRevokingKey DisconnectPhase = "revoking_key"
+	DisconnectPhaseRemovingKey DisconnectPhase = "removing_key"
+)
+
+type DisconnectPreview struct {
+	BoxName        string
+	Account        RemoteAccount
+	RemoteKeyTitle string
+	LastBox        bool
 }
 
 type DisconnectResult struct {
@@ -313,7 +329,7 @@ func (m *Manager) Connect(ctx context.Context, request ConnectRequest) (result C
 		return ConnectResult{}, accountErr
 	}
 	newAccount := IsNotFound(accountErr)
-	token, account, warning, err := m.resolveAccount(ctx, request.AllowAuthorization)
+	token, account, warning, err := m.resolveAccount(ctx, request.AllowAuthorization, request.BeforeAuthorization)
 	if err != nil {
 		return ConnectResult{}, err
 	}
@@ -513,7 +529,7 @@ func (m *Manager) Status(ctx context.Context, request StatusRequest) (StatusResu
 		}
 	}
 
-	token, account, credentialWarning, tokenErr := m.resolveAccount(ctx, false)
+	token, account, credentialWarning, tokenErr := m.resolveAccount(ctx, false, nil)
 	if tokenErr != nil {
 		if ErrorCode(tokenErr) == "authentication_required" {
 			result.State = StatusActionRequired
@@ -698,43 +714,45 @@ func (m *Manager) Disconnect(ctx context.Context, request DisconnectRequest) (Di
 	}
 
 	if binding.State != StateCleanupPending {
-		token, account, credentialWarning, tokenErr := m.resolveAccount(ctx, request.AllowAuthorization)
+		token, account, credentialWarning, tokenErr := m.resolveAccount(ctx, request.AllowAuthorization, nil)
 		if tokenErr != nil {
 			return DisconnectResult{}, tokenErr
 		}
 		result.Warning = appendWarning(result.Warning, credentialWarning)
 		result.Account = account
-		keys, listErr := m.github.ListKeys(ctx, token.AccessToken)
-		if listErr != nil {
-			return DisconnectResult{}, listErr
-		}
-		remote, present, mismatch := findRemoteKey(keys, binding)
-		if mismatch {
-			return DisconnectResult{}, NewError("conflict", "the recorded GitHub key ID now has a different fingerprint", nil)
-		}
-		binding.State = StateDisconnecting
-		binding.UpdatedAt = m.now().UTC()
-		if err = m.store.SaveBoxSourceIdentity(ctx, binding); err != nil {
+		if err = runDisconnectPhase(request.RunPhase, DisconnectPhaseRevokingKey, func() error {
+			keys, listErr := m.github.ListKeys(ctx, token.AccessToken)
+			if listErr != nil {
+				return listErr
+			}
+			remote, present, mismatch := findRemoteKey(keys, binding)
+			if mismatch {
+				return NewError("conflict", "the recorded GitHub key ID now has a different fingerprint", nil)
+			}
+			binding.State = StateDisconnecting
+			binding.UpdatedAt = m.now().UTC()
+			if saveErr := m.store.SaveBoxSourceIdentity(ctx, binding); saveErr != nil {
+				return saveErr
+			}
+			if present {
+				if _, deleteErr := m.github.DeleteKey(ctx, token.AccessToken, remote.ID); deleteErr != nil {
+					return deleteErr
+				}
+				// A false result means GitHub observed the key already absent. Either
+				// successful response still establishes the required revoked state.
+			}
+			result.Revoked = true
+			binding.State = StateCleanupPending
+			binding.UpdatedAt = m.now().UTC()
+			if saveErr := m.store.SaveBoxSourceIdentity(ctx, binding); saveErr != nil {
+				return NewError("outcome_unknown", "GitHub access was revoked but local cleanup could not be checkpointed", saveErr)
+			}
+			result.Local.State = string(StateCleanupPending)
+			result.Remote.State = "revoked"
+			return nil
+		}); err != nil {
 			return DisconnectResult{}, err
 		}
-		if present {
-			_, deleteErr := m.github.DeleteKey(ctx, token.AccessToken, remote.ID)
-			if deleteErr != nil {
-				return DisconnectResult{}, deleteErr
-			}
-			// A false result means GitHub observed the key already absent. Either
-			// successful response still establishes the required revoked state.
-			result.Revoked = true
-		} else {
-			result.Revoked = true
-		}
-		binding.State = StateCleanupPending
-		binding.UpdatedAt = m.now().UTC()
-		if err = m.store.SaveBoxSourceIdentity(ctx, binding); err != nil {
-			return DisconnectResult{}, NewError("outcome_unknown", "GitHub access was revoked but local cleanup could not be checkpointed", err)
-		}
-		result.Local.State = string(StateCleanupPending)
-		result.Remote.State = "revoked"
 	} else {
 		result.Revoked = true
 		result.State = StatusCleanupPending
@@ -747,7 +765,12 @@ func (m *Manager) Disconnect(ctx context.Context, request DisconnectRequest) (Di
 		result.Warning = appendWarning(result.Warning, "GitHub access is revoked; re-adopt the Box to remove its now-inactive private key.")
 		return result, nil
 	}
-	removed, removeErr := target.RemoveSourceIdentity(ctx, RemoveIdentityRequest{Provider: GitHub, ExpectedFingerprint: binding.Fingerprint})
+	var removed RemoveIdentityResult
+	removeErr := runDisconnectPhase(request.RunPhase, DisconnectPhaseRemovingKey, func() error {
+		var phaseErr error
+		removed, phaseErr = target.RemoveSourceIdentity(ctx, RemoveIdentityRequest{Provider: GitHub, ExpectedFingerprint: binding.Fingerprint})
+		return phaseErr
+	})
 	if removeErr != nil {
 		result.State = StatusCleanupPending
 		result.CleanupPending = true
@@ -885,7 +908,7 @@ func (m *Manager) ensureBoxNameAvailable(ctx context.Context, boxName, boxIdenti
 	return nil
 }
 
-func (m *Manager) resolveAccount(ctx context.Context, allowAuthorization bool) (Token, RemoteAccount, string, error) {
+func (m *Manager) resolveAccount(ctx context.Context, allowAuthorization bool, beforeAuthorization func(context.Context, RemoteAccount) error) (Token, RemoteAccount, string, error) {
 	account, err := m.store.FindSourceAccount(ctx, GitHub)
 	if err != nil && !IsNotFound(err) {
 		return Token{}, RemoteAccount{}, "", err
@@ -894,20 +917,20 @@ func (m *Manager) resolveAccount(ctx context.Context, allowAuthorization bool) (
 		if !allowAuthorization {
 			return Token{}, RemoteAccount{}, "", authenticationRequired("GitHub authorization is required")
 		}
-		return m.authorize(ctx, Account{})
+		return m.authorizeAfterConfirmation(ctx, Account{}, beforeAuthorization)
 	}
 	token, persisted, tokenErr := m.loadToken(account)
 	if tokenErr != nil {
 		if ErrorCode(tokenErr) != "authentication_required" || !allowAuthorization {
 			return Token{}, RemoteAccount{}, "", tokenErr
 		}
-		return m.authorize(ctx, account)
+		return m.authorizeAfterConfirmation(ctx, account, beforeAuthorization)
 	}
 	if token.AccessToken == "" {
 		if !allowAuthorization {
 			return Token{}, RemoteAccount{}, "", authenticationRequired("the GitHub Source Account needs to be reconnected")
 		}
-		return m.authorize(ctx, account)
+		return m.authorizeAfterConfirmation(ctx, account, beforeAuthorization)
 	}
 	warning := ""
 	if account.Status == "action_required" && persisted {
@@ -927,7 +950,7 @@ func (m *Manager) resolveAccount(ctx context.Context, allowAuthorization bool) (
 			verified, verifyErr := m.github.Account(ctx, token.AccessToken)
 			if verifyErr != nil {
 				if ErrorCode(verifyErr) == "authentication_required" {
-					return m.authorize(ctx, account)
+					return m.authorizeAfterConfirmation(ctx, account, beforeAuthorization)
 				}
 				return Token{}, RemoteAccount{}, "", verifyErr
 			}
@@ -961,7 +984,17 @@ func (m *Manager) resolveAccount(ctx context.Context, allowAuthorization bool) (
 	if !allowAuthorization {
 		return Token{}, RemoteAccount{}, "", authenticationRequired("the GitHub Source Account needs to be reauthorized")
 	}
-	return m.authorize(ctx, account)
+	return m.authorizeAfterConfirmation(ctx, account, beforeAuthorization)
+}
+
+func (m *Manager) authorizeAfterConfirmation(ctx context.Context, existing Account, before func(context.Context, RemoteAccount) error) (Token, RemoteAccount, string, error) {
+	if before != nil {
+		account := RemoteAccount{ID: existing.ExternalID, Login: existing.Login}
+		if err := before(ctx, account); err != nil {
+			return Token{}, RemoteAccount{}, "", err
+		}
+	}
+	return m.authorize(ctx, existing)
 }
 
 func (m *Manager) authorize(ctx context.Context, existing Account) (Token, RemoteAccount, string, error) {
@@ -1222,7 +1255,38 @@ func (m *Manager) BindingCount(ctx context.Context) (int, error) {
 	return len(bindings), nil
 }
 
+// PreviewDisconnect returns the safe local metadata needed for confirmation.
+// It does not inspect or mutate the Box, call GitHub, or resume pending cleanup.
+func (m *Manager) PreviewDisconnect(ctx context.Context, request StatusRequest) (DisconnectPreview, error) {
+	binding, _, err := m.resolveBinding(ctx, request.Target, request.BoxName)
+	if err != nil {
+		return DisconnectPreview{}, err
+	}
+	preview := DisconnectPreview{BoxName: binding.BoxName, RemoteKeyTitle: binding.RemoteKeyTitle}
+	if account, accountErr := m.store.FindSourceAccount(ctx, GitHub); accountErr == nil {
+		preview.Account = RemoteAccount{ID: account.ExternalID, Login: account.Login}
+		if !validRemoteAccount(preview.Account) {
+			return DisconnectPreview{}, NewError("conflict", "stored GitHub account metadata is invalid", nil)
+		}
+	} else if !IsNotFound(accountErr) {
+		return DisconnectPreview{}, accountErr
+	}
+	bindings, err := m.store.ListBoxSourceIdentities(ctx, GitHub)
+	if err != nil {
+		return DisconnectPreview{}, err
+	}
+	preview.LastBox = len(bindings) == 1
+	return preview, nil
+}
+
 func runConnectPhase(runner func(ConnectPhase, func() error) error, phase ConnectPhase, fn func() error) error {
+	if runner == nil {
+		return fn()
+	}
+	return runner(phase, fn)
+}
+
+func runDisconnectPhase(runner func(DisconnectPhase, func() error) error, phase DisconnectPhase, fn func() error) error {
 	if runner == nil {
 		return fn()
 	}

@@ -56,6 +56,7 @@ func cloneWithRecovery(ctx context.Context, streams Streams, global *globalOptio
 	}
 
 	draft := prompts.GitHubConnectDraft{BoxName: target.BoxName(), NeedsDeviceFlow: true}
+	var beforeAuthorization func(context.Context, source.RemoteAccount) error
 	if connector == nil {
 		services, closeServices, openErr := openApplication(ctx, streams, global)
 		if openErr != nil {
@@ -69,7 +70,8 @@ func cloneWithRecovery(ctx context.Context, streams Streams, global *globalOptio
 		connector = func(connectCtx context.Context, connectTarget source.Target, repositoryURL string) (source.ConnectResult, error) {
 			return services.sources.Connect(connectCtx, source.ConnectRequest{
 				Target: connectTarget, AllowAuthorization: true, Repository: repositoryURL,
-				RunPhase: githubConnectPhaseRunner(connectCtx, streams, global, connectTarget.BoxName()),
+				BeforeAuthorization: beforeAuthorization,
+				RunPhase:            githubConnectPhaseRunner(connectCtx, streams, global, connectTarget.BoxName()),
 			})
 		}
 	}
@@ -83,8 +85,12 @@ func cloneWithRecovery(ctx context.Context, streams Streams, global *globalOptio
 	if !confirmed {
 		return repository.MutationResult{}, abortError{cause: prompts.ErrAborted}
 	}
+	beforeAuthorization = githubAuthorizationConfirmation(streams, global, target.BoxName(), draft.NeedsDeviceFlow)
 
 	connected, connectErr := connector(ctx, target, identity.CanonicalSSH())
+	if errors.Is(connectErr, prompts.ErrAborted) {
+		return repository.MutationResult{}, abortError{cause: connectErr}
+	}
 	if connectErr != nil {
 		return repository.MutationResult{}, withSourceGuidance(connectErr, target.BoxName())
 	}
