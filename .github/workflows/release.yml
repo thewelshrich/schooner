@@ -260,8 +260,12 @@ jobs:
           certificate_path="${RUNNER_TEMP}/developer-id-application.p12"
           intermediate_path="${RUNNER_TEMP}/DeveloperIDG2CA.cer"
           keychain_path="${RUNNER_TEMP}/schooner-signing.keychain-db"
+          original_keychains_path="${RUNNER_TEMP}/original-user-keychains.txt"
           keychain_password="$(openssl rand -hex 32)"
           echo "SIGNING_KEYCHAIN=${keychain_path}" >> "${GITHUB_ENV}"
+
+          security list-keychains -d user | \
+            sed -E 's/^[[:space:]]*"([^"]+)"[[:space:]]*$/\1/' > "${original_keychains_path}"
 
           printf '%s' "${CERTIFICATE_BASE64}" | base64 --decode > "${certificate_path}"
           curl --fail --silent --show-error --location \
@@ -314,6 +318,23 @@ jobs:
             exit 1
           fi
 
+          original_keychains=()
+          while IFS= read -r original_keychain; do
+            [[ -n "${original_keychain}" ]] && original_keychains+=("${original_keychain}")
+          done < "${original_keychains_path}"
+          security list-keychains \
+            -d user \
+            -s "${keychain_path}" "${original_keychains[@]}"
+
+          search_identity_count="$(
+            security find-identity -v -p codesigning | \
+              awk -v expected="${identity_hash}" '$2 == expected {count++} END {print count+0}'
+          )"
+          if [[ "${search_identity_count}" != "1" ]]; then
+            echo "Developer ID identity is unavailable through the Keychain search list" >&2
+            exit 1
+          fi
+
           {
             echo "SIGNING_IDENTITY=${identity_hash}"
           } >> "${GITHUB_ENV}"
@@ -328,7 +349,6 @@ jobs:
             codesign \
               --force \
               --sign "${SIGNING_IDENTITY}" \
-              --keychain "${SIGNING_KEYCHAIN}" \
               --options runtime \
               --timestamp \
               --identifier app.schooner.cli \
@@ -410,13 +430,22 @@ jobs:
       - name: Delete temporary signing material
         if: always()
         run: |
+          original_keychains_path="${RUNNER_TEMP}/original-user-keychains.txt"
+          if [[ -f "${original_keychains_path}" ]]; then
+            original_keychains=()
+            while IFS= read -r original_keychain; do
+              [[ -n "${original_keychain}" ]] && original_keychains+=("${original_keychain}")
+            done < "${original_keychains_path}"
+            security list-keychains -d user -s "${original_keychains[@]}" || true
+          fi
           if [[ -n "${SIGNING_KEYCHAIN:-}" ]]; then
             security delete-keychain "${SIGNING_KEYCHAIN}" || true
           fi
           rm -f \
             "${RUNNER_TEMP}/developer-id-application.p12" \
             "${RUNNER_TEMP}/DeveloperIDG2CA.cer" \
-            "${RUNNER_TEMP}/notary-api-key.p8"
+            "${RUNNER_TEMP}/notary-api-key.p8" \
+            "${original_keychains_path}"
 
   bundle:
     name: Verify and bundle artifacts

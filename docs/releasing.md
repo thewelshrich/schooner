@@ -171,11 +171,14 @@ protected `v*` tags: manual signed builds use current `main`, while publication
 and recovery use the matching version tag. Require approval if the repository's
 GitHub plan supports it.
 
-The workflow imports the signing identity into a temporary Keychain, signs both
-Mac architectures with the hardened runtime and a secure timestamp, and deletes
-the temporary credential files after the job. It downloads and validates the
-notarization log and retains that log as a private workflow artifact for 90
-days. A failed or delayed notarization prevents bundling and publication.
+The workflow imports the signing identity into a temporary Keychain, adds that
+Keychain to the runner's search list so `codesign` can combine the private key
+with Apple's system certificate chain, and restores the original search list
+during cleanup. It signs both Mac architectures with the hardened runtime and a
+secure timestamp, then deletes the temporary credential files. It downloads and
+validates the notarization log and retains that log as a private workflow
+artifact for 90 days. A failed or delayed notarization prevents bundling and
+publication.
 
 Apple cannot staple a notarization ticket directly to a standalone executable
 or ZIP archive. Gatekeeper retrieves the ticket from Apple when a downloaded

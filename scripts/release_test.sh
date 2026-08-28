@@ -23,6 +23,13 @@ require_workflow_invariant() {
   fi
 }
 
+reject_workflow_invariant() {
+  local invariant="$1"
+  if grep -Fq -- "${invariant}" "${workflow_under_test}"; then
+    fail "release workflow contains forbidden invariant: ${invariant}"
+  fi
+}
+
 make_fixture() {
   local name="$1"
   local fixture="${test_tmp}/${name}"
@@ -104,6 +111,10 @@ require_workflow_invariant "release tag target does not match the workflow ref"
 require_workflow_invariant "release tag must point to a commit contained in main"
 require_workflow_invariant "expected_intermediate_sha256="
 require_workflow_invariant "grep -Fxq \"\${expected_intermediate_sha256}\""
+require_workflow_invariant 'security list-keychains -d user | \'
+require_workflow_invariant '-s "${keychain_path}" "${original_keychains[@]}"'
+require_workflow_invariant "Developer ID identity is unavailable through the Keychain search list"
+reject_workflow_invariant '--keychain "${SIGNING_KEYCHAIN}"'
 require_workflow_invariant "if: needs.prepare.outputs.publish == 'true'"
 require_workflow_invariant 'ref: ${{ needs.prepare.outputs.version }}'
 require_workflow_invariant "existing release is not the expected resumable draft"
