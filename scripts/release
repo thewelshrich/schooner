@@ -1,0 +1,209 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+Usage: scripts/release [--dry-run] [--yes] --notes-file PATH VERSION
+
+Validate the current main commit, run release checks, create an annotated
+v-prefixed semantic-version tag containing the approved release notes, and push
+only that tag to origin.
+
+Options:
+  --notes-file PATH  Markdown narrative to prepend to GitHub-generated notes
+  --dry-run          Validate and run checks without creating or pushing a tag
+  --yes              Skip the final interactive confirmation
+  -h, --help         Show this help
+USAGE
+}
+
+fail() {
+  printf 'release: %s\n' "$*" >&2
+  exit 1
+}
+
+validate_version() {
+  local value="$1"
+  local semver='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
+  if [[ ! "${value}" =~ ${semver} ]]; then
+    fail "version must be a v-prefixed semantic version"
+  fi
+
+  local without_build="${value%%+*}"
+  if [[ "${without_build}" == *-* ]]; then
+    local prerelease="${without_build#*-}"
+    local identifiers=()
+    IFS='.' read -r -a identifiers <<< "${prerelease}"
+    local identifier
+    for identifier in "${identifiers[@]}"; do
+      if [[ "${identifier}" =~ ^[0-9]+$ && "${#identifier}" -gt 1 && "${identifier}" == 0* ]]; then
+        fail "numeric prerelease identifiers must not contain leading zeroes"
+      fi
+    done
+  fi
+}
+
+absolute_file() {
+  local path="$1"
+  local directory
+  directory="$(cd "$(dirname "${path}")" && pwd -P)"
+  printf '%s/%s\n' "${directory}" "$(basename "${path}")"
+}
+
+version=""
+notes_file=""
+dry_run=false
+assume_yes=false
+
+while (( $# > 0 )); do
+  case "$1" in
+    --notes-file)
+      (( $# >= 2 )) || fail "--notes-file requires a path"
+      notes_file="$2"
+      shift 2
+      ;;
+    --dry-run)
+      dry_run=true
+      shift
+      ;;
+    --yes)
+      assume_yes=true
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --)
+      shift
+      (( $# == 1 )) || fail "expected exactly one version"
+      version="$1"
+      shift
+      ;;
+    -*)
+      fail "unknown option: $1"
+      ;;
+    *)
+      [[ -z "${version}" ]] || fail "expected exactly one version"
+      version="$1"
+      shift
+      ;;
+  esac
+done
+
+[[ -n "${version}" ]] || fail "a version is required"
+[[ -n "${notes_file}" ]] || fail "--notes-file is required"
+[[ -f "${notes_file}" ]] || fail "release notes file does not exist: ${notes_file}"
+notes_file="$(absolute_file "${notes_file}")"
+if [[ -z "$(tr -d '[:space:]' < "${notes_file}")" ]]; then
+  fail "release notes file must contain non-whitespace content"
+fi
+validate_version "${version}"
+
+command -v git >/dev/null 2>&1 || fail "git is required"
+command -v go >/dev/null 2>&1 || fail "go is required"
+
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || fail "run this command inside the Schooner repository"
+cd "${repo_root}"
+notes_object="$(git hash-object --no-filters "${notes_file}")"
+
+current_branch="$(git symbolic-ref --quiet --short HEAD 2>/dev/null)" || fail "releases must run from a branch, not detached HEAD"
+[[ "${current_branch}" == "main" ]] || fail "releases must run from main (current branch: ${current_branch})"
+
+if [[ -n "$(git status --porcelain --untracked-files=all)" ]]; then
+  fail "working tree must be clean before a release"
+fi
+
+git remote get-url origin >/dev/null 2>&1 || fail "origin remote is required"
+printf 'Fetching origin/main and release tags...\n'
+git fetch --prune --tags origin main
+
+head_commit="$(git rev-parse HEAD^{commit})"
+main_commit="$(git rev-parse refs/remotes/origin/main^{commit})"
+if [[ "${head_commit}" != "${main_commit}" ]]; then
+  fail "main must exactly match origin/main before a release"
+fi
+
+remote_tag="$(git ls-remote --tags origin "refs/tags/${version}")"
+if [[ -n "${remote_tag}" ]]; then
+  fail "tag already exists on origin: ${version}"
+fi
+
+existing_local_tag=false
+if git show-ref --verify --quiet "refs/tags/${version}"; then
+  [[ "$(git cat-file -t "refs/tags/${version}")" == "tag" ]] || fail "existing local tag is not annotated: ${version}"
+  [[ "$(git rev-parse "refs/tags/${version}^{commit}")" == "${head_commit}" ]] || fail "existing local tag does not point to HEAD: ${version}"
+  requested_notes="$(<"${notes_file}")"
+  existing_notes="$(git for-each-ref --format='%(contents)' "refs/tags/${version}")"
+  [[ "${existing_notes}" == "${requested_notes}" ]] || fail "existing local tag notes differ from ${notes_file}"
+  existing_local_tag=true
+fi
+
+release_tmp="$(mktemp -d "${repo_root}/.schooner-release.XXXXXX")"
+cleanup() {
+  if [[ -n "${release_tmp:-}" && -d "${release_tmp}" ]]; then
+    rm -rf -- "${release_tmp}"
+  fi
+}
+trap cleanup EXIT
+
+printf 'Running release checks...\n'
+go build -o "${release_tmp}/schooner" ./cmd/schooner
+go test ./...
+go vet ./...
+git diff --check
+cleanup
+trap - EXIT
+
+previous_tag="$(git describe --tags --abbrev=0 --match 'v[0-9]*' HEAD 2>/dev/null || true)"
+if [[ "${previous_tag}" == "${version}" ]]; then
+  previous_tag="$(git describe --tags --abbrev=0 --match 'v[0-9]*' "${version}^" 2>/dev/null || true)"
+fi
+
+printf '\nRelease: %s\nCommit:  %s\n' "${version}" "${head_commit}"
+if [[ -n "${previous_tag}" ]]; then
+  printf 'Previous: %s\n\nCommits since %s:\n' "${previous_tag}" "${previous_tag}"
+  git log --oneline "${previous_tag}..${head_commit}"
+else
+  printf 'Previous: none (first release)\n\nCommits in the first release:\n'
+  git log --oneline "${head_commit}"
+fi
+printf '\nApproved release notes:\n\n'
+sed -n '1,$p' "${notes_file}"
+printf '\n'
+
+if [[ "${dry_run}" == true ]]; then
+  printf 'Dry run complete; no tag was created or pushed.\n'
+  exit 0
+fi
+
+if [[ "${assume_yes}" != true ]]; then
+  [[ -t 0 ]] || fail "confirmation requires a terminal; rerun interactively or pass --yes after approval"
+  read -r -p "Create and push ${version}? [y/N] " confirmation
+  case "${confirmation}" in
+    y|Y|yes|YES|Yes) ;;
+    *) fail "release cancelled" ;;
+  esac
+fi
+
+if [[ "$(git hash-object --no-filters "${notes_file}")" != "${notes_object}" ]]; then
+  fail "release notes changed during validation; review them and rerun"
+fi
+if [[ "$(git rev-parse HEAD^{commit})" != "${head_commit}" || -n "$(git status --porcelain --untracked-files=all)" ]]; then
+  fail "repository changed during validation; review it and rerun"
+fi
+
+if [[ "${existing_local_tag}" != true ]]; then
+  git tag --annotate --cleanup=verbatim --file "${notes_file}" "${version}" "${head_commit}"
+  printf 'Created annotated tag %s.\n' "${version}"
+else
+  printf 'Reusing matching local annotated tag %s.\n' "${version}"
+fi
+
+if ! git push origin "refs/tags/${version}"; then
+  printf 'release: push failed; matching local tag %s was kept for a safe retry\n' "${version}" >&2
+  exit 1
+fi
+
+printf 'Pushed %s. GitHub Actions will build, sign, notarize, attest, and publish the release.\n' "${version}"

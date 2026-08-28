@@ -1,0 +1,4 @@
+interface:
+  display_name: "Schooner Release"
+  short_description: "Prepare and publish a verified Schooner release"
+  default_prompt: "Use $schooner-release to prepare the next Schooner version and release notes for my approval."
