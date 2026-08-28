@@ -24,6 +24,11 @@ its branch. When no match exists and the local origin is safely cloneable,
 Schooner reviews local-only state and offers to clone the origin's default
 branch before starting a managed Session.
 
+Contextual clone uses the same durable source-aware recovery flow as the clone
+command. Interactive human use retains the review and confirmation. A
+non-interactive invocation may use already available Box or managed source
+credentials, but never authorizes a Source Account or registers a new Box key.
+
 Without a selector, `resume` treats a detected local Repository as binding
 context. It chooses only a managed live Session associated with a matching
 Repository, ordered by tmux activity, creation time, and tmux ID. If none

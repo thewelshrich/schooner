@@ -605,7 +605,7 @@ func keyBody(value string) string {
 
 func verifyError(result process.Result, cause error) error {
 	message := strings.ToLower(string(result.Stdout) + "\n" + string(result.Stderr))
-	if strings.Contains(message, "saml") || strings.Contains(message, "single sign-on") {
+	if githubSAMLDiagnostic(message) {
 		contextValues := map[string]string{"reason": "github_saml_sso"}
 		if organization := githubOrganization(message); organization != "" {
 			contextValues["organization"] = organization
@@ -616,6 +616,11 @@ func verifyError(result process.Result, cause error) error {
 		return &source.Error{Code: "conflict", Message: "GitHub SSH host-key verification failed", Context: map[string]string{"reason": "host_key_changed"}, Cause: cause}
 	}
 	return source.NewError("authentication_required", "GitHub SSH access verification failed", cause)
+}
+
+func githubSAMLDiagnostic(message string) bool {
+	message = strings.ToLower(message)
+	return strings.Contains(message, "saml single sign-on") || strings.Contains(message, "saml-based single sign-on") || strings.Contains(message, "saml sso")
 }
 
 var githubOrganizationPattern = regexp.MustCompile(`(?:the\s+)?['\"]([a-z0-9](?:[a-z0-9._-]{0,37}[a-z0-9])?)['\"]\s+organization`)

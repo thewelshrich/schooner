@@ -29,6 +29,7 @@ const (
 	CapabilityOriginIdentityV1         = "repository.identity.v1"
 	CapabilityWorktreeInspectV1        = "worktree.inspect.v1"
 	CapabilityRepositoryCloneV1        = "repository.clone.v1"
+	CapabilityRepositoryCloneV2        = "repository.clone.v2"
 	CapabilitySourceIdentityInspectV1  = "source.identity.inspect.v1"
 	CapabilitySourceIdentityEnsureV1   = "source.identity.ensure.v1"
 	CapabilitySourceIdentityRemoveV1   = "source.identity.remove.v1"
@@ -360,7 +361,7 @@ func validOperationErrorContext(key, value string) bool {
 	}
 	switch key {
 	case "reason":
-		return slices.Contains([]string{"credentials_missing", "github_saml_sso", "host_key_changed"}, value)
+		return slices.Contains([]string{"ambient_host_key_changed", "credentials_missing", "github_saml_sso", "host_key_changed"}, value)
 	case "organization":
 		return platformPattern.MatchString(value)
 	default:

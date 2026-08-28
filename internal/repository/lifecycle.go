@@ -20,6 +20,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/thewelshrich/schooner/internal/process"
+	"github.com/thewelshrich/schooner/internal/source"
 )
 
 const operationSchemaVersion = 1
@@ -45,12 +46,14 @@ type Lifecycle struct {
 	worktreeLocks string
 	inUse         WorktreeUse
 	commands      mutationRunner
+	cloneExecutor source.CloneExecutor
 	now           func() time.Time
 }
 
 type LifecycleOptions struct {
 	NonInteractive             bool
 	WorktreeLockStateDirectory string
+	CloneExecutor              source.CloneExecutor
 }
 
 // MutationLock serializes Worktree removal with future managed Session starts.
@@ -110,6 +113,7 @@ type operationRecord struct {
 	Branch            string    `json:"branch,omitempty"`
 	HEAD              string    `json:"head,omitempty"`
 	Origin            string    `json:"origin,omitempty"`
+	SuppliedOrigin    string    `json:"supplied_origin,omitempty"`
 	Detached          bool      `json:"detached,omitempty"`
 	OwnershipToken    string    `json:"ownership_token,omitempty"`
 	RefSHA256         string    `json:"ref_sha256,omitempty"`
@@ -123,19 +127,15 @@ type mutationRunner interface {
 	Run(context.Context, string, ...string) (process.Result, error)
 }
 
-type osMutationRunner struct{ nonInteractive bool }
+type osMutationRunner struct{}
 
-func gitMutationEnvironment(nonInteractive bool) []string {
-	environment := []string{"LC_ALL=C", "LANG=C"}
-	if !nonInteractive {
-		return environment
-	}
-	return append(environment, "GIT_TERMINAL_PROMPT=0", "GCM_INTERACTIVE=never", "GIT_SSH_COMMAND=ssh -o BatchMode=yes", "GIT_SSH_VARIANT=ssh")
+func gitMutationEnvironment(_ bool) []string {
+	return []string{"LC_ALL=C", "LANG=C", "GIT_TERMINAL_PROMPT=0", "GCM_INTERACTIVE=never", "SSH_ASKPASS_REQUIRE=never", "GIT_SSH_COMMAND=ssh -o BatchMode=yes", "GIT_SSH_VARIANT=ssh"}
 }
 
 func (runner osMutationRunner) Run(ctx context.Context, name string, args ...string) (process.Result, error) {
 	return process.RunCapturedWithoutEnvironment(ctx, maxOutputBytes, gitRepositoryEnvironment,
-		gitMutationEnvironment(runner.nonInteractive), name, args...)
+		gitMutationEnvironment(true), name, args...)
 }
 
 func NewLifecycle(worktreeRoot, stateDirectory string, inUse WorktreeUse) (*Lifecycle, error) {
@@ -157,7 +157,7 @@ func NewLifecycleWithOptions(worktreeRoot, stateDirectory string, inUse Worktree
 	if !filepath.IsAbs(worktreeLocks) || filepath.Clean(worktreeLocks) != worktreeLocks {
 		return nil, &Error{Code: CodeInvalidInput, Message: "Worktree lock state directory must be a canonical absolute path"}
 	}
-	return &Lifecycle{root: root, state: stateDirectory, worktreeLocks: worktreeLocks, inUse: inUse, commands: osMutationRunner{nonInteractive: options.NonInteractive}, now: time.Now}, nil
+	return &Lifecycle{root: root, state: stateDirectory, worktreeLocks: worktreeLocks, inUse: inUse, commands: osMutationRunner{}, cloneExecutor: options.CloneExecutor, now: time.Now}, nil
 }
 
 func DefaultOperationStateDirectory() (string, error) {
@@ -192,7 +192,7 @@ func WorktreeLockStateDirectory(home string) (string, error) {
 }
 
 func (l *Lifecycle) Clone(ctx context.Context, request CloneRequest) (MutationResult, error) {
-	source, name, err := validateCloneSource(request.Source)
+	cloneSource, name, err := validateCloneSource(request.Source)
 	if err != nil {
 		return MutationResult{}, err
 	}
@@ -203,8 +203,119 @@ func (l *Lifecycle) Clone(ctx context.Context, request CloneRequest) (MutationRe
 	if err != nil {
 		return MutationResult{}, err
 	}
-	intent := fingerprint("clone", target, source, request.Branch)
-	return l.withOperation(ctx, "clone", target, intent, func(record *operationRecord, recovered bool) (MutationResult, error) {
+	intent := fingerprint("clone", target, cloneSource, request.Branch)
+	return l.clone(ctx, request, cloneSource, target, intent, source.RepositoryIdentity{})
+}
+
+// CloneV2 keys durable network clone intent by Repository Identity and lets
+// the source module select operation-scoped transports. Local path clones keep
+// version-1 lifecycle behavior for compatibility.
+func (l *Lifecycle) CloneV2(ctx context.Context, request CloneRequest) (MutationResult, error) {
+	cloneSource, name, err := validateCloneSource(request.Source)
+	if err != nil {
+		return MutationResult{}, err
+	}
+	identity, network, identityErr := source.RepositoryIdentityFor(cloneSource)
+	if identityErr != nil {
+		return MutationResult{}, repositoryError(identityErr)
+	}
+	if !network {
+		return l.Clone(ctx, request)
+	}
+	legacyTarget, err := l.newPath(name)
+	if err != nil {
+		return MutationResult{}, err
+	}
+	if identity.IsGitHub() {
+		name = identity.Repository
+	}
+	if l.cloneExecutor == nil {
+		return MutationResult{}, &Error{Code: CodeConflict, Message: "source transport support is unavailable on this Box"}
+	}
+	if err = validateRef(request.Branch); err != nil {
+		return MutationResult{}, err
+	}
+	target, err := l.newPath(name)
+	if err != nil {
+		return MutationResult{}, err
+	}
+	var legacyResult MutationResult
+	var legacyComplete, resumeLegacy bool
+	var legacyResumeIntent string
+	if identity.IsGitHub() {
+		exactIntent := fingerprint("clone", legacyTarget, cloneSource, request.Branch)
+		exactRecord, exact, loadErr := l.load(exactIntent)
+		if loadErr != nil {
+			return MutationResult{}, loadErr
+		}
+		retireExact := exact && (exactRecord.Checkpoint == "requested" || exactRecord.Checkpoint == "clone_pending")
+		if retireExact {
+			exactLock, lockErr := acquireMutationLock(l.state, legacyTarget)
+			if lockErr != nil {
+				return MutationResult{}, lockErr
+			}
+			cloneSource, legacyResumeIntent, legacyResult, legacyComplete, resumeLegacy, err = l.reconcileVersion1Clone(ctx, legacyTarget, cloneSource, request.Branch, identity)
+			closeErr := exactLock.Close()
+			if err != nil {
+				return MutationResult{}, err
+			}
+			if closeErr != nil {
+				return MutationResult{}, closeErr
+			}
+			if legacyComplete {
+				return legacyResult, nil
+			}
+			if resumeLegacy {
+				return l.clone(ctx, request, cloneSource, legacyTarget, legacyResumeIntent, source.RepositoryIdentity{})
+			}
+		}
+		if !exact || exactRecord.Checkpoint == "aborted" || retireExact {
+			if equivalent, _, found, findErr := l.findEquivalentVersion1Clone(ctx, "", request.Branch, identity); findErr != nil {
+				return MutationResult{}, findErr
+			} else if found {
+				legacyTarget = equivalent.TargetPath
+			}
+		}
+	}
+	legacyLock, lockErr := acquireMutationLock(l.state, legacyTarget)
+	if lockErr != nil {
+		return MutationResult{}, lockErr
+	}
+	cloneSource, legacyResumeIntent, legacyResult, legacyComplete, resumeLegacy, err = l.reconcileVersion1Clone(ctx, legacyTarget, cloneSource, request.Branch, identity)
+	closeErr := legacyLock.Close()
+	if err != nil {
+		return MutationResult{}, err
+	}
+	if closeErr != nil {
+		return MutationResult{}, closeErr
+	}
+	if legacyComplete {
+		return legacyResult, nil
+	}
+	if resumeLegacy {
+		return l.clone(ctx, request, cloneSource, legacyTarget, legacyResumeIntent, source.RepositoryIdentity{})
+	}
+	intent := fingerprint("clone.v2", target, identity.Key(), request.Branch)
+	return l.clone(ctx, request, cloneSource, target, intent, identity)
+}
+
+func (l *Lifecycle) clone(ctx context.Context, request CloneRequest, cloneSource, target, intent string, identity source.RepositoryIdentity) (MutationResult, error) {
+	var err error
+	lock, err := acquireMutationLock(l.state, target)
+	if err != nil {
+		return MutationResult{}, err
+	}
+	defer func() { _ = lock.Close() }()
+	return l.withOperationLocked(ctx, "clone", target, intent, func(record *operationRecord, recovered bool) (MutationResult, error) {
+		if identity.Host != "" {
+			if record.SuppliedOrigin == "" {
+				record.SuppliedOrigin = cloneSource
+				if err := l.save(record); err != nil {
+					return MutationResult{}, err
+				}
+			}
+			cloneSource = record.SuppliedOrigin
+		}
 		if record.Checkpoint == "complete" {
 			if inspected, inspectErr := Inspect(ctx, l.root, target); inspectErr == nil && cloneMatchesRecord(inspected, record, target) {
 				return MutationResult{Action: "clone", Recovered: true, WorktreeRoot: l.root, Inspection: &inspected, Path: inspected.Worktree.Path}, nil
@@ -240,25 +351,41 @@ func (l *Lifecycle) Clone(ctx context.Context, request CloneRequest) (MutationRe
 			return MutationResult{}, err
 		}
 		if _, inspectErr := Inspect(ctx, l.root, record.StagingPath); inspectErr != nil {
-			if err = l.validateDiscoverableTarget(ctx, target, false); err != nil {
-				return MutationResult{}, err
-			}
-			if removeErr := removeOwnedStage(record); removeErr != nil {
-				return MutationResult{}, removeErr
-			}
-			if err = l.createOwnedStage(record); err != nil {
-				return MutationResult{}, err
-			}
 			record.Checkpoint = "clone_pending"
 			if err = l.save(record); err != nil {
 				return MutationResult{}, err
 			}
-			args := []string{"-C", l.root, "clone"}
-			if request.Branch != "" {
-				args = append(args, "--branch", request.Branch)
+			prepare := func() error {
+				if prepareErr := l.validateDiscoverableTarget(ctx, target, false); prepareErr != nil {
+					return prepareErr
+				}
+				if removeErr := removeOwnedStage(record); removeErr != nil {
+					return removeErr
+				}
+				return l.createOwnedStage(record)
 			}
-			args = append(args, "--", source, record.StagingPath)
-			if _, err = l.runGit(ctx, args...); err != nil {
+			if identity.Host == "" {
+				if err = prepare(); err == nil {
+					args := []string{"-C", l.root, "clone"}
+					if request.Branch != "" {
+						args = append(args, "--branch", request.Branch)
+					}
+					args = append(args, "--", cloneSource, record.StagingPath)
+					_, err = l.runGit(ctx, args...)
+				}
+			} else {
+				err = l.cloneExecutor.Clone(ctx, source.CloneExecution{
+					Repository: identity, SuppliedOrigin: cloneSource, Branch: request.Branch,
+					WorktreeRoot: l.root, Destination: record.StagingPath,
+				}, prepare)
+				if err != nil {
+					var lifecycleError *Error
+					if !errors.As(err, &lifecycleError) {
+						err = repositoryError(err)
+					}
+				}
+			}
+			if err != nil {
 				return MutationResult{}, err
 			}
 			record.Checkpoint = "clone_finished"
@@ -301,6 +428,177 @@ func (l *Lifecycle) Clone(ctx context.Context, request CloneRequest) (MutationRe
 		}
 		return MutationResult{Action: "clone", Recovered: recovered, WorktreeRoot: l.root, Inspection: &inspected, Path: inspected.Worktree.Path}, nil
 	})
+}
+
+func (l *Lifecycle) reconcileVersion1Clone(ctx context.Context, target, cloneSource, branch string, identity source.RepositoryIdentity) (string, string, MutationResult, bool, bool, error) {
+	legacyIntent := fingerprint("clone", target, cloneSource, branch)
+	record, found, err := l.load(legacyIntent)
+	if err != nil {
+		return cloneSource, "", MutationResult{}, false, false, err
+	}
+	if !found && identity.IsGitHub() {
+		var equivalentSource string
+		record, equivalentSource, found, err = l.findEquivalentVersion1Clone(ctx, target, branch, identity)
+		if err != nil {
+			return cloneSource, "", MutationResult{}, false, false, err
+		}
+		if found {
+			cloneSource = equivalentSource
+		}
+	}
+	if !found {
+		return cloneSource, "", MutationResult{}, false, false, nil
+	}
+	if record.Kind != "clone" || record.TargetPath != target {
+		return "", "", MutationResult{}, false, false, &Error{Code: CodeOutcomeUnknown, Message: "version-1 clone checkpoint does not match the requested repository"}
+	}
+	if record.Checkpoint == "complete" {
+		inspected, inspectErr := Inspect(ctx, l.root, target)
+		if inspectErr != nil || !cloneMatchesRecord(inspected, &record, target) {
+			return "", "", MutationResult{}, false, false, &Error{Code: CodeOutcomeUnknown, Message: "completed version-1 clone checkpoint no longer matches its checkout", Cause: inspectErr}
+		}
+		return cloneSource, "", MutationResult{Action: "clone", Recovered: true, WorktreeRoot: l.root, Inspection: &inspected, Path: inspected.Worktree.Path}, true, false, nil
+	}
+	if record.Checkpoint == "aborted" {
+		return cloneSource, "", MutationResult{}, false, false, nil
+	}
+	if record.Checkpoint == "clone_finished" || record.Checkpoint == "promote_pending" {
+		return cloneSource, record.IntentSHA256, MutationResult{}, false, true, nil
+	}
+	if record.Checkpoint != "requested" && record.Checkpoint != "clone_pending" {
+		return "", "", MutationResult{}, false, false, &Error{Code: CodeConflict, Message: "version-1 clone recovery reached a checkpoint that must be reconciled before transport recovery"}
+	}
+	if record.StagingPath != "" {
+		if err = removeOwnedStage(&record); err != nil {
+			return "", "", MutationResult{}, false, false, err
+		}
+	}
+	record.Checkpoint = "aborted"
+	if err = l.save(&record); err != nil {
+		return "", "", MutationResult{}, false, false, err
+	}
+	if record.SuppliedOrigin != "" {
+		return record.SuppliedOrigin, "", MutationResult{}, false, false, nil
+	}
+	return cloneSource, "", MutationResult{}, false, false, nil
+}
+
+func (l *Lifecycle) findEquivalentVersion1Clone(ctx context.Context, target, branch string, identity source.RepositoryIdentity) (operationRecord, string, bool, error) {
+	entries, err := os.ReadDir(l.state)
+	if errors.Is(err, os.ErrNotExist) {
+		return operationRecord{}, "", false, nil
+	}
+	if err != nil {
+		return operationRecord{}, "", false, err
+	}
+	var matched operationRecord
+	matchedSource := ""
+	found := false
+	for _, entry := range entries {
+		if entry.IsDir() || !isIntentRecordName(entry.Name()) {
+			continue
+		}
+		record, present, loadErr := l.load(strings.TrimSuffix(entry.Name(), ".json"))
+		if loadErr != nil {
+			return operationRecord{}, "", false, loadErr
+		}
+		if !present || record.Kind != "clone" || target != "" && record.TargetPath != target || record.Checkpoint == "aborted" || record.SuppliedOrigin != "" {
+			continue
+		}
+		if filepath.Dir(record.TargetPath) != l.root {
+			if target == "" {
+				continue
+			}
+			return operationRecord{}, "", false, &Error{Code: CodeOutcomeUnknown, Message: "version-1 clone checkpoint has an invalid target"}
+		}
+		if filepath.Clean(record.TargetPath) != record.TargetPath {
+			return operationRecord{}, "", false, &Error{Code: CodeOutcomeUnknown, Message: "version-1 clone checkpoint has an invalid target"}
+		}
+		origin := record.Origin
+		observedBranch := record.Branch
+		checkoutPath := record.TargetPath
+		if origin == "" && record.Checkpoint == "clone_finished" && record.StagingPath != "" {
+			inspected, inspectErr := Inspect(ctx, l.root, record.StagingPath)
+			if inspectErr != nil {
+				continue
+			}
+			origin = inspected.Repository.Origin
+			observedBranch = inspected.Worktree.Branch
+			checkoutPath = record.StagingPath
+		} else if record.Checkpoint != "complete" {
+			checkoutPath = record.StagingPath
+			if record.Checkpoint == "promote_pending" && record.StagingPath != "" {
+				if _, stageErr := os.Lstat(record.StagingPath); errors.Is(stageErr, os.ErrNotExist) {
+					inspected, inspectErr := Inspect(ctx, l.root, record.TargetPath)
+					if inspectErr != nil {
+						continue
+					}
+					origin = inspected.Repository.Origin
+					observedBranch = inspected.Worktree.Branch
+					checkoutPath = record.TargetPath
+				} else if stageErr != nil {
+					continue
+				}
+			}
+		}
+		if origin == "" {
+			continue
+		}
+		candidate, network, identityErr := source.RepositoryIdentityFor(origin)
+		if identityErr != nil || !network || candidate.Key() != identity.Key() {
+			continue
+		}
+		branchMatches, branchErr := l.version1CloneBranchMatches(ctx, checkoutPath, branch, observedBranch)
+		if branchErr != nil {
+			return operationRecord{}, "", false, branchErr
+		}
+		if !branchMatches {
+			continue
+		}
+		if found {
+			return operationRecord{}, "", false, &Error{Code: CodeConflict, Message: "multiple version-1 clone checkpoints match the requested GitHub repository"}
+		}
+		matched, matchedSource, found = record, origin, true
+	}
+	return matched, matchedSource, found, nil
+}
+
+func (l *Lifecycle) version1CloneBranchMatches(ctx context.Context, checkoutPath, requested, observed string) (bool, error) {
+	if requested != "" {
+		if observed == requested {
+			return true, nil
+		}
+		if observed != "" || checkoutPath == "" {
+			return false, nil
+		}
+		if filepath.Clean(checkoutPath) != checkoutPath || !within(l.root, checkoutPath) {
+			return false, &Error{Code: CodeOutcomeUnknown, Message: "version-1 clone checkpoint has an invalid checkout path"}
+		}
+		ref := "refs/tags/" + requested
+		if _, err := l.runGit(ctx, "-C", checkoutPath, "show-ref", "--verify", "--quiet", ref); err != nil {
+			return false, nil
+		}
+		tag, err := l.runGit(ctx, "-C", checkoutPath, "rev-parse", "--verify", ref+"^{commit}")
+		if err != nil {
+			return false, nil
+		}
+		head, err := l.runGit(ctx, "-C", checkoutPath, "rev-parse", "--verify", "HEAD^{commit}")
+		if err != nil {
+			return false, nil
+		}
+		return strings.TrimSpace(string(tag.Stdout)) == strings.TrimSpace(string(head.Stdout)), nil
+	}
+	if checkoutPath == "" || observed == "" {
+		return false, nil
+	}
+	if filepath.Clean(checkoutPath) != checkoutPath || !within(l.root, checkoutPath) {
+		return false, &Error{Code: CodeOutcomeUnknown, Message: "version-1 clone checkpoint has an invalid checkout path"}
+	}
+	result, err := l.runGit(ctx, "-C", checkoutPath, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD")
+	if err != nil {
+		return false, nil
+	}
+	return strings.TrimSpace(string(result.Stdout)) == "origin/"+observed, nil
 }
 
 func (l *Lifecycle) Add(ctx context.Context, request AddRequest) (MutationResult, error) {
@@ -770,6 +1068,39 @@ func (l *Lifecycle) runGit(ctx context.Context, args ...string) (process.Result,
 		code, safe = CodeOutcomeUnknown, "Git operation failed after producing bounded diagnostics; retry to reconcile it"
 	}
 	return result, &Error{Code: code, Message: safe, Cause: err}
+}
+
+func repositoryError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return &Error{Code: CodeOutcomeUnknown, Message: "Git operation was interrupted; retry to reconcile it", Cause: err}
+	}
+	var domain *source.Error
+	if !errors.As(err, &domain) {
+		return &Error{Code: CodeOutcomeUnknown, Message: "source transport failed without a safe classification", Cause: err}
+	}
+	code := CodeOutcomeUnknown
+	switch domain.Code {
+	case "invalid_input":
+		code = CodeInvalidInput
+	case "conflict":
+		code = CodeConflict
+	case "authentication_required":
+		code = CodeAuthentication
+	case "permission_denied":
+		code = CodePermissionDenied
+	case "operation_in_progress":
+		code = CodeOperationInProgress
+	case "outcome_unknown", source.CodeSourceUnavailable:
+		code = CodeOutcomeUnknown
+	}
+	contextValues := make(map[string]string, len(domain.Context))
+	for key, value := range domain.Context {
+		contextValues[key] = value
+	}
+	return &Error{Code: code, Message: domain.Message, Context: contextValues, Cause: err}
 }
 
 func (l *Lifecycle) hasInitializedSubmodules(ctx context.Context, path string) (bool, error) {

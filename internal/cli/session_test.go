@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/thewelshrich/schooner/internal/boxtarget"
 	"github.com/thewelshrich/schooner/internal/repository"
 	hostruntime "github.com/thewelshrich/schooner/internal/runtime"
 	"github.com/thewelshrich/schooner/internal/runtime/host"
@@ -15,12 +14,12 @@ import (
 	"github.com/thewelshrich/schooner/internal/workcontext"
 )
 
-func TestContextualCloneHonorsNoInput(t *testing.T) {
+func TestContextualCloneUsesExistingAccessWithoutPrompting(t *testing.T) {
 	var output bytes.Buffer
-	_, err := confirmCloneForStart(t.Context(), Streams{Err: &output, InIsTerminal: true, OutIsTerminal: true, ErrIsTerminal: true}, &globalOptions{output: "human", noInput: true}, boxtarget.Target{}, &repository.LocalCheckout{TopLevel: "/repo"}, workcontext.StartPlan{Mode: workcontext.StartClone, CloneSource: "https://example.com/repo.git"})
-	var usage usageError
-	if !errors.As(err, &usage) || output.Len() != 0 {
-		t.Fatalf("error = %v, output = %q", err, output.String())
+	target := &cloneRecoveryTarget{name: "work", identity: "11111111-1111-4111-8111-111111111111", cloneResults: []repository.MutationResult{{Action: "clone", Path: "/remote/repo"}}}
+	path, err := confirmCloneForStart(t.Context(), Streams{Err: &output, InIsTerminal: true, OutIsTerminal: true, ErrIsTerminal: true}, &globalOptions{output: "human", noInput: true}, target, &repository.LocalCheckout{TopLevel: "/repo"}, workcontext.StartPlan{Mode: workcontext.StartClone, CloneSource: "https://example.com/repo.git"})
+	if err != nil || path != "/remote/repo" || target.cloneCalls != 1 || output.Len() != 0 {
+		t.Fatalf("path = %q, clone calls = %d, error = %v, output = %q", path, target.cloneCalls, err, output.String())
 	}
 }
 

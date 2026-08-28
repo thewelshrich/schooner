@@ -70,6 +70,44 @@ func TestCloneRepositoryUsesTypedHostLifecycleOperation(t *testing.T) {
 	}
 }
 
+func TestLegacyCloneAuthenticationRequiresRuntimeUpdateBeforeManagedRecovery(t *testing.T) {
+	testRemoteShell(t)
+	target := filepath.Join(t.TempDir(), "host-runtime")
+	hello := fmt.Sprintf(`{"schema_version":"1","protocol_version":"1","schooner_version":"v1.2.3","commit":"abc123","box_identity":%q,"os":"linux","architecture":"amd64","capabilities":["repository.clone.v1"]}`, hostTestIdentity)
+	failure := hostruntime.NewOperationError(hostTestIdentity, hostruntime.CodeAuthentication, "Git source authentication failed")
+	encoded, err := json.Marshal(failure)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contents := fmt.Sprintf("#!/bin/sh\ncase \"$1 $2 $3 $4\" in\n  'host hello  '*) printf '%%s\\n' '%s' ;;\n  'host repository clone ') cat >/dev/null; printf '%%s\\n' '%s' ;;\n  *) exit 64 ;;\nesac\n", hello, encoded)
+	if err = os.WriteFile(target, []byte(contents), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runtime := NewHost(testSSHExecutable(t), nil, "v1.2.3", nil)
+	_, err = runtime.CloneRepository(t.Context(), box.Connection{Destination: "trusted-host"}, box.HostRuntime{Path: target}, hostTestIdentity, "/worktrees", "https://github.com/owner/repo.git", "")
+	var domain *box.Error
+	if !errors.As(err, &domain) || domain.Code != "authentication_required" || domain.Context["reason"] != "host_runtime_update_required" {
+		t.Fatalf("error = %#v", err)
+	}
+}
+
+func TestCloneRepositoryPrefersV2WhenAdvertised(t *testing.T) {
+	testRemoteShell(t)
+	target := filepath.Join(t.TempDir(), "host-runtime")
+	hello := fmt.Sprintf(`{"schema_version":"1","protocol_version":"1","schooner_version":"v1.2.3","commit":"abc123","box_identity":%q,"os":"linux","architecture":"amd64","capabilities":["repository.clone.v1","repository.clone.v2"]}`, hostTestIdentity)
+	result := fmt.Sprintf(`{"schema_version":"1","protocol_version":"1","box_identity":%q,"action":"clone","recovered":false,"worktree_root":"/worktrees","path":"/worktrees/repo"}`, hostTestIdentity)
+	contents := fmt.Sprintf("#!/bin/sh\ncase \"$1 $2 $3 $4\" in\n  'host hello  '*) printf '%%s\\n' '%s' ;;\n  'host repository clone-v2 ') cat >/dev/null; printf '%%s\\n' '%s' ;;\n  *) exit 64 ;;\nesac\n", hello, result)
+	if err := os.WriteFile(target, []byte(contents), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runtime := NewHost(testSSHExecutable(t), nil, "v1.2.3", nil)
+	installed := box.HostRuntime{Path: target}
+	got, err := runtime.CloneRepository(t.Context(), box.Connection{Destination: "trusted-host"}, installed, hostTestIdentity, "/worktrees", "https://github.com/owner/repo.git", "")
+	if err != nil || got.Action != "clone" || got.Path != "/worktrees/repo" {
+		t.Fatalf("clone = %+v, %v", got, err)
+	}
+}
+
 func TestSourceOperationRejectsLegacyRuntimeBeforeSendingRequest(t *testing.T) {
 	testRemoteShell(t)
 	target := filepath.Join(t.TempDir(), "host-runtime")

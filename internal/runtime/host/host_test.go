@@ -80,7 +80,7 @@ func TestRuntimeHelloInspectAndDoctor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, lifecycleErr := runtime.lifecycle(identity, expectedWorktree, false); hostruntime.ErrorCode(lifecycleErr) != hostruntime.CodeConflict {
+	if _, _, lifecycleErr := runtime.lifecycle(identity, expectedWorktree, false, nil); hostruntime.ErrorCode(lifecycleErr) != hostruntime.CodeConflict {
 		t.Fatalf("lifecycle Worktree Root drift error = %v", lifecycleErr)
 	}
 	inspection, err = runtime.Inspect(t.Context(), hostruntime.NewInspectRequest(expectedWorktree))

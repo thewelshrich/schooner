@@ -134,14 +134,14 @@ func resolveSourceTarget(ctx context.Context, streams Streams, global *globalOpt
 }
 
 func withSourceGuidance(err error, boxName string) error {
-	var domain *source.Error
-	if !errors.As(err, &domain) {
+	contextValues := sourceReasonContext(err)
+	if len(contextValues) == 0 {
 		return err
 	}
-	switch domain.Context["reason"] {
+	switch contextValues["reason"] {
 	case "github_saml_sso":
 		organization := "your GitHub organization"
-		if value := domain.Context["organization"]; value != "" {
+		if value := contextValues["organization"]; value != "" {
 			organization = "the " + value + " GitHub organization"
 		}
 		return guidanceError{cause: err, guidance: "authorize the `Schooner / " + firstNonEmpty(boxName, "Box") + "` SSH key for " + organization + "'s SAML SSO, then run source connect again"}
@@ -150,6 +150,18 @@ func withSourceGuidance(err error, boxName string) error {
 	default:
 		return err
 	}
+}
+
+func sourceReasonContext(err error) map[string]string {
+	var sourceDomain *source.Error
+	if errors.As(err, &sourceDomain) {
+		return sourceDomain.Context
+	}
+	var boxDomain *box.Error
+	if errors.As(err, &boxDomain) {
+		return boxDomain.Context
+	}
+	return nil
 }
 
 type sourceAccountDocument struct {

@@ -72,6 +72,7 @@ const (
 type Error struct {
 	Code    Code
 	Message string
+	Context map[string]string
 	Cause   error
 }
 

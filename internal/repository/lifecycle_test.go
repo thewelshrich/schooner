@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/thewelshrich/schooner/internal/process"
+	"github.com/thewelshrich/schooner/internal/source"
 )
 
 type lifecycleWorktreeUse struct {
@@ -42,6 +44,32 @@ func TestOperationJournalsPreserveXDGWhileWorktreeLocksUseStableHome(t *testing.
 type lifecycleRunnerFunc func(context.Context, string, ...string) (process.Result, error)
 
 type lifecycleWorktreeUseFunc func(context.Context, string) ([]string, error)
+
+type lifecycleCloneExecutor struct {
+	localSource string
+	fail        bool
+	requests    []source.CloneExecution
+}
+
+func (executor *lifecycleCloneExecutor) Clone(ctx context.Context, request source.CloneExecution, prepare source.PrepareCloneAttempt) error {
+	executor.requests = append(executor.requests, request)
+	if err := prepare(); err != nil {
+		return err
+	}
+	if executor.fail {
+		return &source.Error{Code: "authentication_required", Message: "GitHub repository authentication is required", Context: map[string]string{"reason": "credentials_missing"}}
+	}
+	candidate := (&url.URL{Scheme: "file", Path: executor.localSource}).String()
+	arguments := []string{"-c", "url." + candidate + ".insteadOf=" + request.SuppliedOrigin, "-C", request.WorktreeRoot, "clone", "-c", "remote.origin.url=" + request.SuppliedOrigin}
+	if request.Branch != "" {
+		arguments = append(arguments, "--branch", request.Branch)
+	}
+	arguments = append(arguments, "--", request.SuppliedOrigin, request.Destination)
+	if _, err := (osMutationRunner{}).Run(ctx, "git", arguments...); err != nil {
+		return source.NewError("conflict", "test clone failed", err)
+	}
+	return nil
+}
 
 func (f lifecycleRunnerFunc) Run(ctx context.Context, name string, args ...string) (process.Result, error) {
 	return f(ctx, name, args...)
@@ -146,6 +174,497 @@ func TestLifecycleCloneAddRemoveAndRecover(t *testing.T) {
 	output := lifecycleGitOutput(t, cloned.Path, "worktree", "list", "--porcelain")
 	if strings.Contains(output, stalePath) {
 		t.Fatalf("stale Worktree registration remained: %s", output)
+	}
+}
+
+func TestLifecycleCloneV2RecoversByRepositoryIdentityAndPreservesFirstOrigin(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "worktrees")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	state := filepath.Join(t.TempDir(), "state")
+	executor := &lifecycleCloneExecutor{localSource: createLifecycleSource(t), fail: true}
+	lifecycle, err := NewLifecycleWithOptions(root, state, nil, LifecycleOptions{CloneExecutor: executor})
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstOrigin := "https://github.com/Owner/Repo.git"
+	if _, err = lifecycle.CloneV2(t.Context(), CloneRequest{Source: firstOrigin}); ErrorCode(err) != CodeAuthentication {
+		t.Fatalf("first clone error = %v", err)
+	}
+	entries, err := os.ReadDir(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var checkpoint []byte
+	for _, entry := range entries {
+		if strings.HasSuffix(entry.Name(), ".json") {
+			checkpoint, err = os.ReadFile(filepath.Join(state, entry.Name()))
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if !strings.Contains(string(checkpoint), firstOrigin) {
+		t.Fatalf("checkpoint did not preserve first supplied origin: %s", checkpoint)
+	}
+	executor.fail = false
+	secondOrigin := "git@github.com:owner/repo.git"
+	cloned, err := lifecycle.CloneV2(t.Context(), CloneRequest{Source: secondOrigin})
+	if err != nil || cloned.Inspection == nil || cloned.Path != filepath.Join(lifecycle.root, "repo") {
+		t.Fatalf("recovered clone = %+v, %v", cloned, err)
+	}
+	if len(executor.requests) != 2 || executor.requests[1].SuppliedOrigin != firstOrigin {
+		t.Fatalf("clone requests = %+v", executor.requests)
+	}
+	if storedOrigin := strings.TrimSpace(lifecycleGitOutput(t, cloned.Path, "config", "--get-all", "remote.origin.url")); storedOrigin != firstOrigin {
+		t.Fatalf("stored origin = %q, want %q", storedOrigin, firstOrigin)
+	}
+	recovered, err := lifecycle.CloneV2(t.Context(), CloneRequest{Source: "ssh://git@github.com/OWNER/REPO.git"})
+	if err != nil || !recovered.Recovered || len(executor.requests) != 2 {
+		t.Fatalf("completed recovery = %+v, requests = %d, err = %v", recovered, len(executor.requests), err)
+	}
+}
+
+func TestLifecycleCloneV2KeepsGenericGitSuffixOutOfDestination(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "worktrees")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	state := filepath.Join(t.TempDir(), "state")
+	executor := &lifecycleCloneExecutor{localSource: createLifecycleSource(t)}
+	lifecycle, err := NewLifecycleWithOptions(root, state, nil, LifecycleOptions{CloneExecutor: executor})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cloned, err := lifecycle.CloneV2(t.Context(), CloneRequest{Source: "https://git.example/team/repo.git"})
+	if err != nil || cloned.Path != filepath.Join(lifecycle.root, "repo") {
+		t.Fatalf("clone=%+v err=%v", cloned, err)
+	}
+}
+
+func TestLifecycleCloneV2ReconcilesMatchingVersion1Checkpoint(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "worktrees")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	state := filepath.Join(t.TempDir(), "state")
+	executor := &lifecycleCloneExecutor{localSource: createLifecycleSource(t)}
+	lifecycle, err := NewLifecycleWithOptions(root, state, nil, LifecycleOptions{CloneExecutor: executor})
+	if err != nil {
+		t.Fatal(err)
+	}
+	origin := "https://github.com/Owner/Repo.git"
+	legacyTarget := filepath.Join(lifecycle.root, "Repo")
+	target := filepath.Join(lifecycle.root, "repo")
+	legacyIntent := fingerprint("clone", legacyTarget, origin, "")
+	legacy := operationRecord{
+		SchemaVersion: operationSchemaVersion,
+		ID:            legacyIntent[:24], Kind: "clone", IntentSHA256: legacyIntent,
+		TargetPath: legacyTarget, StagingPath: filepath.Join(lifecycle.root, ".schooner-stage-"+legacyIntent[:24], "Repo"),
+		Checkpoint: "clone_pending", OwnershipToken: strings.Repeat("a", 64),
+	}
+	if err = lifecycle.createOwnedStage(&legacy); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.MkdirAll(legacy.StagingPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err = lifecycle.save(&legacy); err != nil {
+		t.Fatal(err)
+	}
+
+	cloned, err := lifecycle.CloneV2(t.Context(), CloneRequest{Source: origin})
+	if err != nil || cloned.Inspection == nil || cloned.Path != target {
+		t.Fatalf("clone = %+v, err = %v", cloned, err)
+	}
+	retired, found, err := lifecycle.load(legacyIntent)
+	if err != nil || !found || retired.Checkpoint != "aborted" {
+		t.Fatalf("legacy checkpoint = %+v, found = %t, err = %v", retired, found, err)
+	}
+	if _, err = os.Stat(legacy.StagingPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("legacy staging path survived reconciliation: %v", err)
+	}
+}
+
+func TestLifecycleCloneV2RecoversCompletedVersion1CheckoutAcrossGitHubTransports(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "worktrees")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	state := filepath.Join(t.TempDir(), "state")
+	executor := &lifecycleCloneExecutor{localSource: createLifecycleSource(t)}
+	lifecycle, err := NewLifecycleWithOptions(root, state, nil, LifecycleOptions{CloneExecutor: executor})
+	if err != nil {
+		t.Fatal(err)
+	}
+	origin := "https://github.com/Owner/Repo.git"
+	legacyTarget := filepath.Join(lifecycle.root, "Repo")
+	if output, cloneErr := exec.Command("git", "clone", executor.localSource, legacyTarget).CombinedOutput(); cloneErr != nil {
+		t.Fatalf("git clone: %v\n%s", cloneErr, output)
+	}
+	runLifecycleGit(t, legacyTarget, "remote", "set-url", "origin", origin)
+	inspected, err := Inspect(t.Context(), lifecycle.root, legacyTarget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyIntent := fingerprint("clone", legacyTarget, origin, "")
+	legacy := operationRecord{
+		SchemaVersion: operationSchemaVersion,
+		ID:            legacyIntent[:24], Kind: "clone", IntentSHA256: legacyIntent,
+		TargetPath: legacyTarget, Checkpoint: "complete", OwnershipToken: strings.Repeat("a", 64),
+	}
+	recordSnapshot(&legacy, inspected)
+	if err = lifecycle.save(&legacy); err != nil {
+		t.Fatal(err)
+	}
+	requested := "git@github.com:owner/repo.git"
+	identity, network, identityErr := source.RepositoryIdentityFor(requested)
+	if identityErr != nil || !network {
+		t.Fatalf("identity=%+v network=%t err=%v", identity, network, identityErr)
+	}
+	matched, matchedSource, found, findErr := lifecycle.findEquivalentVersion1Clone(t.Context(), legacyTarget, "", identity)
+	if findErr != nil || !found || matched.IntentSHA256 != legacyIntent || matchedSource == "" {
+		t.Fatalf("matched=%+v source=%q found=%t err=%v", matched, matchedSource, found, findErr)
+	}
+
+	recovered, err := lifecycle.CloneV2(t.Context(), CloneRequest{Source: requested})
+	if err != nil || !recovered.Recovered || recovered.Path != legacyTarget || recovered.Inspection == nil || len(executor.requests) != 0 {
+		t.Fatalf("recovered=%+v requests=%d err=%v", recovered, len(executor.requests), err)
+	}
+}
+
+func TestLifecycleCloneV2PrefersExactVersion1IntentBeforeIdentityScan(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "worktrees")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	state := filepath.Join(t.TempDir(), "state")
+	executor := &lifecycleCloneExecutor{localSource: createLifecycleSource(t)}
+	lifecycle, err := NewLifecycleWithOptions(root, state, nil, LifecycleOptions{CloneExecutor: executor})
+	if err != nil {
+		t.Fatal(err)
+	}
+	origins := []struct {
+		source string
+		name   string
+		token  string
+	}{
+		{source: "https://github.com/Owner/Repo.git", name: "Repo", token: strings.Repeat("a", 64)},
+		{source: "git@github.com:owner/repo.git", name: "repo", token: strings.Repeat("b", 64)},
+	}
+	for _, origin := range origins {
+		target := filepath.Join(lifecycle.root, origin.name)
+		intent := fingerprint("clone", target, origin.source, "")
+		record := operationRecord{
+			SchemaVersion: operationSchemaVersion, ID: intent[:24], Kind: "clone", IntentSHA256: intent,
+			TargetPath: target, StagingPath: filepath.Join(lifecycle.root, ".schooner-stage-"+intent[:24], origin.name),
+			Checkpoint: "clone_finished", OwnershipToken: origin.token,
+		}
+		if err = lifecycle.createOwnedStage(&record); err != nil {
+			t.Fatal(err)
+		}
+		if output, cloneErr := exec.Command("git", "clone", executor.localSource, record.StagingPath).CombinedOutput(); cloneErr != nil {
+			t.Fatalf("git clone: %v\n%s", cloneErr, output)
+		}
+		runLifecycleGit(t, record.StagingPath, "remote", "set-url", "origin", origin.source)
+		if err = lifecycle.save(&record); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	recovered, err := lifecycle.CloneV2(t.Context(), CloneRequest{Source: origins[0].source})
+	if err != nil || !recovered.Recovered || recovered.Path != filepath.Join(lifecycle.root, origins[0].name) || len(executor.requests) != 0 {
+		t.Fatalf("recovered=%+v requests=%d err=%v", recovered, len(executor.requests), err)
+	}
+	otherIntent := fingerprint("clone", filepath.Join(lifecycle.root, origins[1].name), origins[1].source, "")
+	other, found, loadErr := lifecycle.load(otherIntent)
+	if loadErr != nil || !found || other.Checkpoint != "clone_finished" {
+		t.Fatalf("other=%+v found=%t err=%v", other, found, loadErr)
+	}
+}
+
+func TestLifecycleCloneV2IgnoresAbortedExactIntentWhenEquivalentVersion1CheckoutExists(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "worktrees")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	state := filepath.Join(t.TempDir(), "state")
+	executor := &lifecycleCloneExecutor{localSource: createLifecycleSource(t)}
+	lifecycle, err := NewLifecycleWithOptions(root, state, nil, LifecycleOptions{CloneExecutor: executor})
+	if err != nil {
+		t.Fatal(err)
+	}
+	exactSource := "https://github.com/Owner/Repo.git"
+	exactTarget := filepath.Join(lifecycle.root, "Repo")
+	exactIntent := fingerprint("clone", exactTarget, exactSource, "")
+	exact := operationRecord{
+		SchemaVersion: operationSchemaVersion, ID: exactIntent[:24], Kind: "clone", IntentSHA256: exactIntent,
+		TargetPath: exactTarget, Checkpoint: "aborted", OwnershipToken: strings.Repeat("a", 64),
+	}
+	if err = lifecycle.save(&exact); err != nil {
+		t.Fatal(err)
+	}
+
+	equivalentSource := "git@github.com:owner/repo.git"
+	equivalentTarget := filepath.Join(lifecycle.root, "repo")
+	if output, cloneErr := exec.Command("git", "clone", executor.localSource, equivalentTarget).CombinedOutput(); cloneErr != nil {
+		t.Fatalf("git clone: %v\n%s", cloneErr, output)
+	}
+	runLifecycleGit(t, equivalentTarget, "remote", "set-url", "origin", equivalentSource)
+	inspected, err := Inspect(t.Context(), lifecycle.root, equivalentTarget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	equivalentIntent := fingerprint("clone", equivalentTarget, equivalentSource, "")
+	equivalent := operationRecord{
+		SchemaVersion: operationSchemaVersion, ID: equivalentIntent[:24], Kind: "clone", IntentSHA256: equivalentIntent,
+		TargetPath: equivalentTarget, Checkpoint: "complete", OwnershipToken: strings.Repeat("b", 64),
+	}
+	recordSnapshot(&equivalent, inspected)
+	if err = lifecycle.save(&equivalent); err != nil {
+		t.Fatal(err)
+	}
+
+	recovered, err := lifecycle.CloneV2(t.Context(), CloneRequest{Source: exactSource})
+	if err != nil || !recovered.Recovered || recovered.Path != equivalentTarget || len(executor.requests) != 0 {
+		t.Fatalf("recovered=%+v requests=%d err=%v", recovered, len(executor.requests), err)
+	}
+}
+
+func TestLifecycleCloneV2RetiresPreCloneExactIntentBeforeEquivalentScan(t *testing.T) {
+	for _, checkpoint := range []string{"requested", "clone_pending"} {
+		t.Run(checkpoint, func(t *testing.T) {
+			root := filepath.Join(t.TempDir(), "worktrees")
+			if err := os.MkdirAll(root, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			state := filepath.Join(t.TempDir(), "state")
+			executor := &lifecycleCloneExecutor{localSource: createLifecycleSource(t)}
+			lifecycle, err := NewLifecycleWithOptions(root, state, nil, LifecycleOptions{CloneExecutor: executor})
+			if err != nil {
+				t.Fatal(err)
+			}
+			exactSource := "https://github.com/Owner/Repo.git"
+			exactTarget := filepath.Join(lifecycle.root, "Repo")
+			exactIntent := fingerprint("clone", exactTarget, exactSource, "")
+			exact := operationRecord{
+				SchemaVersion: operationSchemaVersion, ID: exactIntent[:24], Kind: "clone", IntentSHA256: exactIntent,
+				TargetPath: exactTarget, Checkpoint: checkpoint, OwnershipToken: strings.Repeat("a", 64),
+			}
+			if checkpoint == "clone_pending" {
+				exact.StagingPath = filepath.Join(lifecycle.root, ".schooner-stage-"+exactIntent[:24], "Repo")
+				if err = lifecycle.createOwnedStage(&exact); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err = lifecycle.save(&exact); err != nil {
+				t.Fatal(err)
+			}
+
+			equivalentSource := "git@github.com:owner/repo.git"
+			equivalentTarget := filepath.Join(lifecycle.root, "repo")
+			if output, cloneErr := exec.Command("git", "clone", executor.localSource, equivalentTarget).CombinedOutput(); cloneErr != nil {
+				t.Fatalf("git clone: %v\n%s", cloneErr, output)
+			}
+			runLifecycleGit(t, equivalentTarget, "remote", "set-url", "origin", equivalentSource)
+			inspected, err := Inspect(t.Context(), lifecycle.root, equivalentTarget)
+			if err != nil {
+				t.Fatal(err)
+			}
+			equivalentIntent := fingerprint("clone", equivalentTarget, equivalentSource, "")
+			equivalent := operationRecord{
+				SchemaVersion: operationSchemaVersion, ID: equivalentIntent[:24], Kind: "clone", IntentSHA256: equivalentIntent,
+				TargetPath: equivalentTarget, Checkpoint: "complete", OwnershipToken: strings.Repeat("b", 64),
+			}
+			recordSnapshot(&equivalent, inspected)
+			if err = lifecycle.save(&equivalent); err != nil {
+				t.Fatal(err)
+			}
+
+			recovered, err := lifecycle.CloneV2(t.Context(), CloneRequest{Source: exactSource})
+			if err != nil || !recovered.Recovered || recovered.Path != equivalentTarget || len(executor.requests) != 0 {
+				t.Fatalf("recovered=%+v requests=%d err=%v", recovered, len(executor.requests), err)
+			}
+			retired, found, loadErr := lifecycle.load(exactIntent)
+			if loadErr != nil || !found || retired.Checkpoint != "aborted" {
+				t.Fatalf("retired=%+v found=%t err=%v", retired, found, loadErr)
+			}
+			if exact.StagingPath != "" {
+				if _, statErr := os.Stat(exact.StagingPath); !errors.Is(statErr, os.ErrNotExist) {
+					t.Fatalf("retired staging path survived: %v", statErr)
+				}
+			}
+		})
+	}
+}
+
+func TestLifecycleCloneV2IgnoresVersion1RecordsFromFormerRoot(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "worktrees")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	state := filepath.Join(t.TempDir(), "state")
+	executor := &lifecycleCloneExecutor{localSource: createLifecycleSource(t)}
+	lifecycle, err := NewLifecycleWithOptions(root, state, nil, LifecycleOptions{CloneExecutor: executor})
+	if err != nil {
+		t.Fatal(err)
+	}
+	origin := "https://github.com/owner/repo.git"
+	formerTarget := filepath.Join(t.TempDir(), "former-worktrees", "repo")
+	formerIntent := fingerprint("clone", formerTarget, origin, "")
+	former := operationRecord{
+		SchemaVersion: operationSchemaVersion, ID: formerIntent[:24], Kind: "clone", IntentSHA256: formerIntent,
+		TargetPath: formerTarget, Origin: origin, Branch: "main", Checkpoint: "complete", OwnershipToken: strings.Repeat("a", 64),
+	}
+	if err = lifecycle.save(&former); err != nil {
+		t.Fatal(err)
+	}
+
+	cloned, err := lifecycle.CloneV2(t.Context(), CloneRequest{Source: origin})
+	if err != nil || cloned.Recovered || cloned.Path != filepath.Join(lifecycle.root, "repo") || len(executor.requests) != 1 {
+		t.Fatalf("cloned=%+v requests=%d err=%v", cloned, len(executor.requests), err)
+	}
+}
+
+func TestLifecycleCloneV2ResumesPostCloneVersion1Checkpoints(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		checkpoint string
+		moved      bool
+	}{
+		{name: "clone_finished", checkpoint: "clone_finished"},
+		{name: "promote_pending", checkpoint: "promote_pending"},
+		{name: "promote_pending_after_move", checkpoint: "promote_pending", moved: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := filepath.Join(t.TempDir(), "worktrees")
+			if err := os.MkdirAll(root, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			state := filepath.Join(t.TempDir(), "state")
+			executor := &lifecycleCloneExecutor{localSource: createLifecycleSource(t)}
+			lifecycle, err := NewLifecycleWithOptions(root, state, nil, LifecycleOptions{CloneExecutor: executor})
+			if err != nil {
+				t.Fatal(err)
+			}
+			origin := "https://github.com/Owner/Repo.git"
+			legacyTarget := filepath.Join(lifecycle.root, "Repo")
+			legacyIntent := fingerprint("clone", legacyTarget, origin, "")
+			legacy := operationRecord{
+				SchemaVersion: operationSchemaVersion,
+				ID:            legacyIntent[:24], Kind: "clone", IntentSHA256: legacyIntent,
+				TargetPath: legacyTarget, StagingPath: filepath.Join(lifecycle.root, ".schooner-stage-"+legacyIntent[:24], "Repo"),
+				Checkpoint: test.checkpoint, OwnershipToken: strings.Repeat("a", 64),
+			}
+			if err = lifecycle.createOwnedStage(&legacy); err != nil {
+				t.Fatal(err)
+			}
+			if output, cloneErr := exec.Command("git", "clone", executor.localSource, legacy.StagingPath).CombinedOutput(); cloneErr != nil {
+				t.Fatalf("git clone: %v\n%s", cloneErr, output)
+			}
+			runLifecycleGit(t, legacy.StagingPath, "remote", "set-url", "origin", origin)
+			if test.checkpoint == "promote_pending" {
+				inspected, inspectErr := Inspect(t.Context(), lifecycle.root, legacy.StagingPath)
+				if inspectErr != nil {
+					t.Fatal(inspectErr)
+				}
+				recordSnapshot(&legacy, inspected)
+			}
+			if err = lifecycle.save(&legacy); err != nil {
+				t.Fatal(err)
+			}
+			if test.moved {
+				if err = movePathNoReplace(lifecycle.root, legacy.StagingPath, legacy.TargetPath); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			recovered, recoverErr := lifecycle.CloneV2(t.Context(), CloneRequest{Source: "git@github.com:Owner/Repo.git"})
+			if recoverErr != nil || !recovered.Recovered || recovered.Path != legacyTarget || recovered.Inspection == nil || len(executor.requests) != 0 {
+				t.Fatalf("recovered=%+v requests=%d err=%v", recovered, len(executor.requests), recoverErr)
+			}
+			final, found, loadErr := lifecycle.load(legacyIntent)
+			if loadErr != nil || !found || final.Checkpoint != "complete" {
+				t.Fatalf("legacy=%+v found=%t err=%v", final, found, loadErr)
+			}
+		})
+	}
+}
+
+func TestFindEquivalentVersion1ClonePreservesBranchIntent(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "worktrees")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	state := filepath.Join(t.TempDir(), "state")
+	localSource := createLifecycleSource(t)
+	runLifecycleGit(t, localSource, "branch", "feature", "main")
+	runLifecycleGit(t, localSource, "tag", "v1", "main")
+	lifecycle, err := NewLifecycleWithOptions(root, state, nil, LifecycleOptions{CloneExecutor: &lifecycleCloneExecutor{localSource: localSource}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	origin := "https://github.com/owner/repo.git"
+	target := filepath.Join(lifecycle.root, "repo")
+	if output, cloneErr := exec.Command("git", "clone", "--branch", "feature", localSource, target).CombinedOutput(); cloneErr != nil {
+		t.Fatalf("git clone: %v\n%s", cloneErr, output)
+	}
+	runLifecycleGit(t, target, "remote", "set-url", "origin", origin)
+	inspected, err := Inspect(t.Context(), lifecycle.root, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyIntent := fingerprint("clone", target, origin, "feature")
+	legacy := operationRecord{
+		SchemaVersion: operationSchemaVersion, ID: legacyIntent[:24], Kind: "clone", IntentSHA256: legacyIntent,
+		TargetPath: target, Checkpoint: "complete", OwnershipToken: strings.Repeat("a", 64),
+	}
+	recordSnapshot(&legacy, inspected)
+	if err = lifecycle.save(&legacy); err != nil {
+		t.Fatal(err)
+	}
+	identity, network, identityErr := source.RepositoryIdentityFor("git@github.com:owner/repo.git")
+	if identityErr != nil || !network {
+		t.Fatalf("identity=%+v network=%t err=%v", identity, network, identityErr)
+	}
+	if _, _, found, findErr := lifecycle.findEquivalentVersion1Clone(t.Context(), "", "", identity); findErr != nil || found {
+		t.Fatalf("default-branch match found=%t err=%v", found, findErr)
+	}
+	if matched, _, found, findErr := lifecycle.findEquivalentVersion1Clone(t.Context(), "", "feature", identity); findErr != nil || !found || matched.IntentSHA256 != legacyIntent {
+		t.Fatalf("feature match=%+v found=%t err=%v", matched, found, findErr)
+	}
+
+	tagTarget := filepath.Join(lifecycle.root, "tagged-repo")
+	if output, cloneErr := exec.Command("git", "clone", "--branch", "v1", localSource, tagTarget).CombinedOutput(); cloneErr != nil {
+		t.Fatalf("git clone tag: %v\n%s", cloneErr, output)
+	}
+	runLifecycleGit(t, tagTarget, "remote", "set-url", "origin", origin)
+	taggedInspection, err := Inspect(t.Context(), lifecycle.root, tagTarget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !taggedInspection.Worktree.Detached || taggedInspection.Worktree.Branch != "" {
+		t.Fatalf("tagged checkout = %+v", taggedInspection.Worktree)
+	}
+	tagIntent := fingerprint("clone", tagTarget, origin, "v1")
+	tagRecord := operationRecord{
+		SchemaVersion: operationSchemaVersion, ID: tagIntent[:24], Kind: "clone", IntentSHA256: tagIntent,
+		TargetPath: tagTarget, Checkpoint: "complete", OwnershipToken: strings.Repeat("b", 64),
+	}
+	recordSnapshot(&tagRecord, taggedInspection)
+	if err = lifecycle.save(&tagRecord); err != nil {
+		t.Fatal(err)
+	}
+	if matched, _, found, findErr := lifecycle.findEquivalentVersion1Clone(t.Context(), "", "v1", identity); findErr != nil || !found || matched.IntentSHA256 != tagIntent {
+		t.Fatalf("tag match=%+v found=%t err=%v", matched, found, findErr)
+	}
+	if _, _, found, findErr := lifecycle.findEquivalentVersion1Clone(t.Context(), "", "v2", identity); findErr != nil || found {
+		t.Fatalf("missing tag match found=%t err=%v", found, findErr)
+	}
+	if _, _, found, findErr := lifecycle.findEquivalentVersion1Clone(t.Context(), "", "v1^{commit}", identity); findErr != nil || found {
+		t.Fatalf("revision expression match found=%t err=%v", found, findErr)
 	}
 }
 
@@ -1133,13 +1652,12 @@ func TestUnlockStagedWorktreeRecoversWithoutLocalizedDiagnostics(t *testing.T) {
 }
 
 func TestGitMutationsUseNonInteractiveSSH(t *testing.T) {
-	for _, expected := range []string{"LC_ALL=C", "LANG=C", "GIT_SSH_COMMAND=ssh -o BatchMode=yes", "GIT_SSH_VARIANT=ssh"} {
-		if !slices.Contains(gitMutationEnvironment(true), expected) {
-			t.Fatalf("noninteractive Git mutation environment does not contain %q: %v", expected, gitMutationEnvironment(true))
+	for _, mode := range []bool{false, true} {
+		for _, expected := range []string{"LC_ALL=C", "LANG=C", "GIT_TERMINAL_PROMPT=0", "GCM_INTERACTIVE=never", "SSH_ASKPASS_REQUIRE=never", "GIT_SSH_COMMAND=ssh -o BatchMode=yes", "GIT_SSH_VARIANT=ssh"} {
+			if !slices.Contains(gitMutationEnvironment(mode), expected) {
+				t.Fatalf("Git mutation environment for noninteractive=%t does not contain %q: %v", mode, expected, gitMutationEnvironment(mode))
+			}
 		}
-	}
-	if environment := gitMutationEnvironment(false); !slices.Contains(environment, "LC_ALL=C") || slices.Contains(environment, "GIT_TERMINAL_PROMPT=0") {
-		t.Fatalf("interactive Git mutation environment has the wrong prompt/locale policy: %v", environment)
 	}
 }
 

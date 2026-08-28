@@ -91,7 +91,7 @@ func newCloneCommand(streams Streams, global *globalOptions, targets *boxtarget.
 	var explicitBox string
 	var branch string
 	command := &cobra.Command{
-		Use: "clone <repository>", Short: "Clone a Repository onto a Box", Long: "Clone a Repository onto a Box as a normal primary Git Worktree.", Args: cobra.ExactArgs(1),
+		Use: "clone <repository>", Short: "Clone a Repository onto a Box", Long: "Clone a Repository onto a Box as a normal primary Git Worktree. GitHub authentication can recover through a Box-owned source identity.", Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			result, err := runClone(cmd.Context(), streams, global, targets, explicitBox, args[0], branch)
 			if err != nil {
@@ -141,7 +141,7 @@ func runClone(ctx context.Context, streams Streams, global *globalOptions, targe
 	if err != nil {
 		return repository.MutationResult{}, err
 	}
-	result, err := target.CloneRepository(ctx, repository.CloneRequest{Source: source, Branch: branch})
+	result, err := cloneWithRecovery(ctx, streams, global, target, repository.CloneRequest{Source: source, Branch: branch}, "", nil)
 	return result, withCloneCollisionGuidance(err)
 }
 

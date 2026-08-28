@@ -90,9 +90,12 @@ func TestTargetValidatesRootsAndNormalizesAdapterErrors(t *testing.T) {
 		t.Fatalf("root error = %v", err)
 	}
 	adapter.catalog.WorktreeRoot = "/expected"
-	adapter.err = &repository.Error{Code: repository.CodeNotFound, Message: "missing Worktree"}
+	adapter.err = &repository.Error{Code: repository.CodeNotFound, Message: "missing Worktree", Context: map[string]string{"reason": "credentials_missing"}}
 	if _, err := target.ListWorktrees(t.Context()); box.ErrorCode(err) != "not_found" || !strings.Contains(err.Error(), "missing") {
 		t.Fatalf("normalized error = %v", err)
+	}
+	if _, err := target.ListWorktrees(t.Context()); err.(*box.Error).Context["reason"] != "credentials_missing" {
+		t.Fatalf("normalized error context = %+v", err)
 	}
 	if _, err := (Target{}).ListWorktrees(t.Context()); box.ErrorCode(err) != "internal" {
 		t.Fatalf("zero target error = %v", err)

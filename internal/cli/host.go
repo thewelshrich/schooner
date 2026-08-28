@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -217,22 +218,25 @@ func newHostCommand(streams Streams, options *globalOptions) *cobra.Command {
 	cmd.AddCommand(sessions)
 	cmd.AddCommand(worktree)
 	repositoryCommand := &cobra.Command{Use: "repository", Hidden: true, Args: cobra.NoArgs, RunE: helpRun}
-	repositoryCommand.AddCommand(&cobra.Command{
-		Use: "clone", Args: cobra.NoArgs, SilenceUsage: true,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			operation := hostruntime.RepositoryCloneOperation()
-			request, err := readHostOperationRequest(streams, operation)
-			if err != nil {
-				return executionError{cause: err}
-			}
-			request.NonInteractive = options.noInput
-			result, err := runtime.CloneRepository(cmd.Context(), request)
-			if err != nil {
-				return encodeLifecycleError(cmd.OutOrStdout(), request.BoxIdentity, err)
-			}
-			return encodeHostOperationResult(cmd.OutOrStdout(), operation, request, result)
-		},
-	})
+	cloneCommand := func(use string, operation hostruntime.Operation[hostruntime.CloneRequest, hostruntime.LifecycleResult], invoke func(context.Context, hostruntime.CloneRequest) (hostruntime.LifecycleResult, error)) *cobra.Command {
+		return &cobra.Command{Use: use, Args: cobra.NoArgs, SilenceUsage: true,
+			RunE: func(cmd *cobra.Command, _ []string) error {
+				request, err := readHostOperationRequest(streams, operation)
+				if err != nil {
+					return executionError{cause: err}
+				}
+				request.NonInteractive = options.noInput
+				result, err := invoke(cmd.Context(), request)
+				if err != nil {
+					return encodeLifecycleError(cmd.OutOrStdout(), request.BoxIdentity, err)
+				}
+				return encodeHostOperationResult(cmd.OutOrStdout(), operation, request, result)
+			}}
+	}
+	repositoryCommand.AddCommand(
+		cloneCommand("clone", hostruntime.RepositoryCloneOperation(), runtime.CloneRepository),
+		cloneCommand("clone-v2", hostruntime.RepositoryCloneV2Operation(), runtime.CloneRepositoryV2),
+	)
 	cmd.AddCommand(repositoryCommand)
 	sourceCommand := &cobra.Command{Use: "source", Hidden: true, Args: cobra.NoArgs, RunE: helpRun}
 	identityCommand := &cobra.Command{Use: "identity", Hidden: true, Args: cobra.NoArgs, RunE: helpRun}
@@ -360,7 +364,12 @@ func encodeLifecycleError(writer io.Writer, identity string, err error) error {
 	code := repository.ErrorCode(err)
 	switch code {
 	case repository.CodeNotFound, repository.CodeInvalidInput, repository.CodeConflict, repository.CodeAuthentication, repository.CodePermissionDenied, repository.CodeOperationInProgress, repository.CodeOutcomeUnknown:
-		return encodeHostResult(writer, hostruntime.NewOperationError(identity, hostruntime.Code(code), err.Error()))
+		var domain *repository.Error
+		contextValues := map[string]string(nil)
+		if errors.As(err, &domain) {
+			contextValues = domain.Context
+		}
+		return encodeHostResult(writer, hostruntime.NewOperationErrorWithContext(identity, hostruntime.Code(code), err.Error(), contextValues))
 	default:
 		hostCode := hostruntime.ErrorCode(err)
 		if slices.Contains([]hostruntime.Code{hostruntime.CodeInvalidInput, hostruntime.CodeConflict, hostruntime.CodeAuthentication, hostruntime.CodePermissionDenied, hostruntime.CodeOperationInProgress, hostruntime.CodeOutcomeUnknown}, hostCode) {

@@ -54,6 +54,18 @@ destruction retain source metadata and make no GitHub calls.
 Repository Identity is normalized host/owner/repository. HTTPS and SSH are
 operation-scoped Transports and never define durable identity.
 
+Repository clone version 2 moves GitHub transport selection behind the Source
+module while the Repository lifecycle retains exclusive staging authority.
+Candidates are the supplied transport, ambient canonical SSH, managed SSH, and
+anonymous HTTPS. Only authentication-shaped failures advance. Durable clone
+intent uses Repository Identity and checkpoints the first supplied origin so a
+transport fallback resumes one operation without changing `remote.origin.url`.
+
+Interactive clone and contextual start may offer to establish a Box Source
+Identity after an authentication failure, verify the requested Repository, and
+retry once. Existing managed identities require no prompt. JSON and
+non-interactive flows never authorize or register a key.
+
 ## Consequences
 
 - Compromise of one Box source key does not expose workstation keys or another
