@@ -38,6 +38,7 @@ jobs:
         env:
           MANUAL_VERSION: ${{ inputs.version }}
         run: |
+          git fetch --no-tags origin main:refs/remotes/origin/main
           if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
             version="${GITHUB_REF_NAME}"
           else
@@ -59,7 +60,37 @@ jobs:
               fi
             done
           fi
-          commit="$(git rev-parse "${GITHUB_SHA}^{commit}")"
+          if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
+            if [[ "$(git cat-file -t "refs/tags/${version}")" != "tag" ]]; then
+              echo "release tags must be annotated" >&2
+              exit 1
+            fi
+            release_notes="$(git for-each-ref --format='%(contents)' "refs/tags/${version}")"
+            if [[ -z "${release_notes//[[:space:]]/}" ]]; then
+              echo "release tag annotation must contain release notes" >&2
+              exit 1
+            fi
+            commit="$(git rev-parse "refs/tags/${version}^{commit}")"
+            event_commit="$(git rev-parse "${GITHUB_SHA}^{commit}")"
+            if [[ "${commit}" != "${event_commit}" ]]; then
+              echo "release tag target does not match the pushed ref" >&2
+              exit 1
+            fi
+            if ! git merge-base --is-ancestor "${commit}" refs/remotes/origin/main; then
+              echo "release tag must point to a commit contained in main" >&2
+              exit 1
+            fi
+          else
+            if [[ "${GITHUB_REF}" != "refs/heads/main" ]]; then
+              echo "manual release builds must run from main" >&2
+              exit 1
+            fi
+            commit="$(git rev-parse "${GITHUB_SHA}^{commit}")"
+            if [[ "${commit}" != "$(git rev-parse refs/remotes/origin/main^{commit})" ]]; then
+              echo "manual release builds must run from the current origin/main commit" >&2
+              exit 1
+            fi
+          fi
           built_at="$(date -u -d "$(git show -s --format=%cI "${commit}")" '+%Y-%m-%dT%H:%M:%SZ')"
           {
             echo "version=${version}"
@@ -151,19 +182,211 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  sign-macos:
+    name: Sign and notarize macOS binaries
+    needs:
+      - prepare
+      - build
+    runs-on: macos-15
+    environment: release
+    timeout-minutes: 120
+    steps:
+      - name: Download macOS binaries
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          pattern: schooner-darwin-*
+          path: dist
+          merge-multiple: true
+
+      - name: Validate Apple release secrets
+        env:
+          CERTIFICATE_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_P12_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_P12_PASSWORD }}
+          NOTARY_KEY_BASE64: ${{ secrets.APPLE_NOTARY_KEY_P8_BASE64 }}
+          NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+        run: |
+          missing=()
+          [[ -n "${CERTIFICATE_BASE64}" ]] || missing+=(APPLE_DEVELOPER_ID_P12_BASE64)
+          [[ -n "${CERTIFICATE_PASSWORD}" ]] || missing+=(APPLE_DEVELOPER_ID_P12_PASSWORD)
+          [[ -n "${NOTARY_KEY_BASE64}" ]] || missing+=(APPLE_NOTARY_KEY_P8_BASE64)
+          [[ -n "${NOTARY_KEY_ID}" ]] || missing+=(APPLE_NOTARY_KEY_ID)
+          [[ -n "${NOTARY_ISSUER_ID}" ]] || missing+=(APPLE_NOTARY_ISSUER_ID)
+          if (( ${#missing[@]} > 0 )); then
+            printf 'missing required Apple release secret: %s\n' "${missing[@]}" >&2
+            exit 1
+          fi
+          if [[ ! "${NOTARY_KEY_ID}" =~ ^[A-Za-z0-9]{10,}$ ]]; then
+            echo "APPLE_NOTARY_KEY_ID must be an alphanumeric key ID of at least 10 characters" >&2
+            exit 1
+          fi
+          if [[ ! "${NOTARY_ISSUER_ID}" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
+            echo "APPLE_NOTARY_ISSUER_ID must be an issuer UUID" >&2
+            exit 1
+          fi
+
+      - name: Import Developer ID identity
+        env:
+          CERTIFICATE_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_P12_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_P12_PASSWORD }}
+        run: |
+          certificate_path="${RUNNER_TEMP}/developer-id-application.p12"
+          intermediate_path="${RUNNER_TEMP}/DeveloperIDG2CA.cer"
+          keychain_path="${RUNNER_TEMP}/schooner-signing.keychain-db"
+          keychain_password="$(openssl rand -hex 32)"
+          echo "SIGNING_KEYCHAIN=${keychain_path}" >> "${GITHUB_ENV}"
+
+          printf '%s' "${CERTIFICATE_BASE64}" | base64 --decode > "${certificate_path}"
+          curl --fail --silent --show-error --location \
+            https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer \
+            --output "${intermediate_path}"
+
+          security create-keychain -p "${keychain_password}" "${keychain_path}"
+          security set-keychain-settings -lut 21600 "${keychain_path}"
+          security unlock-keychain -p "${keychain_password}" "${keychain_path}"
+          security import "${certificate_path}" \
+            -k "${keychain_path}" \
+            -P "${CERTIFICATE_PASSWORD}" \
+            -f pkcs12 \
+            -T /usr/bin/codesign
+          security import "${intermediate_path}" -k "${keychain_path}"
+          security set-key-partition-list \
+            -S apple-tool:,apple: \
+            -s \
+            -k "${keychain_password}" \
+            "${keychain_path}"
+
+          identity_hash="$(security find-identity -v -p codesigning "${keychain_path}" | awk '/Developer ID Application:/ {print $2}')"
+          identity_count="$(printf '%s\n' "${identity_hash}" | awk 'NF {count++} END {print count+0}')"
+          if [[ "${identity_count}" != "1" ]]; then
+            echo "expected exactly one Developer ID Application identity, found ${identity_count}" >&2
+            exit 1
+          fi
+
+          {
+            echo "SIGNING_IDENTITY=${identity_hash}"
+          } >> "${GITHUB_ENV}"
+
+      - name: Sign and verify macOS binaries
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          for arch in amd64 arm64; do
+            artifact="dist/schooner_${VERSION}_darwin_${arch}"
+            test -f "${artifact}"
+            codesign \
+              --force \
+              --sign "${SIGNING_IDENTITY}" \
+              --keychain "${SIGNING_KEYCHAIN}" \
+              --options runtime \
+              --timestamp \
+              --identifier app.schooner.cli \
+              "${artifact}"
+            codesign --verify --strict --verbose=4 "${artifact}"
+          done
+
+      - name: Notarize macOS binaries
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          NOTARY_KEY_BASE64: ${{ secrets.APPLE_NOTARY_KEY_P8_BASE64 }}
+          NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+        run: |
+          notary_key_path="${RUNNER_TEMP}/notary-api-key.p8"
+          payload_dir="${RUNNER_TEMP}/notary-payload"
+          archive_path="${RUNNER_TEMP}/schooner_${VERSION}_darwin.zip"
+          result_path="${RUNNER_TEMP}/notary-result.json"
+          log_path="${RUNNER_TEMP}/notarization-log.json"
+
+          printf '%s' "${NOTARY_KEY_BASE64}" | base64 --decode > "${notary_key_path}"
+          chmod 600 "${notary_key_path}"
+          mkdir -p "${payload_dir}"
+          cp "dist/schooner_${VERSION}_darwin_amd64" "${payload_dir}/"
+          cp "dist/schooner_${VERSION}_darwin_arm64" "${payload_dir}/"
+          ditto -c -k --keepParent "${payload_dir}" "${archive_path}"
+
+          xcrun notarytool submit "${archive_path}" \
+            --key "${notary_key_path}" \
+            --key-id "${NOTARY_KEY_ID}" \
+            --issuer "${NOTARY_ISSUER_ID}" \
+            --wait \
+            --timeout 110m \
+            --output-format json | tee "${result_path}"
+
+          NOTARY_RESULT_PATH="${result_path}" python3 -c '
+          import json, os
+          with open(os.environ["NOTARY_RESULT_PATH"], encoding="utf-8") as handle:
+              result = json.load(handle)
+          if result.get("status") != "Accepted":
+              raise SystemExit("notarization status: {!r}".format(result.get("status")))
+          '
+          submission_id="$(NOTARY_RESULT_PATH="${result_path}" python3 -c '
+          import json, os
+          with open(os.environ["NOTARY_RESULT_PATH"], encoding="utf-8") as handle:
+              print(json.load(handle)["id"])
+          ')"
+          xcrun notarytool log "${submission_id}" \
+            --key "${notary_key_path}" \
+            --key-id "${NOTARY_KEY_ID}" \
+            --issuer "${NOTARY_ISSUER_ID}" \
+            "${log_path}"
+          NOTARY_LOG_PATH="${log_path}" python3 -c '
+          import json, os
+          with open(os.environ["NOTARY_LOG_PATH"], encoding="utf-8") as handle:
+              result = json.load(handle)
+          if result.get("status") != "Accepted" or result.get("statusCode") != 0:
+              raise SystemExit("notarization log does not report an accepted submission")
+          if result.get("issues") not in (None, []):
+              raise SystemExit("notarization reported issues: {!r}".format(result.get("issues")))
+          '
+
+      - name: Upload signed macOS binaries
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: schooner-darwin-signed
+          path: dist/schooner_*
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload notarization log
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: schooner-${{ needs.prepare.outputs.version }}-notarization-log
+          path: ${{ runner.temp }}/notarization-log.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Delete temporary signing material
+        if: always()
+        run: |
+          if [[ -n "${SIGNING_KEYCHAIN:-}" ]]; then
+            security delete-keychain "${SIGNING_KEYCHAIN}" || true
+          fi
+          rm -f \
+            "${RUNNER_TEMP}/developer-id-application.p12" \
+            "${RUNNER_TEMP}/DeveloperIDG2CA.cer" \
+            "${RUNNER_TEMP}/notary-api-key.p8"
+
   bundle:
     name: Verify and bundle artifacts
     needs:
       - prepare
       - build
+      - sign-macos
     runs-on: ubuntu-24.04
     steps:
-      - name: Download binaries
+      - name: Download Linux binaries
         uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
         with:
-          pattern: schooner-*
+          pattern: schooner-linux-*
           path: dist
           merge-multiple: true
+
+      - name: Download signed macOS binaries
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: schooner-darwin-signed
+          path: dist
 
       - name: Verify artifact set and write checksums
         env:
@@ -206,6 +429,11 @@ jobs:
       id-token: write
       attestations: write
     steps:
+      - name: Check out release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
       - name: Download verified bundle
         uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
         with:
@@ -232,8 +460,14 @@ jobs:
           if [[ "${without_build}" == *-* ]]; then
             release_flags+=(--prerelease)
           fi
+          release_notes="$(git for-each-ref --format='%(contents)' "refs/tags/${VERSION}")"
+          if [[ -z "${release_notes//[[:space:]]/}" ]]; then
+            echo "release tag annotation must contain release notes" >&2
+            exit 1
+          fi
           gh release create "${VERSION}" dist/* \
             --verify-tag \
             --generate-notes \
+            --notes "${release_notes}" \
             --title "${VERSION}" \
             "${release_flags[@]}"

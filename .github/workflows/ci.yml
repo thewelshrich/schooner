@@ -38,6 +38,9 @@ jobs:
           go mod tidy
           git diff --exit-code -- go.mod go.sum
 
+      - name: Test release tooling
+        run: scripts/release_test.sh
+
       - name: Vet
         run: go vet ./...
 
