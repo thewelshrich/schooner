@@ -99,10 +99,15 @@ expect_failure_in_fixture "working tree must be clean" "${dirty_fixture}" \
 
 require_workflow_invariant "publish_existing_tag:"
 require_workflow_invariant 'ref: ${{ needs.prepare.outputs.commit }}'
+require_workflow_invariant "existing-tag recovery must run from the matching tag ref"
+require_workflow_invariant "release tag target does not match the workflow ref"
 require_workflow_invariant "release tag must point to a commit contained in main"
 require_workflow_invariant "expected_intermediate_sha256="
 require_workflow_invariant "grep -Fxq \"\${expected_intermediate_sha256}\""
 require_workflow_invariant "if: needs.prepare.outputs.publish == 'true'"
 require_workflow_invariant 'ref: ${{ needs.prepare.outputs.version }}'
+require_workflow_invariant "existing release is not the expected resumable draft"
+require_workflow_invariant 'gh release upload "${VERSION}" dist/* --clobber'
+require_workflow_invariant "draft release assets: got"
 
 printf 'release_test: all tests passed\n'

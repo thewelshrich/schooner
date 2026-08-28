@@ -35,9 +35,9 @@ an annotated `v`-prefixed Semantic Versioning tag triggers the Release
 workflow. The workflow rejects lightweight tags, tags whose annotation is
 empty, and tags whose target commit is not contained in `main`. Normal manual
 signed builds are accepted only from the current `origin/main` commit and never
-publish a GitHub release. An existing-tag recovery must itself run from current
-`origin/main`, then builds the immutable tag's original commit and reuses its
-annotation.
+publish a GitHub release. An existing-tag recovery must run from the matching
+tag ref so the protected environment and build-provenance identity remain bound
+to that immutable tag and its original commit.
 
 ## Release procedure
 
@@ -67,12 +67,29 @@ tag but no remote tag, rerunning with the same version and notes safely reuses
 the matching local annotated tag.
 
 If the remote tag exists but its Release workflow failed before publication,
-fix the workflow on `main` and use **Run workflow** with the existing version
-and **Publish existing annotated tag** enabled. Recovery requires current
-`origin/main`, an annotated tag with non-empty notes, and a tag target contained
-in `main`. It checks out and builds that original target, passes through the
-protected `release` environment again, and refuses to replace an existing
-GitHub release. Never delete or move an immutable tag to retry a release.
+fix the workflow for a later release, then dispatch the workflow version stored
+in the failed tag itself:
+
+```bash
+gh workflow run release.yml \
+  --ref v0.2.0 \
+  -f version=v0.2.0 \
+  -f publish_existing_tag=true
+```
+
+The ref and version must be the same annotated tag. Recovery requires non-empty
+tag notes and a tag target contained in `main`. It rebuilds that original
+target, passes through the protected `release` environment again, and keeps the
+attestation's source ref and digest aligned with the release tag. If publication
+left a matching mutable draft, recovery verifies its title, notes, prerelease
+state, and exact asset set before publishing it; an already-published release is
+never replaced.
+
+Only tags that already contain this recovery-capable workflow can use this
+path, because GitHub executes the workflow definition stored at the dispatched
+ref. If an older immutable tag predates the recovery logic, leave it untouched
+and publish the fix under a new patch version. Never delete or move an immutable
+tag to retry a release.
 
 Codex discovers the repository-scoped `$schooner-release` skill from
 `.agents/skills/schooner-release`. It inspects the actual changes since the
@@ -148,9 +165,11 @@ gh secret set APPLE_NOTARY_ISSUER_ID --env release
 
 The commands without piped input prompt for the value without putting it in
 shell history. Repository administrators can instead enter the same values
-under **Settings > Environments > release > Environment secrets**. Restrict the
-environment to protected version tags and require approval for releases if the
-repository's GitHub plan supports those protection rules.
+under **Settings > Environments > release > Environment secrets**. Under
+**Deployment branches and tags**, select only the protected `main` branch and
+protected `v*` tags: manual signed builds use current `main`, while publication
+and recovery use the matching version tag. Require approval if the repository's
+GitHub plan supports it.
 
 The workflow imports the signing identity into a temporary Keychain, signs both
 Mac architectures with the hardened runtime and a secure timestamp, and deletes
