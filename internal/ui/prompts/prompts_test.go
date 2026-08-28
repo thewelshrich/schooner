@@ -49,8 +49,23 @@ func TestWaitAccessiblePrintsStaticStatus(t *testing.T) {
 	if err != nil || !called {
 		t.Fatalf("err = %v, called = %v", err, called)
 	}
-	if output.String() != "\n… Loading DigitalOcean catalog\n" {
+	if output.String() != "… Loading DigitalOcean catalog\n✓ Loading DigitalOcean catalog\n" {
 		t.Fatalf("output = %q", output.String())
+	}
+}
+
+func TestExplainWrapsAccessibleText(t *testing.T) {
+	var output bytes.Buffer
+	explain(Options{Output: &output, Accessible: true}, "This explanation should wrap in accessible output even when terminal color and styling are disabled, so it remains easy to scan.")
+
+	lines := strings.Split(strings.TrimSpace(output.String()), "\n")
+	if len(lines) < 2 {
+		t.Fatalf("expected wrapped output, got %q", output.String())
+	}
+	for _, line := range lines {
+		if width := ansi.StringWidth(line); width > 72 {
+			t.Fatalf("line width = %d, want <= 72: %q", width, line)
+		}
 	}
 }
 
@@ -216,6 +231,56 @@ func TestConfirmDestroyWarnsAboutSeparateSourceCleanup(t *testing.T) {
 	}
 	if !strings.Contains(output.String(), "Disconnect source access first") || !strings.Contains(output.String(), "never calls GitHub") {
 		t.Fatalf("output = %q", output.String())
+	}
+}
+
+func TestConfirmGitHubConnectExplainsDeviceFlow(t *testing.T) {
+	var output bytes.Buffer
+	confirmed, err := ConfirmGitHubConnect(t.Context(), Options{Input: strings.NewReader("y\n"), Output: &output, Accessible: true}, GitHubConnectDraft{BoxName: "work", NeedsDeviceFlow: true})
+	if err != nil || !confirmed {
+		t.Fatalf("confirmed = %v, err = %v", confirmed, err)
+	}
+	got := output.String()
+	for _, phrase := range []string{"GitHub access", "GitHub App", "Git SSH keys: read and write", "cannot read your repositories", "Authorize Schooner with GitHub?"} {
+		if !strings.Contains(got, phrase) {
+			t.Fatalf("output %q does not contain %q", got, phrase)
+		}
+	}
+}
+
+func TestConfirmGitHubConnectReuseSkipsAppSermon(t *testing.T) {
+	var output bytes.Buffer
+	confirmed, err := ConfirmGitHubConnect(t.Context(), Options{Input: strings.NewReader("y\n"), Output: &output, Accessible: true}, GitHubConnectDraft{BoxName: "work", AccountLogin: "octocat"})
+	if err != nil || !confirmed {
+		t.Fatalf("confirmed = %v, err = %v", confirmed, err)
+	}
+	got := output.String()
+	if !strings.Contains(got, "already authorized") || !strings.Contains(got, "octocat") || strings.Contains(got, "GitHub App") {
+		t.Fatalf("output = %q", got)
+	}
+}
+
+func TestConfirmGitHubCloneRecoveryNamesTheRepository(t *testing.T) {
+	var output bytes.Buffer
+	confirmed, err := ConfirmGitHubCloneRecovery(t.Context(), Options{Input: strings.NewReader("y\n"), Output: &output, Accessible: true}, "work", "owner/repo")
+	if err != nil || !confirmed {
+		t.Fatalf("confirmed = %v, err = %v", confirmed, err)
+	}
+	got := output.String()
+	if !strings.Contains(got, "owner/repo") || !strings.Contains(got, "already tried") || !strings.Contains(got, "Create a dedicated Box key?") {
+		t.Fatalf("output = %q", got)
+	}
+}
+
+func TestConfirmGitHubDisconnectWarnsWhenRemovingTheLastBox(t *testing.T) {
+	var output bytes.Buffer
+	confirmed, err := ConfirmGitHubDisconnect(t.Context(), Options{Input: strings.NewReader("y\n"), Output: &output, Accessible: true}, GitHubDisconnectDraft{BoxName: "work", AccountLogin: "octocat", KeyTitle: "Schooner / work", LastBox: true})
+	if err != nil || !confirmed {
+		t.Fatalf("confirmed = %v, err = %v", confirmed, err)
+	}
+	got := output.String()
+	if !strings.Contains(got, "last connected Box") || !strings.Contains(got, "Schooner / work") {
+		t.Fatalf("output = %q", got)
 	}
 }
 

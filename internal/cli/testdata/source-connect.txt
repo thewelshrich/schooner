@@ -1,6 +1,11 @@
 
-✓ GitHub source access connected
+✓ work can use GitHub as octocat
   Box          work
   Account      octocat
   SSH key      Schooner / work
   Fingerprint  SHA256:safe
+
+The private key is on the Box. The GitHub App token is on this machine.
+GitHub may email you that a new SSH key was added; that is this Box key.
+
+Disconnect later with: schooner source disconnect github --box work

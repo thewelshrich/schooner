@@ -32,17 +32,30 @@ func TestRunDoesNotProbeTerminal(t *testing.T) {
 	}
 }
 
-func TestWhileRunsAction(t *testing.T) {
+func TestWhileKeepsCompletedStep(t *testing.T) {
 	var out bytes.Buffer
 	called := false
-	err := While(t.Context(), &out, uitheme.New(uitheme.Auto, false), "Work", false, func(context.Context) error {
+	err := While(t.Context(), &out, uitheme.New(uitheme.Auto, false), "Creating an SSH key on work…", false, func(context.Context) error {
 		called = true
 		return nil
 	})
 	if err != nil || !called {
 		t.Fatalf("err=%v called=%t", err, called)
 	}
-	if !strings.Contains(out.String(), "… Work") {
+	if out.String() != "… Creating an SSH key on work\n✓ Creating an SSH key on work\n" {
+		t.Fatalf("output = %q", out.String())
+	}
+}
+
+func TestWhileKeepsFailedStep(t *testing.T) {
+	var out bytes.Buffer
+	err := While(t.Context(), &out, nil, "Cloning onto work", false, func(context.Context) error {
+		return context.Canceled
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if out.String() != "… Cloning onto work\n✗ Cloning onto work\n" {
 		t.Fatalf("output = %q", out.String())
 	}
 }

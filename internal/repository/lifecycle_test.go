@@ -226,6 +226,104 @@ func TestLifecycleCloneV2RecoversByRepositoryIdentityAndPreservesFirstOrigin(t *
 	}
 }
 
+func TestLifecycleCloneV2PrefersUsableLocalRepositoryOverGitHubShorthand(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "worktrees")
+	if err := os.MkdirAll(filepath.Join(root, "owner"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	localSource := filepath.Join(root, "owner", "repo")
+	if output, err := exec.Command("git", "clone", "--bare", createLifecycleSource(t), localSource).CombinedOutput(); err != nil {
+		t.Fatalf("git clone --bare: %v\n%s", err, output)
+	}
+	executor := &lifecycleCloneExecutor{localSource: createLifecycleSource(t)}
+	lifecycle, err := NewLifecycleWithOptions(root, filepath.Join(t.TempDir(), "state"), nil, LifecycleOptions{CloneExecutor: executor})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cloned, err := lifecycle.CloneV2(t.Context(), CloneRequest{Source: "owner/repo"})
+	if err != nil || cloned.Path != filepath.Join(lifecycle.root, "repo") || len(executor.requests) != 0 {
+		t.Fatalf("cloned=%+v requests=%+v err=%v", cloned, executor.requests, err)
+	}
+}
+
+func TestLifecycleCloneV2TreatsUnusableLocalPathAsGitHubShorthand(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		createInvalid bool
+	}{
+		{name: "missing"},
+		{name: "not_a_repository", createInvalid: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := filepath.Join(t.TempDir(), "worktrees")
+			if err := os.MkdirAll(root, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if test.createInvalid {
+				if err := os.MkdirAll(filepath.Join(root, "Owner", "Repo"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			executor := &lifecycleCloneExecutor{localSource: createLifecycleSource(t)}
+			lifecycle, err := NewLifecycleWithOptions(root, filepath.Join(t.TempDir(), "state"), nil, LifecycleOptions{CloneExecutor: executor})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			cloned, err := lifecycle.CloneV2(t.Context(), CloneRequest{Source: "Owner/Repo"})
+			if err != nil || cloned.Path != filepath.Join(lifecycle.root, "repo") || len(executor.requests) != 1 {
+				t.Fatalf("cloned=%+v requests=%+v err=%v", cloned, executor.requests, err)
+			}
+			request := executor.requests[0]
+			if request.Repository.Key() != "github.com/owner/repo" || request.SuppliedOrigin != "https://github.com/owner/repo.git" {
+				t.Fatalf("clone request = %+v", request)
+			}
+			if storedOrigin := strings.TrimSpace(lifecycleGitOutput(t, cloned.Path, "config", "--get-all", "remote.origin.url")); storedOrigin != request.SuppliedOrigin {
+				t.Fatalf("stored origin = %q, want %q", storedOrigin, request.SuppliedOrigin)
+			}
+		})
+	}
+}
+
+func TestLifecycleCloneV2RetiresFailedVersion1ShorthandCheckpoint(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "worktrees")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	state := filepath.Join(t.TempDir(), "state")
+	executor := &lifecycleCloneExecutor{localSource: createLifecycleSource(t)}
+	lifecycle, err := NewLifecycleWithOptions(root, state, nil, LifecycleOptions{CloneExecutor: executor})
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyTarget := filepath.Join(lifecycle.root, "Repo")
+	legacyIntent := fingerprint("clone", legacyTarget, "Owner/Repo", "")
+	legacy := operationRecord{
+		SchemaVersion: operationSchemaVersion, ID: legacyIntent[:24], Kind: "clone", IntentSHA256: legacyIntent,
+		TargetPath: legacyTarget, StagingPath: filepath.Join(lifecycle.root, ".schooner-stage-"+legacyIntent[:24], "Repo"),
+		Checkpoint: "clone_pending", OwnershipToken: strings.Repeat("a", 64),
+	}
+	if err = lifecycle.createOwnedStage(&legacy); err != nil {
+		t.Fatal(err)
+	}
+	if err = lifecycle.save(&legacy); err != nil {
+		t.Fatal(err)
+	}
+
+	cloned, err := lifecycle.CloneV2(t.Context(), CloneRequest{Source: "Owner/Repo"})
+	if err != nil || cloned.Path != filepath.Join(lifecycle.root, "repo") || len(executor.requests) != 1 {
+		t.Fatalf("cloned=%+v requests=%+v err=%v", cloned, executor.requests, err)
+	}
+	retired, found, loadErr := lifecycle.load(legacyIntent)
+	if loadErr != nil || !found || retired.Checkpoint != "aborted" {
+		t.Fatalf("retired=%+v found=%t err=%v", retired, found, loadErr)
+	}
+	if _, statErr := os.Stat(legacy.StagingPath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("legacy staging path survived: %v", statErr)
+	}
+}
+
 func TestLifecycleCloneV2KeepsGenericGitSuffixOutOfDestination(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "worktrees")
 	if err := os.MkdirAll(root, 0o755); err != nil {

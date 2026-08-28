@@ -12,6 +12,15 @@ import (
 	"github.com/thewelshrich/schooner/internal/source"
 )
 
+type oneByteReader struct{ reader *strings.Reader }
+
+func (r *oneByteReader) Read(buffer []byte) (int, error) {
+	if len(buffer) > 1 {
+		buffer = buffer[:1]
+	}
+	return r.reader.Read(buffer)
+}
+
 type cloneRecoveryTarget struct {
 	name         string
 	identity     string
@@ -55,7 +64,7 @@ func TestCloneWithRecoveryConnectsVerifiesAndRetriesExactlyOnce(t *testing.T) {
 		cloneResults: []repository.MutationResult{{}, {Action: "clone", Path: "/worktrees/repo"}},
 	}
 	var output bytes.Buffer
-	streams := Streams{In: strings.NewReader("y\n"), Out: &output, Err: &output, InIsTerminal: true, OutIsTerminal: true, ErrIsTerminal: true}
+	streams := Streams{In: &oneByteReader{reader: strings.NewReader("y\ny\n")}, Out: &output, Err: &output, InIsTerminal: true, OutIsTerminal: true, ErrIsTerminal: true}
 	global := &globalOptions{output: "human", accessible: true}
 	connectCalls := 0
 	result, err := cloneWithRecovery(t.Context(), streams, global, target, repository.CloneRequest{Source: "https://github.com/Owner/Repo.git"}, "", func(_ context.Context, connectTarget source.Target, repositoryURL string) (source.ConnectResult, error) {
@@ -67,6 +76,26 @@ func TestCloneWithRecoveryConnectsVerifiesAndRetriesExactlyOnce(t *testing.T) {
 	})
 	if err != nil || result.Path != "/worktrees/repo" || target.cloneCalls != 2 || connectCalls != 1 {
 		t.Fatalf("result = %+v, clone calls = %d, connect calls = %d, err = %v", result, target.cloneCalls, connectCalls, err)
+	}
+}
+
+func TestCloneWithRecoveryConnectsGitHubShorthandAfterBoxAuthenticationFailure(t *testing.T) {
+	authentication := box.NewError("authentication_required", "GitHub authentication failed", nil)
+	target := &cloneRecoveryTarget{
+		name: "work", identity: "11111111-1111-4111-8111-111111111111",
+		cloneErrors: []error{authentication, nil},
+	}
+	streams := Streams{In: &oneByteReader{reader: strings.NewReader("y\ny\n")}, Out: &bytes.Buffer{}, Err: &bytes.Buffer{}, InIsTerminal: true, OutIsTerminal: true, ErrIsTerminal: true}
+	connectCalls := 0
+	_, err := cloneWithRecovery(t.Context(), streams, &globalOptions{output: "human", accessible: true}, target, repository.CloneRequest{Source: "Owner/Repo"}, "", func(_ context.Context, _ source.Target, repositoryURL string) (source.ConnectResult, error) {
+		connectCalls++
+		if repositoryURL != "git@github.com:owner/repo.git" {
+			t.Fatalf("repository = %q", repositoryURL)
+		}
+		return source.ConnectResult{State: source.StateConnected}, nil
+	})
+	if err != nil || target.cloneCalls != 2 || connectCalls != 1 {
+		t.Fatalf("clone calls = %d, connect calls = %d, err = %v", target.cloneCalls, connectCalls, err)
 	}
 }
 
@@ -110,7 +139,7 @@ func TestCloneWithRecoveryRequiresV2BeforeConnecting(t *testing.T) {
 	runtimeUpdate := &box.Error{Code: "authentication_required", Message: "managed recovery requires clone v2", Context: map[string]string{"reason": "host_runtime_update_required"}}
 	target := &cloneRecoveryTarget{name: "work", identity: "11111111-1111-4111-8111-111111111111", cloneErrors: []error{runtimeUpdate}}
 	connectCalls := 0
-	streams := Streams{In: strings.NewReader("y\n"), Out: &bytes.Buffer{}, Err: &bytes.Buffer{}, InIsTerminal: true, OutIsTerminal: true, ErrIsTerminal: true}
+	streams := Streams{In: &oneByteReader{reader: strings.NewReader("y\ny\n")}, Out: &bytes.Buffer{}, Err: &bytes.Buffer{}, InIsTerminal: true, OutIsTerminal: true, ErrIsTerminal: true}
 	_, err := cloneWithRecovery(t.Context(), streams, &globalOptions{output: "human", accessible: true}, target, repository.CloneRequest{Source: "https://github.com/owner/repo.git"}, "", func(context.Context, source.Target, string) (source.ConnectResult, error) {
 		connectCalls++
 		return source.ConnectResult{}, nil
@@ -149,11 +178,26 @@ func TestCloneWithRecoveryDoesNotPromptForSAMLOrExistingSuccess(t *testing.T) {
 func TestCloneWithRecoveryRetriesOnlyOnceAfterConnection(t *testing.T) {
 	authentication := box.NewError("authentication_required", "authentication failed", nil)
 	target := &cloneRecoveryTarget{name: "work", identity: "11111111-1111-4111-8111-111111111111", cloneErrors: []error{authentication, authentication, nil}}
-	streams := Streams{In: strings.NewReader("y\n"), Out: &bytes.Buffer{}, Err: &bytes.Buffer{}, InIsTerminal: true, OutIsTerminal: true, ErrIsTerminal: true}
+	streams := Streams{In: &oneByteReader{reader: strings.NewReader("y\ny\n")}, Out: &bytes.Buffer{}, Err: &bytes.Buffer{}, InIsTerminal: true, OutIsTerminal: true, ErrIsTerminal: true}
 	_, err := cloneWithRecovery(t.Context(), streams, &globalOptions{output: "human", accessible: true}, target, repository.CloneRequest{Source: "https://github.com/owner/repo.git"}, "", func(context.Context, source.Target, string) (source.ConnectResult, error) {
 		return source.ConnectResult{}, nil
 	})
 	if box.ErrorCode(err) != "authentication_required" || target.cloneCalls != 2 {
 		t.Fatalf("error = %v, clone calls = %d", err, target.cloneCalls)
+	}
+}
+
+func TestCloneWithRecoveryDecliningLeavesGitOnTheBox(t *testing.T) {
+	authentication := box.NewError("authentication_required", "authentication failed", nil)
+	target := &cloneRecoveryTarget{name: "work", identity: "11111111-1111-4111-8111-111111111111", cloneErrors: []error{authentication}}
+	connectCalls := 0
+	streams := Streams{In: strings.NewReader("n\n"), Out: &bytes.Buffer{}, Err: &bytes.Buffer{}, InIsTerminal: true, OutIsTerminal: true, ErrIsTerminal: true}
+	_, err := cloneWithRecovery(t.Context(), streams, &globalOptions{output: "human", accessible: true}, target, repository.CloneRequest{Source: "https://github.com/owner/repo.git"}, "", func(context.Context, source.Target, string) (source.ConnectResult, error) {
+		connectCalls++
+		return source.ConnectResult{}, nil
+	})
+	var guidance guidanceError
+	if !errors.As(err, &guidance) || !strings.Contains(guidance.guidance, "configure Git or SSH on the Box") || connectCalls != 0 || target.cloneCalls != 1 {
+		t.Fatalf("error = %v, clone calls = %d, connect calls = %d", err, target.cloneCalls, connectCalls)
 	}
 }

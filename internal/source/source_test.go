@@ -42,6 +42,38 @@ func TestConnectReconcilesOneBoxKeyAndReusesLocalAccount(t *testing.T) {
 	}
 }
 
+func TestAuthorizationStateAndBindingCountFollowConnect(t *testing.T) {
+	manager, _, _, _, target := testManager(t)
+	state, err := manager.AuthorizationState(t.Context())
+	if err != nil || !state.NeedsDeviceFlow || state.Account.Login != "" {
+		t.Fatalf("before connect: state=%+v err=%v", state, err)
+	}
+	count, err := manager.BindingCount(t.Context())
+	if err != nil || count != 0 {
+		t.Fatalf("before connect: count=%d err=%v", count, err)
+	}
+
+	var phases []ConnectPhase
+	if _, err = manager.Connect(t.Context(), ConnectRequest{Target: target, AllowAuthorization: true, RunPhase: func(phase ConnectPhase, fn func() error) error {
+		phases = append(phases, phase)
+		return fn()
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if len(phases) != 3 || phases[0] != ConnectPhaseCreatingKey || phases[1] != ConnectPhaseRegisteringKey || phases[2] != ConnectPhaseVerifying {
+		t.Fatalf("phases=%v", phases)
+	}
+
+	state, err = manager.AuthorizationState(t.Context())
+	if err != nil || state.NeedsDeviceFlow || state.Account.Login != "octocat" {
+		t.Fatalf("after connect: state=%+v err=%v", state, err)
+	}
+	count, err = manager.BindingCount(t.Context())
+	if err != nil || count != 1 {
+		t.Fatalf("after connect: count=%d err=%v", count, err)
+	}
+}
+
 func TestUnavailableKeyringUsesInvocationMemoryOnly(t *testing.T) {
 	manager, store, secrets, github, target := testManager(t)
 	secrets.setErr = errors.New("locked")

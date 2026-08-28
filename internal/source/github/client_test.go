@@ -57,20 +57,34 @@ func TestDeviceAuthorizationPollsPendingAndSlowDown(t *testing.T) {
 func TestHostKeysAreValidatedAgainstMetadataFingerprints(t *testing.T) {
 	key := githubTestKey
 	fingerprint, _ := source.PublicKeyFingerprint(key)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{"ssh_keys": []string{key}, "ssh_key_fingerprints": map[string]string{"SHA256_ED25519": fingerprint}})
-	}))
-	defer server.Close()
-	client := New(Options{HTTP: server.Client(), APIBase: server.URL})
-	keys, err := client.HostKeys(t.Context())
-	if err != nil || len(keys) != 1 || keys[0].Fingerprint != fingerprint {
-		t.Fatalf("keys=%+v err=%v", keys, err)
+	for _, advertised := range []string{strings.TrimPrefix(fingerprint, "SHA256:"), fingerprint} {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_ = json.NewEncoder(w).Encode(map[string]any{"ssh_keys": []string{key}, "ssh_key_fingerprints": map[string]string{"SHA256_ED25519": advertised}})
+		}))
+		client := New(Options{HTTP: server.Client(), APIBase: server.URL})
+		keys, err := client.HostKeys(t.Context())
+		server.Close()
+		if err != nil || len(keys) != 1 || keys[0].Fingerprint != fingerprint {
+			t.Fatalf("advertised=%q keys=%+v err=%v", advertised, keys, err)
+		}
 	}
 }
 
 func TestHostKeyFingerprintMismatchFailsClosed(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"ssh_keys": []string{githubTestKey}, "ssh_key_fingerprints": map[string]string{"SHA256_ED25519": "SHA256:wrong"}})
+	}))
+	defer server.Close()
+	client := New(Options{HTTP: server.Client(), APIBase: server.URL})
+	_, err := client.HostKeys(t.Context())
+	if source.ErrorCode(err) != "conflict" {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestMalformedHostKeyFingerprintFailsClosed(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"ssh_keys": []string{githubTestKey}, "ssh_key_fingerprints": map[string]string{"SHA256_ED25519": "not-a-fingerprint"}})
 	}))
 	defer server.Close()
 	client := New(Options{HTTP: server.Client(), APIBase: server.URL})
@@ -270,4 +284,11 @@ type recordingPresenter struct{ authorization source.DeviceAuthorization }
 func (p *recordingPresenter) Present(_ context.Context, value source.DeviceAuthorization) error {
 	p.authorization = value
 	return nil
+}
+
+func (p *recordingPresenter) Wait(ctx context.Context, _ string, action func(context.Context) error) error {
+	if action == nil {
+		return nil
+	}
+	return action(ctx)
 }

@@ -11,11 +11,16 @@ dedicated Ed25519 SSH keypair.
 schooner source connect github --box work-api
 ```
 
-When authorization is required in an interactive terminal, Schooner prints the
-GitHub device URL and one-time code. It also tries to open the URL with `open`
-on macOS or `xdg-open` on Linux; browser failure does not hide the URL or stop
-authorization. The GitHub App requests only the account-level permission needed
-to read and write Git SSH keys.
+When authorization is required in an interactive terminal, Schooner first
+explains the GitHub App, the Git SSH key permission, and where the token and
+private key will live, then asks for confirmation. After that it prints the
+GitHub device URL and one-time code, and shows a spinner while it requests a
+device code and while it waits for GitHub. It also tries to open the URL with
+`open` on macOS or `xdg-open` on Linux; browser failure does not hide the URL
+or stop authorization. The GitHub App requests only the account-level permission
+needed to read and write Git SSH keys; it cannot read repositories. Creating the
+Box key, registering it, and verifying SSH each run under a spinner. A successful
+connect prints a receipt that includes how to disconnect.
 
 The access and refresh tokens are stored together as a versioned envelope in
 the operating-system credential store. If that store is unavailable, Schooner
@@ -65,6 +70,12 @@ register a Box key without prompting when that stored credential is usable.
 
 ## Clone and start recovery
 
+An input shaped exactly as `owner/repository` is ambiguous with a relative
+local path. On the Box, Schooner first checks whether that path is a usable Git
+repository. When it is not, Schooner treats the input as GitHub shorthand and
+stores its canonical `https://github.com/owner/repository.git` URL as the
+origin.
+
 For GitHub repositories, Schooner runs one durable clone lifecycle while trying
 these operation-scoped transports in order:
 
@@ -74,19 +85,23 @@ these operation-scoped transports in order:
 4. Anonymous HTTPS with credential helpers disabled.
 
 All Git processes are non-interactive, even during an interactive Schooner
-invocation. Schooner advances only after an authentication-shaped failure; it
-stops for network, filesystem, invalid-source, cancellation, host-key, or
-integrity failures. URL rewriting is scoped to that Git process, so the first
-credential-free supplied URL remains `remote.origin.url` after a fallback.
+invocation. Schooner advances after an authentication-shaped failure or when
+the Box user's ambient SSH configuration has not established first-use GitHub
+host trust. It stops for network, filesystem, invalid-source, cancellation,
+changed host-key, managed host-trust, or integrity failures. URL rewriting is
+scoped to that Git process, so the first credential-free supplied URL remains
+`remote.origin.url` after a fallback.
 
 `schooner clone` and contextual `schooner start` share the same recovery flow.
 They run the normal lifecycle first and use an existing managed identity without
 prompting. After a GitHub authentication failure, an interactive human
-invocation can connect the Box, verify `git ls-remote` against the requested
-repository, and retry that lifecycle exactly once. JSON and non-interactive
-invocations never authorize an account or register a key; they return
-`authentication_required` guidance and leave explicit `source connect` as the
-automation path.
+invocation explains that the Box's own Git and SSH configuration already failed,
+then offers to create a dedicated Box key or to leave Git configuration on the
+Box. Choosing the dedicated key shows the same GitHub access consent used by
+`source connect`, verifies `git ls-remote` against the requested repository, and
+retries that lifecycle exactly once. JSON and non-interactive invocations never
+authorize an account or register a key; they return `authentication_required`
+guidance and leave explicit `source connect` as the automation path.
 
 Managed recovery requires the Box runtime to advertise `repository.clone.v2`.
 An authentication failure from a version-1-only runtime returns
@@ -125,7 +140,9 @@ schooner source disconnect github --box work-api --yes
 ```
 
 Disconnect lists GitHub keys and verifies the recorded fingerprint before any
-deletion. It revokes the GitHub key first, then removes the Box files. If
+deletion. An interactive invocation explains which Box key will be revoked and
+that other Boxes keep theirs, then asks for confirmation; `--yes` skips that
+prompt. It revokes the GitHub key first, then removes the Box files. If
 revocation succeeds but the Box cannot be cleaned, the command succeeds with a
 security warning and retains `cleanup_pending`; a later status or disconnect
 retries only the already-authorized Box cleanup.

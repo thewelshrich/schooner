@@ -105,6 +105,7 @@ type DeviceAuthorization struct {
 
 type DevicePresenter interface {
 	Present(context.Context, DeviceAuthorization) error
+	Wait(context.Context, string, func(context.Context) error) error
 }
 
 type RemoteAccount struct {
@@ -181,10 +182,19 @@ type Target interface {
 	VerifySourceRepository(context.Context, VerifyRequest) (VerifyResult, error)
 }
 
+type ConnectPhase string
+
+const (
+	ConnectPhaseCreatingKey    ConnectPhase = "creating_key"
+	ConnectPhaseRegisteringKey ConnectPhase = "registering_key"
+	ConnectPhaseVerifying      ConnectPhase = "verifying"
+)
+
 type ConnectRequest struct {
 	Target             Target
 	AllowAuthorization bool
 	Repository         string
+	RunPhase           func(ConnectPhase, func() error) error
 }
 
 type ConnectResult struct {
@@ -198,6 +208,13 @@ type ConnectResult struct {
 	State          State
 	Recovered      bool
 	Warning        string
+}
+
+// AuthorizationState is a local, best-effort read of whether GitHub device
+// flow is needed before Connect. It does not call GitHub.
+type AuthorizationState struct {
+	NeedsDeviceFlow bool
+	Account         RemoteAccount
 }
 
 type LayerObservation struct {
@@ -331,61 +348,71 @@ func (m *Manager) Connect(ctx context.Context, request ConnectRequest) (result C
 			return preflight, preflightErr
 		}
 	}
-	hostKeys, err := m.github.HostKeys(ctx)
-	if err != nil {
+	var hostIdentity HostIdentity
+	if err = runConnectPhase(request.RunPhase, ConnectPhaseCreatingKey, func() error {
+		hostKeys, hostErr := m.github.HostKeys(ctx)
+		if hostErr != nil {
+			return hostErr
+		}
+		if hostErr = ValidateHostKeys(hostKeys); hostErr != nil {
+			return &Error{Code: "conflict", Message: "GitHub host-key metadata is invalid", Context: map[string]string{"reason": "host_key_changed"}, Cause: hostErr}
+		}
+		hostIdentity, hostErr = request.Target.EnsureSourceIdentity(ctx, EnsureIdentityRequest{Provider: GitHub, HostKeys: hostKeys})
+		if hostErr != nil {
+			return hostErr
+		}
+		actualFingerprint, fingerprintErr := PublicKeyFingerprint(hostIdentity.PublicKey)
+		if !hostIdentity.Exists || hostIdentity.Provider != GitHub || hostIdentity.Fingerprint == "" || hostIdentity.PublicKey == "" || !hostIdentity.TrustConfigured || !HostFingerprintsMatch(hostIdentity.HostFingerprints, hostKeys) || fingerprintErr != nil || actualFingerprint != hostIdentity.Fingerprint {
+			return NewError("outcome_unknown", "the Box did not return a complete GitHub source identity", nil)
+		}
+		if findErr == nil && binding.Fingerprint != "" && binding.Fingerprint != hostIdentity.Fingerprint {
+			return NewError("conflict", "the Box GitHub key differs from the recorded source identity", nil)
+		}
+		now := m.now().UTC()
+		binding.BoxIdentity = request.Target.BoxIdentity()
+		binding.BoxName = boxName
+		binding.Provider = GitHub
+		binding.AccountExternalID = account.ID
+		binding.Fingerprint = hostIdentity.Fingerprint
+		binding.State = StateConnecting
+		binding.UpdatedAt = now
+		if binding.CreatedAt.IsZero() {
+			binding.CreatedAt = now
+		}
+		if hostErr = m.store.SaveBoxSourceIdentity(ctx, binding); hostErr != nil {
+			return hostErr
+		}
+		bindingCheckpointed = true
+		return nil
+	}); err != nil {
 		return ConnectResult{}, err
-	}
-	if err = ValidateHostKeys(hostKeys); err != nil {
-		return ConnectResult{}, &Error{Code: "conflict", Message: "GitHub host-key metadata is invalid", Context: map[string]string{"reason": "host_key_changed"}, Cause: err}
-	}
-	hostIdentity, err := request.Target.EnsureSourceIdentity(ctx, EnsureIdentityRequest{Provider: GitHub, HostKeys: hostKeys})
-	if err != nil {
-		return ConnectResult{}, err
-	}
-	actualFingerprint, fingerprintErr := PublicKeyFingerprint(hostIdentity.PublicKey)
-	if !hostIdentity.Exists || hostIdentity.Provider != GitHub || hostIdentity.Fingerprint == "" || hostIdentity.PublicKey == "" || !hostIdentity.TrustConfigured || !HostFingerprintsMatch(hostIdentity.HostFingerprints, hostKeys) || fingerprintErr != nil || actualFingerprint != hostIdentity.Fingerprint {
-		return ConnectResult{}, NewError("outcome_unknown", "the Box did not return a complete GitHub source identity", nil)
 	}
 
-	if findErr == nil && binding.Fingerprint != "" && binding.Fingerprint != hostIdentity.Fingerprint {
-		return ConnectResult{}, NewError("conflict", "the Box GitHub key differs from the recorded source identity", nil)
-	}
-	now := m.now().UTC()
-	binding.BoxIdentity = request.Target.BoxIdentity()
-	binding.BoxName = boxName
-	binding.Provider = GitHub
-	binding.AccountExternalID = account.ID
-	binding.Fingerprint = hostIdentity.Fingerprint
-	binding.State = StateConnecting
-	binding.UpdatedAt = now
-	if binding.CreatedAt.IsZero() {
-		binding.CreatedAt = now
-	}
-	if err = m.store.SaveBoxSourceIdentity(ctx, binding); err != nil {
+	if err = runConnectPhase(request.RunPhase, ConnectPhaseRegisteringKey, func() error {
+		remoteKey, keyErr := m.reconcileKey(ctx, token.AccessToken, binding, hostIdentity.PublicKey)
+		if keyErr != nil {
+			return keyErr
+		}
+		binding.RemoteKeyID = remoteKey.ID
+		binding.RemoteKeyTitle = remoteKey.Title
+		binding.UpdatedAt = m.now().UTC()
+		return m.store.SaveBoxSourceIdentity(ctx, binding)
+	}); err != nil {
 		return ConnectResult{}, err
 	}
-	bindingCheckpointed = true
 
-	remoteKey, err := m.reconcileKey(ctx, token.AccessToken, binding, hostIdentity.PublicKey)
-	if err != nil {
-		return ConnectResult{}, err
-	}
-	binding.RemoteKeyID = remoteKey.ID
-	binding.RemoteKeyTitle = remoteKey.Title
-	binding.UpdatedAt = m.now().UTC()
-	if err = m.store.SaveBoxSourceIdentity(ctx, binding); err != nil {
-		return ConnectResult{}, err
-	}
-	verification, err := request.Target.VerifySourceRepository(ctx, VerifyRequest{Provider: GitHub, Repository: request.Repository})
-	if err != nil {
-		return ConnectResult{}, err
-	}
-	if !verification.Authenticated {
-		return ConnectResult{}, NewError("outcome_unknown", "the Box did not confirm GitHub source access", nil)
-	}
-	binding.State = StateConnected
-	binding.UpdatedAt = m.now().UTC()
-	if err = m.store.SaveBoxSourceIdentity(ctx, binding); err != nil {
+	if err = runConnectPhase(request.RunPhase, ConnectPhaseVerifying, func() error {
+		verification, verifyErr := request.Target.VerifySourceRepository(ctx, VerifyRequest{Provider: GitHub, Repository: request.Repository})
+		if verifyErr != nil {
+			return verifyErr
+		}
+		if !verification.Authenticated {
+			return NewError("outcome_unknown", "the Box did not confirm GitHub source access", nil)
+		}
+		binding.State = StateConnected
+		binding.UpdatedAt = m.now().UTC()
+		return m.store.SaveBoxSourceIdentity(ctx, binding)
+	}); err != nil {
 		return ConnectResult{}, err
 	}
 	return ConnectResult{
@@ -1156,6 +1183,50 @@ func (m *Manager) HasBinding(ctx context.Context, boxIdentity string) (bool, err
 		return false, nil
 	}
 	return err == nil, err
+}
+
+// AuthorizationState reports whether Connect will need GitHub device flow
+// based on local Source Account and credential-store state.
+func (m *Manager) AuthorizationState(ctx context.Context) (AuthorizationState, error) {
+	account, err := m.store.FindSourceAccount(ctx, GitHub)
+	if IsNotFound(err) {
+		return AuthorizationState{NeedsDeviceFlow: true}, nil
+	}
+	if err != nil {
+		return AuthorizationState{}, err
+	}
+	remote := RemoteAccount{ID: account.ExternalID, Login: account.Login}
+	token, _, tokenErr := m.loadToken(account)
+	if tokenErr != nil {
+		if ErrorCode(tokenErr) == "authentication_required" {
+			return AuthorizationState{NeedsDeviceFlow: true, Account: remote}, nil
+		}
+		return AuthorizationState{}, tokenErr
+	}
+	if token.AccessToken == "" {
+		return AuthorizationState{NeedsDeviceFlow: true, Account: remote}, nil
+	}
+	fresh := token.AccessExpiresAt.IsZero() || token.AccessExpiresAt.After(m.now().UTC().Add(30*time.Second))
+	refreshable := token.RefreshToken != "" && (token.RefreshExpiresAt.IsZero() || token.RefreshExpiresAt.After(m.now().UTC()))
+	if !fresh && !refreshable {
+		return AuthorizationState{NeedsDeviceFlow: true, Account: remote}, nil
+	}
+	return AuthorizationState{NeedsDeviceFlow: false, Account: remote}, nil
+}
+
+func (m *Manager) BindingCount(ctx context.Context) (int, error) {
+	bindings, err := m.store.ListBoxSourceIdentities(ctx, GitHub)
+	if err != nil {
+		return 0, err
+	}
+	return len(bindings), nil
+}
+
+func runConnectPhase(runner func(ConnectPhase, func() error) error, phase ConnectPhase, fn func() error) error {
+	if runner == nil {
+		return fn()
+	}
+	return runner(phase, fn)
 }
 
 func authenticationRequired(message string) error {

@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/x/ansi"
@@ -48,17 +49,18 @@ func Run(ctx context.Context, w io.Writer, theme *uitheme.Theme, title string) {
 	}
 }
 
-// While runs action while animating title. When animation is off it prints a
-// static placeholder line first.
+// While runs action while animating title. When the action finishes, the
+// spinner is replaced by a persistent success or failure mark so earlier
+// steps remain visible.
 func While(ctx context.Context, w io.Writer, theme *uitheme.Theme, title string, animated bool, action func(context.Context) error) error {
 	if action == nil {
 		return nil
 	}
 	if !animated {
-		if w != nil {
-			_, _ = fmt.Fprintf(w, "… %s\n", title)
-		}
-		return action(ctx)
+		writePending(w, theme, title)
+		err := action(ctx)
+		writeResult(w, theme, title, err)
+		return err
 	}
 	spinCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -70,5 +72,42 @@ func While(ctx context.Context, w io.Writer, theme *uitheme.Theme, title string,
 	err := action(ctx)
 	cancel()
 	<-done
+	writeResult(w, theme, title, err)
 	return err
+}
+
+func writePending(w io.Writer, theme *uitheme.Theme, title string) {
+	if w == nil {
+		return
+	}
+
+	mark := "…"
+	label := statusLabel(title)
+	if theme != nil && theme.HasColor() {
+		mark = theme.Style(uitheme.Primary).Render(mark)
+		label = theme.Style(uitheme.Text).Render(label)
+	}
+	_, _ = fmt.Fprintf(w, "%s %s\n", mark, label)
+}
+
+func writeResult(w io.Writer, theme *uitheme.Theme, title string, err error) {
+	if w == nil {
+		return
+	}
+	label := statusLabel(title)
+	mark := "✓"
+	role := uitheme.Success
+	if err != nil {
+		mark = "✗"
+		role = uitheme.Error
+	}
+	if theme != nil && theme.HasColor() {
+		mark = theme.Style(role).Bold(true).Render(mark)
+		label = theme.Style(uitheme.Text).Render(label)
+	}
+	_, _ = fmt.Fprintf(w, "%s %s\n", mark, label)
+}
+
+func statusLabel(title string) string {
+	return strings.TrimSpace(strings.TrimSuffix(strings.TrimSuffix(title, "…"), "..."))
 }
