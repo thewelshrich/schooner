@@ -18,8 +18,10 @@ ID Application, submits them together to Apple's notary service, and requires
 an accepted response with no reported issues. Checksums and GitHub
 build-provenance attestations cover the resulting signed release binaries.
 
-A manual workflow run performs the same build and verification but uploads a
-workflow artifact instead of publishing a release.
+A normal manual workflow run performs the same build and verification but
+uploads a workflow artifact instead of publishing a release. A guarded recovery
+mode can publish an existing annotated tag after its original workflow failed;
+it never creates, deletes, or moves the tag.
 
 ## Branch and tag policy
 
@@ -31,9 +33,11 @@ separate tag ruleset should protect `v*` tags from updates and deletion.
 Publishing is deliberately separate from merging. A merge to `main` runs CI;
 an annotated `v`-prefixed Semantic Versioning tag triggers the Release
 workflow. The workflow rejects lightweight tags, tags whose annotation is
-empty, and tags whose target commit is not contained in `main`. Manual signed
-builds are accepted only from the current `origin/main` commit and never
-publish a GitHub release.
+empty, and tags whose target commit is not contained in `main`. Normal manual
+signed builds are accepted only from the current `origin/main` commit and never
+publish a GitHub release. An existing-tag recovery must itself run from current
+`origin/main`, then builds the immutable tag's original commit and reuses its
+annotation.
 
 ## Release procedure
 
@@ -61,6 +65,14 @@ is intended for an agent only after the maintainer has reviewed the exact
 version, target commit, and complete notes. If a network failure leaves a local
 tag but no remote tag, rerunning with the same version and notes safely reuses
 the matching local annotated tag.
+
+If the remote tag exists but its Release workflow failed before publication,
+fix the workflow on `main` and use **Run workflow** with the existing version
+and **Publish existing annotated tag** enabled. Recovery requires current
+`origin/main`, an annotated tag with non-empty notes, and a tag target contained
+in `main`. It checks out and builds that original target, passes through the
+protected `release` environment again, and refuses to replace an existing
+GitHub release. Never delete or move an immutable tag to retry a release.
 
 Codex discovers the repository-scoped `$schooner-release` skill from
 `.agents/skills/schooner-release`. It inspects the actual changes since the
