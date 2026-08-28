@@ -245,6 +245,29 @@ func TestDisconnectPreviewDoesNotResumePendingCleanup(t *testing.T) {
 	}
 }
 
+func TestInteractiveDisconnectConfirmsBeforeReauthorization(t *testing.T) {
+	manager, _, _, github, target := testManager(t)
+	if _, err := manager.Connect(t.Context(), ConnectRequest{Target: target, AllowAuthorization: true}); err != nil {
+		t.Fatal(err)
+	}
+	github.accountErrOnce = authenticationRequired("GitHub rejected the access token")
+	confirmations := 0
+
+	result, err := manager.Disconnect(t.Context(), DisconnectRequest{
+		Target: target, AllowAuthorization: true,
+		BeforeAuthorization: func(_ context.Context, account RemoteAccount) error {
+			confirmations++
+			if account.ID != "42" || account.Login != "octocat" {
+				t.Fatalf("account=%+v", account)
+			}
+			return nil
+		},
+	})
+	if err != nil || !result.Revoked || confirmations != 1 || github.authorizeCalls != 2 || github.deleteCalls != 1 {
+		t.Fatalf("result=%+v confirmations=%d authorizeCalls=%d deleteCalls=%d err=%v", result, confirmations, github.authorizeCalls, github.deleteCalls, err)
+	}
+}
+
 func TestStatusReturnsPartialFactsWhenGitHubIsUnavailable(t *testing.T) {
 	manager, _, _, github, target := testManager(t)
 	if _, err := manager.Connect(t.Context(), ConnectRequest{Target: target, AllowAuthorization: true}); err != nil {

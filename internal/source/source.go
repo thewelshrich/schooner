@@ -244,10 +244,11 @@ type StatusResult struct {
 }
 
 type DisconnectRequest struct {
-	Target             Target
-	BoxName            string
-	AllowAuthorization bool
-	RunPhase           func(DisconnectPhase, func() error) error
+	Target              Target
+	BoxName             string
+	AllowAuthorization  bool
+	BeforeAuthorization func(context.Context, RemoteAccount) error
+	RunPhase            func(DisconnectPhase, func() error) error
 }
 
 type DisconnectPhase string
@@ -714,7 +715,7 @@ func (m *Manager) Disconnect(ctx context.Context, request DisconnectRequest) (Di
 	}
 
 	if binding.State != StateCleanupPending {
-		token, account, credentialWarning, tokenErr := m.resolveAccount(ctx, request.AllowAuthorization, nil)
+		token, account, credentialWarning, tokenErr := m.resolveAccount(ctx, request.AllowAuthorization, request.BeforeAuthorization)
 		if tokenErr != nil {
 			return DisconnectResult{}, tokenErr
 		}

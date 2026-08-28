@@ -146,8 +146,12 @@ func newSourceDisconnectCommand(streams Streams, global *globalOptions, targets 
 		}
 		result, err := services.sources.Disconnect(cmd.Context(), source.DisconnectRequest{
 			Target: target, BoxName: explicitBox, AllowAuthorization: interactive,
-			RunPhase: githubDisconnectPhaseRunner(cmd.Context(), streams, global, firstNonEmpty(explicitBox, boxNameOf(target))),
+			BeforeAuthorization: githubAuthorizationConfirmation(streams, global, firstNonEmpty(explicitBox, boxNameOf(target)), false),
+			RunPhase:            githubDisconnectPhaseRunner(cmd.Context(), streams, global, firstNonEmpty(explicitBox, boxNameOf(target))),
 		})
+		if errors.Is(err, prompts.ErrAborted) {
+			return abortError{cause: err}
+		}
 		if err != nil {
 			return executionError{cause: err}
 		}
