@@ -1,6 +1,6 @@
 # Roadmap
 
-Schooner is working toward a coherent first public release of its open-source,
+Schooner is working toward a coherent first general release of its open-source,
 CLI-first development-machine workflow. This roadmap describes intended scope,
 not a compatibility promise.
 
