@@ -102,4 +102,11 @@ After the push, monitor the Release workflow. Tell the user when the protected
 build, sign, notarize, attest, and publish successfully and the GitHub release
 to contain the approved narrative plus generated notes. If the remote tag
 already exists, inspect the existing workflow/release instead of creating or
-moving a tag.
+moving a tag. When an approved immutable tag has no GitHub release because its
+workflow failed, reconfirm that the tag target and annotation still match the
+approved package, then dispatch the guarded existing-tag recovery from that
+exact tag ref with publication enabled. Recovery may resume only a matching
+mutable draft and must never replace an already-published release. Because
+GitHub runs the workflow definition stored at the dispatched ref, an immutable
+tag that predates the guarded recovery cannot consume a later workflow fix;
+leave that tag untouched and prepare a new patch version instead.

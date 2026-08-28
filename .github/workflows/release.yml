@@ -7,10 +7,15 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Version to build without publishing a release
+        description: Version to build, or an existing tag to recover
         required: true
         default: v0.0.0-dev
         type: string
+      publish_existing_tag:
+        description: Publish an existing annotated tag after a failed release run
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -27,6 +32,7 @@ jobs:
       version: ${{ steps.metadata.outputs.version }}
       commit: ${{ steps.metadata.outputs.commit }}
       built_at: ${{ steps.metadata.outputs.built_at }}
+      publish: ${{ steps.metadata.outputs.publish }}
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -37,12 +43,20 @@ jobs:
         id: metadata
         env:
           MANUAL_VERSION: ${{ inputs.version }}
+          MANUAL_PUBLISH_EXISTING_TAG: ${{ inputs.publish_existing_tag }}
         run: |
           git fetch --no-tags origin main:refs/remotes/origin/main
+          publish=false
           if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
             version="${GITHUB_REF_NAME}"
+            publish=true
           else
             version="${MANUAL_VERSION}"
+            publish="${MANUAL_PUBLISH_EXISTING_TAG}"
+            if [[ "${publish}" != "true" && "${publish}" != "false" ]]; then
+              echo "publish_existing_tag must be true or false" >&2
+              exit 1
+            fi
           fi
           semver='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
           if [[ ! "${version}" =~ ${semver} ]]; then
@@ -60,7 +74,25 @@ jobs:
               fi
             done
           fi
-          if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
+          if [[ "${GITHUB_EVENT_NAME}" != "push" ]]; then
+            if [[ "${publish}" == "true" ]]; then
+              if [[ "${GITHUB_REF}" != "refs/tags/${version}" ]]; then
+                echo "existing-tag recovery must run from the matching tag ref" >&2
+                exit 1
+              fi
+            else
+              if [[ "${GITHUB_REF}" != "refs/heads/main" ]]; then
+                echo "manual release builds must run from main" >&2
+                exit 1
+              fi
+              workflow_commit="$(git rev-parse "${GITHUB_SHA}^{commit}")"
+              if [[ "${workflow_commit}" != "$(git rev-parse refs/remotes/origin/main^{commit})" ]]; then
+                echo "manual release builds must run from the current origin/main commit" >&2
+                exit 1
+              fi
+            fi
+          fi
+          if [[ "${publish}" == "true" ]]; then
             if [[ "$(git cat-file -t "refs/tags/${version}")" != "tag" ]]; then
               echo "release tags must be annotated" >&2
               exit 1
@@ -73,7 +105,7 @@ jobs:
             commit="$(git rev-parse "refs/tags/${version}^{commit}")"
             event_commit="$(git rev-parse "${GITHUB_SHA}^{commit}")"
             if [[ "${commit}" != "${event_commit}" ]]; then
-              echo "release tag target does not match the pushed ref" >&2
+              echo "release tag target does not match the workflow ref" >&2
               exit 1
             fi
             if ! git merge-base --is-ancestor "${commit}" refs/remotes/origin/main; then
@@ -81,21 +113,14 @@ jobs:
               exit 1
             fi
           else
-            if [[ "${GITHUB_REF}" != "refs/heads/main" ]]; then
-              echo "manual release builds must run from main" >&2
-              exit 1
-            fi
             commit="$(git rev-parse "${GITHUB_SHA}^{commit}")"
-            if [[ "${commit}" != "$(git rev-parse refs/remotes/origin/main^{commit})" ]]; then
-              echo "manual release builds must run from the current origin/main commit" >&2
-              exit 1
-            fi
           fi
           built_at="$(date -u -d "$(git show -s --format=%cI "${commit}")" '+%Y-%m-%dT%H:%M:%SZ')"
           {
             echo "version=${version}"
             echo "commit=${commit}"
             echo "built_at=${built_at}"
+            echo "publish=${publish}"
           } >> "${GITHUB_OUTPUT}"
 
   build:
@@ -121,6 +146,8 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
 
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -249,7 +276,31 @@ jobs:
             -P "${CERTIFICATE_PASSWORD}" \
             -f pkcs12 \
             -T /usr/bin/codesign
-          security import "${intermediate_path}" -k "${keychain_path}"
+
+          expected_intermediate_sha256="$(shasum -a 256 "${intermediate_path}" | awk '{print toupper($1)}')"
+          has_expected_intermediate() {
+            security find-certificate \
+              -a \
+              -Z \
+              -c "Developer ID Certification Authority" \
+              "$@" 2>/dev/null | \
+              awk '/SHA-256 hash:/ {print toupper($3)}' | \
+              grep -Fxq "${expected_intermediate_sha256}"
+          }
+          if has_expected_intermediate "${keychain_path}" || has_expected_intermediate; then
+            echo "Apple Developer ID G2 intermediate is already available"
+          elif ! security import "${intermediate_path}" -k "${keychain_path}"; then
+            if has_expected_intermediate "${keychain_path}" || has_expected_intermediate; then
+              echo "Apple Developer ID G2 intermediate became available during import"
+            else
+              echo "failed to import the expected Apple Developer ID G2 intermediate" >&2
+              exit 1
+            fi
+          fi
+          if ! has_expected_intermediate "${keychain_path}" && ! has_expected_intermediate; then
+            echo "expected Apple Developer ID G2 intermediate is unavailable" >&2
+            exit 1
+          fi
           security set-key-partition-list \
             -S apple-tool:,apple: \
             -s \
@@ -419,7 +470,7 @@ jobs:
 
   publish:
     name: Publish release
-    if: github.event_name == 'push'
+    if: needs.prepare.outputs.publish == 'true'
     needs:
       - prepare
       - bundle
@@ -433,6 +484,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          ref: ${{ needs.prepare.outputs.version }}
 
       - name: Download verified bundle
         uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
@@ -451,13 +503,11 @@ jobs:
           GH_REPO: ${{ github.repository }}
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
-          if gh release view "${VERSION}" >/dev/null 2>&1; then
-            echo "release ${VERSION} already exists" >&2
-            exit 1
-          fi
           release_flags=()
+          prerelease=false
           without_build="${VERSION%%+*}"
           if [[ "${without_build}" == *-* ]]; then
+            prerelease=true
             release_flags+=(--prerelease)
           fi
           release_notes="$(git for-each-ref --format='%(contents)' "refs/tags/${VERSION}")"
@@ -465,9 +515,80 @@ jobs:
             echo "release tag annotation must contain release notes" >&2
             exit 1
           fi
-          gh release create "${VERSION}" dist/* \
+          generated_notes_json="$(
+            gh api \
+              --method POST \
+              "repos/${GH_REPO}/releases/generate-notes" \
+              -f tag_name="${VERSION}"
+          )"
+          release_body_path="${RUNNER_TEMP}/release-body.md"
+          RELEASE_NOTES="${release_notes}" \
+          GENERATED_NOTES_JSON="${generated_notes_json}" \
+          RELEASE_BODY_PATH="${release_body_path}" \
+            python3 -c '
+          import json, os
+          narrative = os.environ["RELEASE_NOTES"].strip()
+          generated = json.loads(os.environ["GENERATED_NOTES_JSON"]).get("body", "").strip()
+          body = "\n\n".join(part for part in (narrative, generated) if part)
+          with open(os.environ["RELEASE_BODY_PATH"], "w", encoding="utf-8") as handle:
+              handle.write(body + "\n")
+          '
+
+          if existing_release="$(
+            gh release view "${VERSION}" \
+              --json body,isDraft,isImmutable,isPrerelease,name,tagName 2>/dev/null
+          )"; then
+            EXISTING_RELEASE="${existing_release}" \
+            EXPECTED_BODY="$(<"${release_body_path}")" \
+            EXPECTED_VERSION="${VERSION}" \
+            EXPECTED_PRERELEASE="${prerelease}" \
+              python3 -c '
+            import json, os
+            release = json.loads(os.environ["EXISTING_RELEASE"])
+            expected_version = os.environ["EXPECTED_VERSION"]
+            expected_prerelease = os.environ["EXPECTED_PRERELEASE"] == "true"
+            checks = {
+                "draft": release.get("isDraft") is True,
+                "mutable": release.get("isImmutable") is False,
+                "tag": release.get("tagName") == expected_version,
+                "title": release.get("name") == expected_version,
+                "prerelease": release.get("isPrerelease") is expected_prerelease,
+                "notes": release.get("body", "").rstrip() == os.environ["EXPECTED_BODY"].rstrip(),
+            }
+            failed = [name for name, passed in checks.items() if not passed]
+            if failed:
+                raise SystemExit("existing release is not the expected resumable draft: " + ", ".join(failed))
+            '
+            echo "resuming matching draft release ${VERSION}"
+          else
+            gh release create "${VERSION}" \
+              --draft \
+              --verify-tag \
+              --notes-file "${release_body_path}" \
+              --title "${VERSION}" \
+              "${release_flags[@]}"
+          fi
+
+          gh release upload "${VERSION}" dist/* --clobber
+          uploaded_assets="$(gh release view "${VERSION}" --json assets)"
+          UPLOADED_ASSETS="${uploaded_assets}" VERSION="${VERSION}" python3 -c '
+          import json, os
+          version = os.environ["VERSION"]
+          expected = sorted([
+              "SHA256SUMS",
+              f"schooner_{version}_darwin_amd64",
+              f"schooner_{version}_darwin_arm64",
+              f"schooner_{version}_linux_amd64",
+              f"schooner_{version}_linux_arm64",
+          ])
+          actual = sorted(asset["name"] for asset in json.loads(os.environ["UPLOADED_ASSETS"])["assets"])
+          if actual != expected:
+              raise SystemExit(f"draft release assets: got {actual!r}, want {expected!r}")
+          '
+
+          gh release edit "${VERSION}" \
+            --draft=false \
             --verify-tag \
-            --generate-notes \
-            --notes "${release_notes}" \
+            --notes-file "${release_body_path}" \
             --title "${VERSION}" \
-            "${release_flags[@]}"
+            --prerelease="${prerelease}"

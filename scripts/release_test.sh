@@ -2,7 +2,9 @@
 
 set -euo pipefail
 
-script_under_test="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/release"
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+script_under_test="${repo_root}/scripts/release"
+workflow_under_test="${repo_root}/.github/workflows/release.yml"
 test_tmp="$(mktemp -d "${TMPDIR:-/tmp}/schooner-release-test.XXXXXX")"
 test_tmp="$(cd "${test_tmp}" && pwd -P)"
 trap 'rm -rf -- "${test_tmp}"' EXIT
@@ -12,6 +14,13 @@ export GOMODCACHE="${test_tmp}/go-mod-cache"
 fail() {
   printf 'release_test: %s\n' "$*" >&2
   exit 1
+}
+
+require_workflow_invariant() {
+  local invariant="$1"
+  if ! grep -Fq -- "${invariant}" "${workflow_under_test}"; then
+    fail "release workflow is missing invariant: ${invariant}"
+  fi
 }
 
 make_fixture() {
@@ -87,5 +96,18 @@ dirty_fixture="$(make_fixture dirty)"
 printf 'dirty\n' > "${dirty_fixture}/untracked.txt"
 expect_failure_in_fixture "working tree must be clean" "${dirty_fixture}" \
   --dry-run --notes-file "${notes_file}" v0.1.0
+
+require_workflow_invariant "publish_existing_tag:"
+require_workflow_invariant 'ref: ${{ needs.prepare.outputs.commit }}'
+require_workflow_invariant "existing-tag recovery must run from the matching tag ref"
+require_workflow_invariant "release tag target does not match the workflow ref"
+require_workflow_invariant "release tag must point to a commit contained in main"
+require_workflow_invariant "expected_intermediate_sha256="
+require_workflow_invariant "grep -Fxq \"\${expected_intermediate_sha256}\""
+require_workflow_invariant "if: needs.prepare.outputs.publish == 'true'"
+require_workflow_invariant 'ref: ${{ needs.prepare.outputs.version }}'
+require_workflow_invariant "existing release is not the expected resumable draft"
+require_workflow_invariant 'gh release upload "${VERSION}" dist/* --clobber'
+require_workflow_invariant "draft release assets: got"
 
 printf 'release_test: all tests passed\n'
