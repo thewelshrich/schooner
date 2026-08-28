@@ -35,6 +35,8 @@ go.work.sum
 # Local agent and design-review artifacts
 AGENTS.md
 .impeccable/
+.ocr
+.codex
 
 # Working research is distilled into tracked documentation and decisions
 /docs/research/

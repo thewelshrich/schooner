@@ -188,8 +188,8 @@ func newBoxTargetResolver(streams Streams, options *globalOptions) *boxtarget.Re
 	})
 }
 
-func openBoxService(ctx context.Context, streams Streams, build BuildInfo) (*box.Service, func(), error) {
-	services, closeServices, err := openApplication(ctx, streams, build)
+func openBoxService(ctx context.Context, streams Streams, global *globalOptions) (*box.Service, func(), error) {
+	services, closeServices, err := openApplication(ctx, streams, global)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -212,7 +212,7 @@ func (s sshIdentitySource) Ensure(ctx context.Context) (acquisition.Identity, er
 	return acquisition.Identity{PublicKey: identity.PublicKey, PrivateKey: identity.PrivateKey}, err
 }
 
-func openApplication(ctx context.Context, streams Streams, build BuildInfo) (*application, func(), error) {
+func openApplication(ctx context.Context, streams Streams, global *globalOptions) (*application, func(), error) {
 	path, err := invsqlite.DefaultPath()
 	if err != nil {
 		return nil, nil, err
@@ -222,18 +222,18 @@ func openApplication(ctx context.Context, streams Streams, build BuildInfo) (*ap
 		return nil, nil, err
 	}
 	artifacts := artifact.NewDeferredDefault()
-	runtime := sshRuntime.NewHost("", streams.Err, defaultString(build.Version, "dev"), artifacts)
+	runtime := sshRuntime.NewHost("", streams.Err, defaultString(global.build.Version, "dev"), artifacts)
 	boxes := box.New(runtime, store)
 	cloud := digitalOcean.New()
 	credentialManager := credentials.New(store, credentials.KeyringStore{}, cloud)
 	acquisitionService := acquisition.New(boxes, store, credentialManager, cloud, sshIdentitySource{stateDirectory: filepath.Dir(path)}, runtime)
-	githubClientID := strings.TrimSpace(build.GitHubClientID)
-	if defaultString(build.Version, "dev") == "dev" {
+	githubClientID := strings.TrimSpace(global.build.GitHubClientID)
+	if defaultString(global.build.Version, "dev") == "dev" {
 		if developmentClientID := strings.TrimSpace(os.Getenv("SCHOONER_GITHUB_CLIENT_ID")); developmentClientID != "" {
 			githubClientID = developmentClientID
 		}
 	}
-	githubClient := sourcegithub.New(sourcegithub.Options{ClientID: githubClientID, Presenter: newDevicePresenter(streams)})
+	githubClient := sourcegithub.New(sourcegithub.Options{ClientID: githubClientID, Presenter: newDevicePresenter(streams, terminalTheme(global, streams), global.accessible)})
 	sourceManager, err := source.NewManager(store, secretstore.Keyring{Service: source.SourceKeyringService}, githubClient, filepath.Join(filepath.Dir(path), "locks", "source"))
 	if err != nil {
 		_ = store.Close()

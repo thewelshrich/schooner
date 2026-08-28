@@ -8,6 +8,7 @@ import (
 	"io"
 
 	"charm.land/huh/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/thewelshrich/schooner/internal/box"
 	"github.com/thewelshrich/schooner/internal/credentials"
@@ -440,11 +441,36 @@ func clearScreen(options Options) {
 }
 
 func section(options Options, title string) {
+	writeSection(options, title, false)
+}
+
+func featuredSection(options Options, title string) {
+	writeSection(options, title, true)
+}
+
+func writeSection(options Options, title string, featured bool) {
 	line := title
 	if chrome(options) {
-		line = options.Theme.Style(uitheme.Text).Bold(true).Render(title)
+		style := options.Theme.Style(uitheme.Text).Bold(true)
+		if featured {
+			style = options.Theme.Style(uitheme.Primary).Bold(true)
+		}
+		line = style.Render(title)
 	}
 	_, _ = fmt.Fprintf(options.Output, "\n%s\n", line)
+}
+
+func explain(options Options, text string) {
+	if options.Output == nil || text == "" {
+		return
+	}
+	_, _ = fmt.Fprintln(options.Output)
+	body := lipgloss.Wrap(text, 72, "")
+	if chrome(options) {
+		body = options.Theme.Style(uitheme.Muted).Render(body)
+	}
+	_, _ = fmt.Fprintln(options.Output, body)
+	_, _ = fmt.Fprintln(options.Output)
 }
 
 func RecordChoices(options Options, choices ...Choice) {
@@ -500,12 +526,10 @@ func promptCount(count int) string {
 }
 
 // Wait shows a loading spinner while action runs against a remote API.
+// Completed steps stay on screen with a success or failure mark.
 func Wait(ctx context.Context, options Options, title string, action func(context.Context) error) error {
 	if action == nil {
 		return nil
-	}
-	if options.Output != nil {
-		_, _ = fmt.Fprintln(options.Output)
 	}
 	err := spinner.While(ctx, options.Output, options.Theme, title, chrome(options), action)
 	if errors.Is(err, context.Canceled) || ctx.Err() != nil {

@@ -215,12 +215,25 @@ func (l *Lifecycle) CloneV2(ctx context.Context, request CloneRequest) (Mutation
 	if err != nil {
 		return MutationResult{}, err
 	}
+	ambiguousSource := cloneSource
 	identity, network, identityErr := source.RepositoryIdentityFor(cloneSource)
 	if identityErr != nil {
 		return MutationResult{}, repositoryError(identityErr)
 	}
 	if !network {
-		return l.Clone(ctx, request)
+		shorthand, shorthandOK := source.GitHubIdentityForShorthand(cloneSource)
+		if !shorthandOK {
+			return l.Clone(ctx, request)
+		}
+		local, inspectErr := l.usableLocalCloneSource(ctx, cloneSource)
+		if inspectErr != nil {
+			return MutationResult{}, inspectErr
+		}
+		if local {
+			return l.Clone(ctx, request)
+		}
+		identity = shorthand
+		cloneSource = identity.CanonicalHTTPS()
 	}
 	legacyTarget, err := l.newPath(name)
 	if err != nil {
@@ -243,6 +256,31 @@ func (l *Lifecycle) CloneV2(ctx context.Context, request CloneRequest) (Mutation
 	var legacyComplete, resumeLegacy bool
 	var legacyResumeIntent string
 	if identity.IsGitHub() {
+		if ambiguousSource != cloneSource {
+			ambiguousIntent := fingerprint("clone", legacyTarget, ambiguousSource, request.Branch)
+			if ambiguousRecord, found, loadErr := l.load(ambiguousIntent); loadErr != nil {
+				return MutationResult{}, loadErr
+			} else if found && ambiguousRecord.Checkpoint != "aborted" {
+				ambiguousLock, lockErr := acquireMutationLock(l.state, legacyTarget)
+				if lockErr != nil {
+					return MutationResult{}, lockErr
+				}
+				ambiguousSource, legacyResumeIntent, legacyResult, legacyComplete, resumeLegacy, err = l.reconcileVersion1Clone(ctx, legacyTarget, ambiguousSource, request.Branch, identity)
+				closeErr := ambiguousLock.Close()
+				if err != nil {
+					return MutationResult{}, err
+				}
+				if closeErr != nil {
+					return MutationResult{}, closeErr
+				}
+				if legacyComplete {
+					return legacyResult, nil
+				}
+				if resumeLegacy {
+					return l.clone(ctx, request, ambiguousSource, legacyTarget, legacyResumeIntent, source.RepositoryIdentity{})
+				}
+			}
+		}
 		exactIntent := fingerprint("clone", legacyTarget, cloneSource, request.Branch)
 		exactRecord, exact, loadErr := l.load(exactIntent)
 		if loadErr != nil {
@@ -297,6 +335,36 @@ func (l *Lifecycle) CloneV2(ctx context.Context, request CloneRequest) (Mutation
 	}
 	intent := fingerprint("clone.v2", target, identity.Key(), request.Branch)
 	return l.clone(ctx, request, cloneSource, target, intent, identity)
+}
+
+func (l *Lifecycle) usableLocalCloneSource(ctx context.Context, value string) (bool, error) {
+	candidate := filepath.Join(l.root, filepath.FromSlash(value))
+	if filepath.Clean(candidate) != candidate || !within(l.root, candidate) {
+		return false, &Error{Code: CodeInvalidInput, Message: "local repository source is outside the Worktree root"}
+	}
+	if _, err := os.Stat(candidate); errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	} else if err != nil {
+		return false, &Error{Code: CodePermissionDenied, Message: "local repository source could not be inspected", Cause: err}
+	}
+	result, err := l.commands.Run(ctx, "git", "--no-optional-locks", "-c", "core.fsmonitor=false", "ls-remote", "--", candidate)
+	if err == nil {
+		if result.Truncated {
+			return false, &Error{Code: CodeOutcomeUnknown, Message: "local repository inspection exceeded the output limit"}
+		}
+		return true, nil
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false, &Error{Code: CodeOutcomeUnknown, Message: "local repository inspection was interrupted", Cause: err}
+	}
+	message := strings.ToLower(string(result.Stdout) + "\n" + string(result.Stderr))
+	if strings.Contains(message, "does not appear to be a git repository") || strings.Contains(message, "not a git repository") {
+		return false, nil
+	}
+	if result.Truncated {
+		return false, &Error{Code: CodeOutcomeUnknown, Message: "local repository inspection failed after producing bounded diagnostics", Cause: err}
+	}
+	return false, &Error{Code: CodeOutcomeUnknown, Message: "local repository source could not be verified", Cause: err}
 }
 
 func (l *Lifecycle) clone(ctx context.Context, request CloneRequest, cloneSource, target, intent string, identity source.RepositoryIdentity) (MutationResult, error) {

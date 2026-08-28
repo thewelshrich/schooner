@@ -68,6 +68,20 @@ func (identity RepositoryIdentity) CanonicalHTTPS() string {
 	return "https://" + GitHubHost + "/" + identity.Owner + "/" + identity.Repository + ".git"
 }
 
+// GitHubIdentityForShorthand recognizes the otherwise ambiguous owner/repository
+// form. Callers must rule out a usable local path before treating the result as
+// a GitHub repository.
+func GitHubIdentityForShorthand(raw string) (RepositoryIdentity, bool) {
+	if strings.Count(raw, "/") != 1 {
+		return RepositoryIdentity{}, false
+	}
+	identity, network, err := RepositoryIdentityFor("https://" + GitHubHost + "/" + raw)
+	if err != nil || !network || !identity.IsGitHub() {
+		return RepositoryIdentity{}, false
+	}
+	return identity, true
+}
+
 // RepositoryIdentityFor normalizes common HTTPS, SSH, Git, and SCP-style
 // network transports. Local paths intentionally return network=false.
 func RepositoryIdentityFor(raw string) (identity RepositoryIdentity, network bool, err error) {

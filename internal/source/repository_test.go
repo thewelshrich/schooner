@@ -19,6 +19,23 @@ func TestRepositoryIdentityNormalizesGitHubTransports(t *testing.T) {
 	}
 }
 
+func TestGitHubIdentityForShorthandRecognizesOnlyOwnerRepository(t *testing.T) {
+	for _, value := range []string{"OpenAI/Codex", "openai/codex.git"} {
+		identity, ok := GitHubIdentityForShorthand(value)
+		if !ok || identity.Key() != "github.com/openai/codex" || identity.CanonicalHTTPS() != "https://github.com/openai/codex.git" {
+			t.Errorf("GitHubIdentityForShorthand(%q) = %+v, %t", value, identity, ok)
+		}
+	}
+	for _, value := range []string{
+		"codex", "openai/platform/codex", "./codex", "../codex", "/codex", "openai/codex/",
+		"openai/my repo", "openai/codex?token=secret", "openai/codex#fragment",
+	} {
+		if identity, ok := GitHubIdentityForShorthand(value); ok {
+			t.Errorf("GitHubIdentityForShorthand(%q) = %+v, true", value, identity)
+		}
+	}
+}
+
 func TestRepositoryIdentityRejectsCredentialBearingAndMalformedSources(t *testing.T) {
 	for _, value := range []string{
 		"https://token@github.com/openai/codex.git",

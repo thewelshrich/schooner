@@ -199,6 +199,26 @@ func TestCloneAttributesAmbientHostKeyFailureToBoxSSHConfig(t *testing.T) {
 	}
 }
 
+func TestCloneTreatsMissingAmbientGitHubHostTrustAsRecoverableAuthentication(t *testing.T) {
+	manager, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	failure := errors.New("exit 128")
+	runner := &cloneScriptRunner{responses: []cloneResponse{
+		{result: process.Result{Stderr: []byte("Authentication failed")}, err: failure},
+		{result: process.Result{Stderr: []byte("Host key verification failed.")}, err: failure},
+		{result: process.Result{Stderr: []byte("fatal: unable to get password from user")}, err: failure},
+	}}
+	manager.run = runner
+
+	err = manager.Clone(t.Context(), cloneExecution(t, "https://github.com/owner/private-repo.git"), func() error { return nil })
+	var domain *source.Error
+	if !errors.As(err, &domain) || domain.Code != "authentication_required" || domain.Context["reason"] != "credentials_missing" || len(runner.calls) != 3 {
+		t.Fatalf("error = %#v, Git calls = %d", err, len(runner.calls))
+	}
+}
+
 func TestCloneFailureClassificationStopsForNonAuthenticationCauses(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -212,7 +232,8 @@ func TestCloneFailureClassificationStopsForNonAuthenticationCauses(t *testing.T)
 		{name: "filesystem path containing network diagnostic", message: "fatal: could not create work tree dir '/worktrees/failed to connect': Permission denied", code: "permission_denied"},
 		{name: "filesystem path containing authentication diagnostic", message: "fatal: could not create work tree dir '/worktrees/access denied': Permission denied", code: "permission_denied"},
 		{name: "invalid branch", message: "fatal: Remote branch missing not found in upstream origin", code: "invalid_input"},
-		{name: "host key", message: "WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!", code: "conflict", reason: "host_key_changed", managed: true},
+		{name: "changed managed host key", message: "WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!", code: "conflict", reason: "host_key_changed", managed: true},
+		{name: "missing managed host trust", message: "Host key verification failed.", code: "conflict", reason: "host_key_changed", managed: true},
 		{name: "TLS handshake", message: "fatal: unable to access source: TLS handshake timeout", code: source.CodeSourceUnavailable},
 		{name: "integrity", message: "fatal: index-pack failed", code: "conflict"},
 	}
@@ -228,6 +249,17 @@ func TestCloneFailureClassificationStopsForNonAuthenticationCauses(t *testing.T)
 	interrupted := classifyCloneFailure(process.Result{}, context.Canceled, true, false)
 	if source.ErrorCode(interrupted) != "outcome_unknown" || !errors.Is(interrupted, context.Canceled) {
 		t.Fatalf("cancellation error = %v", interrupted)
+	}
+
+	missingAmbientGitHubTrust := classifyCloneFailure(process.Result{Stderr: []byte("Host key verification failed.")}, errors.New("exit 128"), true, false)
+	if source.ErrorCode(missingAmbientGitHubTrust) != "authentication_required" {
+		t.Fatalf("missing ambient GitHub trust error = %v", missingAmbientGitHubTrust)
+	}
+
+	missingNonGitHubAmbientTrust := classifyCloneFailure(process.Result{Stderr: []byte("Host key verification failed.")}, errors.New("exit 128"), false, false)
+	var domain *source.Error
+	if !errors.As(missingNonGitHubAmbientTrust, &domain) || domain.Code != "conflict" || domain.Context["reason"] != "ambient_host_key_changed" {
+		t.Fatalf("missing non-GitHub ambient trust error = %#v", missingNonGitHubAmbientTrust)
 	}
 }
 

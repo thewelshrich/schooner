@@ -12,6 +12,7 @@ import (
 
 	"github.com/thewelshrich/schooner/internal/box"
 	"github.com/thewelshrich/schooner/internal/source"
+	uitheme "github.com/thewelshrich/schooner/internal/ui/theme"
 )
 
 func TestSourceJSONDocumentsAreVersionedSafeAndIncludeWarnings(t *testing.T) {
@@ -111,6 +112,23 @@ func TestSourceConnectHumanOutputGolden(t *testing.T) {
 	}
 }
 
+func TestWriteExplanationWrapsWithoutColor(t *testing.T) {
+	var output bytes.Buffer
+	if err := writeExplanation(&output, nil, "This explanation should wrap in plain output even when terminal color is disabled, so long-running command guidance remains easy to scan."); err != nil {
+		t.Fatal(err)
+	}
+
+	lines := strings.Split(strings.TrimSpace(output.String()), "\n")
+	if len(lines) < 2 {
+		t.Fatalf("expected wrapped output, got %q", output.String())
+	}
+	for _, line := range lines {
+		if len(line) > 72 {
+			t.Fatalf("line width = %d, want <= 72: %q", len(line), line)
+		}
+	}
+}
+
 func TestDevicePresenterAlwaysPrintsInstructionsAndBrowserFailureIsNonfatal(t *testing.T) {
 	var diagnostics bytes.Buffer
 	called := ""
@@ -125,8 +143,38 @@ func TestDevicePresenterAlwaysPrintsInstructionsAndBrowserFailureIsNonfatal(t *t
 	if err := presenter.Present(t.Context(), authorization); err != nil {
 		t.Fatal(err)
 	}
-	if called != "open https://github.com/login/device" || !strings.Contains(diagnostics.String(), authorization.VerificationURI) || !strings.Contains(diagnostics.String(), authorization.UserCode) || !strings.Contains(diagnostics.String(), "Could not open a browser") {
+	want := "\nAuthorize Schooner\n  Open  https://github.com/login/device\n  Code  ABCD-EFGH\n\nIn the browser, authorize Git SSH key access. That lets Schooner\nregister this Box's public key. It does not grant repository access.\n\nWarning: Could not open a browser automatically; use the URL and code above.\n"
+	if called != "open https://github.com/login/device" || diagnostics.String() != want {
 		t.Fatalf("called=%q diagnostics=%q", called, diagnostics.String())
+	}
+}
+
+func TestDevicePresenterUsesTerminalTheme(t *testing.T) {
+	var diagnostics bytes.Buffer
+	presenter := &devicePresenter{
+		streams: Streams{Err: &diagnostics}, theme: uitheme.New(uitheme.Dark, true), goos: "other",
+		run: func(context.Context, string, ...string) error { return nil },
+	}
+	if err := presenter.Present(t.Context(), source.DeviceAuthorization{VerificationURI: "https://github.com/login/device", UserCode: "ABCD-EFGH"}); err != nil {
+		t.Fatal(err)
+	}
+	if output := diagnostics.String(); !strings.Contains(output, "\x1b[") || !strings.Contains(output, "Authorize Schooner") || !strings.Contains(output, "Git SSH key access") {
+		t.Fatalf("themed output=%q", output)
+	}
+}
+
+func TestDevicePresenterWaitShowsAccessibleStatus(t *testing.T) {
+	var diagnostics bytes.Buffer
+	presenter := &devicePresenter{streams: Streams{Err: &diagnostics}, accessible: true}
+	called := false
+	if err := presenter.Wait(t.Context(), "Waiting for GitHub authorization…", func(context.Context) error {
+		called = true
+		return nil
+	}); err != nil || !called {
+		t.Fatalf("err=%v called=%t", err, called)
+	}
+	if !strings.Contains(diagnostics.String(), "✓ Waiting for GitHub authorization") {
+		t.Fatalf("output=%q", diagnostics.String())
 	}
 }
 
@@ -134,6 +182,21 @@ func TestDevicePresenterRejectsUntrustedAuthorizationURL(t *testing.T) {
 	presenter := &devicePresenter{streams: Streams{Err: &bytes.Buffer{}}, goos: "linux", run: func(context.Context, string, ...string) error { return nil }}
 	if err := presenter.Present(t.Context(), source.DeviceAuthorization{VerificationURI: "https://example.com/login/device", UserCode: "ABCD"}); err == nil {
 		t.Fatal("untrusted device URL was accepted")
+	}
+}
+
+func TestGitHubAuthorizationConfirmationReconfirmsUnexpectedDeviceFlow(t *testing.T) {
+	var output bytes.Buffer
+	streams := Streams{
+		In: &oneByteReader{reader: strings.NewReader("y\n")}, Out: &output, Err: &output,
+		InIsTerminal: true, OutIsTerminal: true, ErrIsTerminal: true,
+	}
+	confirm := githubAuthorizationConfirmation(streams, &globalOptions{output: "human", accessible: true}, "work", false)
+	if err := confirm(t.Context(), source.RemoteAccount{ID: "42", Login: "octocat"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := output.String(); !strings.Contains(got, "Authorize Schooner with GitHub?") || !strings.Contains(got, "needs reauthorization") {
+		t.Fatalf("output=%q", got)
 	}
 }
 

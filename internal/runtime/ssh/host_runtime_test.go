@@ -51,6 +51,55 @@ func TestInteractiveHostRequestUsesStandardPaddedBase64(t *testing.T) {
 	}
 }
 
+func TestInteractiveHostFallsBackOnlyWhenRemoteTerminfoIsMissing(t *testing.T) {
+	for _, test := range []struct {
+		name           string
+		currentExists  bool
+		fallbackExists bool
+		want           string
+	}{
+		{name: "missing current terminfo", fallbackExists: true, want: "xterm-256color"},
+		{name: "available current terminfo", currentExists: true, fallbackExists: true, want: "xterm-ghostty"},
+		{name: "missing fallback terminfo", want: "xterm-ghostty"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			testRemoteShell(t)
+			helperDirectory := t.TempDir()
+			currentExit := 1
+			if test.currentExists {
+				currentExit = 0
+			}
+			fallbackExit := 1
+			if test.fallbackExists {
+				fallbackExit = 0
+			}
+			infocmp := fmt.Sprintf("#!/bin/sh\ncase \"$1\" in\n  xterm-ghostty) exit %d ;;\n  xterm-256color) exit %d ;;\n  *) exit 1 ;;\nesac\n", currentExit, fallbackExit)
+			if err := os.WriteFile(filepath.Join(helperDirectory, "infocmp"), []byte(infocmp), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", helperDirectory+string(os.PathListSeparator)+os.Getenv("PATH"))
+			t.Setenv("TERM", "xterm-ghostty")
+
+			target := filepath.Join(t.TempDir(), "host-runtime")
+			hello := fmt.Sprintf(`{"schema_version":"1","protocol_version":"1","schooner_version":"v1.2.3","commit":"abc123","box_identity":%q,"os":"linux","architecture":"amd64","capabilities":["worktree.shell.v1"]}`, hostTestIdentity)
+			contents := fmt.Sprintf("#!/bin/sh\ncase \"$1 $2 $3\" in\n  'host hello '*) printf '%%s\\n' '%s' ;;\n  'host worktree shell') printf '%%s' \"$TERM\" ;;\n  *) exit 64 ;;\nesac\n", hello)
+			if err := os.WriteFile(target, []byte(contents), 0o755); err != nil {
+				t.Fatal(err)
+			}
+
+			runtime := NewHost(testSSHExecutable(t), nil, "v1.2.3", nil)
+			var stdout strings.Builder
+			result, err := runtime.OpenWorktreeShell(t.Context(), box.Connection{Destination: "trusted-host"}, box.HostRuntime{Path: target}, hostTestIdentity, "/home/alice/worktrees", "repo", TerminalIO{Out: &stdout})
+			if err != nil || result.ExitCode != 0 {
+				t.Fatalf("interactive shell = %+v, error = %v", result, err)
+			}
+			if got := stdout.String(); got != test.want {
+				t.Fatalf("TERM = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 func TestCloneRepositoryUsesTypedHostLifecycleOperation(t *testing.T) {
 	testRemoteShell(t)
 	target := filepath.Join(t.TempDir(), "host-runtime")

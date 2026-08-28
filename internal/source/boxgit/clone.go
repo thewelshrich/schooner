@@ -136,7 +136,12 @@ func classifyCloneFailure(result process.Result, cause error, github, managed bo
 		}
 		return &source.Error{Code: "authentication_required", Message: "GitHub organization SAML SSO must authorize this Box SSH key", Context: contextValues, Cause: cause}
 	}
-	if strings.Contains(message, "host key verification failed") || strings.Contains(message, "remote host identification has changed") || strings.Contains(message, "offending") && strings.Contains(message, "known_hosts") {
+	changedHostKey := strings.Contains(message, "remote host identification has changed") || strings.Contains(message, "offending") && strings.Contains(message, "known_hosts")
+	hostKeyVerificationFailed := strings.Contains(message, "host key verification failed")
+	if github && !managed && hostKeyVerificationFailed && !changedHostKey {
+		return source.NewError("authentication_required", "GitHub SSH host trust is not configured for the Box user", cause)
+	}
+	if hostKeyVerificationFailed || changedHostKey {
 		safe := "repository SSH host-key verification failed"
 		reason := "ambient_host_key_changed"
 		if github && managed {
@@ -169,7 +174,7 @@ func classifyCloneFailure(result process.Result, cause error, github, managed bo
 func authenticationShaped(message string, github bool) bool {
 	for _, fragment := range []string{
 		"authentication failed", "permission denied (publickey", "could not read username", "terminal prompts disabled",
-		"invalid username or password", "access denied", "http 401", "http 403", "returned error: 401", "returned error: 403",
+		"unable to get password from user", "invalid username or password", "access denied", "http 401", "http 403", "returned error: 401", "returned error: 403",
 	} {
 		if strings.Contains(message, fragment) {
 			return true

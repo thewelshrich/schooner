@@ -142,20 +142,22 @@ schooner source status --box work-api
 schooner source disconnect github --box work-api --yes
 ```
 
-Schooner authorizes one local GitHub account through device flow. Tokens remain
-in the operating-system credential store, while each Box generates and keeps
-its own Ed25519 private key. Schooner registers only the public key, validates
-GitHub host keys from HTTPS metadata, and uses strict managed SSH settings.
-JSON and non-interactive commands never launch authorization; they return
-`authentication_required` if no stored credential can satisfy the request.
-See the [source access guide](docs/source-access.md) for permissions, status,
-recovery, and cleanup behavior.
+Schooner authorizes one local GitHub account through a GitHub App and device
+flow. Interactive connect first explains that the App can add this Box's public
+SSH key, not read repositories, and will not copy laptop keys or store a token
+on the Box. Tokens remain in the operating-system credential store, while each
+Box generates and keeps its own Ed25519 private key. Schooner registers only the
+public key, validates GitHub host keys from HTTPS metadata, and uses strict
+managed SSH settings. JSON and non-interactive commands never launch
+authorization; they return `authentication_required` if no stored credential can
+satisfy the request. See the [source access guide](docs/source-access.md) for
+permissions, status, recovery, and cleanup behavior.
 
-An interactive `schooner clone` or contextual `schooner start` can offer to
-connect the selected Box after a GitHub authentication failure, verify the
-requested repository with the managed key, and retry the same durable clone
-once. JSON and non-interactive invocations never authorize an account or
-register a key; use explicit `source connect` as the automation path.
+An interactive `schooner clone` or contextual `schooner start` can offer a
+dedicated Box key after a GitHub authentication failure, after explaining that
+the Box's own Git and SSH configuration already failed. JSON and non-interactive
+invocations never authorize an account or register a key; use explicit
+`source connect` as the automation path.
 
 ### Start and resume persistent sessions
 

@@ -71,7 +71,9 @@ func (c *Client) Authorize(ctx context.Context) (source.Token, error) {
 		ExpiresIn       int    `json:"expires_in"`
 		Interval        int    `json:"interval"`
 	}
-	if err := c.oauth(ctx, "/login/device/code", form, &device); err != nil {
+	if err := c.presenter.Wait(ctx, "Requesting GitHub authorization…", func(waitCtx context.Context) error {
+		return c.oauth(waitCtx, "/login/device/code", form, &device)
+	}); err != nil {
 		return source.Token{}, err
 	}
 	if !validDeviceAuthorization(device.DeviceCode, device.UserCode, device.VerificationURI, device.ExpiresIn, device.Interval) {
@@ -85,40 +87,51 @@ func (c *Client) Authorize(ctx context.Context) (source.Token, error) {
 	if interval < time.Second {
 		interval = time.Second
 	}
-	for c.now().UTC().Before(expiresAt) {
-		if err := c.wait(ctx, interval); err != nil {
-			return source.Token{}, err
+	var token source.Token
+	if err := c.presenter.Wait(ctx, "Waiting for GitHub authorization…", func(waitCtx context.Context) error {
+		for c.now().UTC().Before(expiresAt) {
+			if waitErr := c.wait(waitCtx, interval); waitErr != nil {
+				return waitErr
+			}
+			if !c.now().UTC().Before(expiresAt) {
+				return deviceAuthorizationExpired()
+			}
+			form = url.Values{
+				"client_id":   {c.clientID},
+				"device_code": {device.DeviceCode},
+				"grant_type":  {"urn:ietf:params:oauth:grant-type:device_code"},
+			}
+			var response tokenResponse
+			err := c.oauth(waitCtx, "/login/oauth/access_token", form, &response)
+			if err == nil && response.Error == "" {
+				issued, tokenErr := response.token(c.now().UTC())
+				if tokenErr != nil {
+					return tokenErr
+				}
+				token = issued
+				return nil
+			}
+			switch response.Error {
+			case "authorization_pending":
+				continue
+			case "slow_down":
+				interval += 5 * time.Second
+				continue
+			case "access_denied":
+				return &source.Error{Code: "authentication_required", Message: "GitHub authorization was denied", Context: map[string]string{"reason": "authorization_denied"}}
+			case "expired_token":
+				return deviceAuthorizationExpired()
+			case "":
+				return err
+			default:
+				return source.NewError("authentication_required", "GitHub device authorization failed", nil)
+			}
 		}
-		if !c.now().UTC().Before(expiresAt) {
-			return source.Token{}, source.NewError("authentication_required", "GitHub device authorization expired", nil)
-		}
-		form = url.Values{
-			"client_id":   {c.clientID},
-			"device_code": {device.DeviceCode},
-			"grant_type":  {"urn:ietf:params:oauth:grant-type:device_code"},
-		}
-		var response tokenResponse
-		err := c.oauth(ctx, "/login/oauth/access_token", form, &response)
-		if err == nil && response.Error == "" {
-			return response.token(c.now().UTC())
-		}
-		switch response.Error {
-		case "authorization_pending":
-			continue
-		case "slow_down":
-			interval += 5 * time.Second
-			continue
-		case "access_denied":
-			return source.Token{}, source.NewError("authentication_required", "GitHub authorization was denied", nil)
-		case "expired_token":
-			return source.Token{}, source.NewError("authentication_required", "GitHub device authorization expired", nil)
-		case "":
-			return source.Token{}, err
-		default:
-			return source.Token{}, source.NewError("authentication_required", "GitHub device authorization failed", nil)
-		}
+		return deviceAuthorizationExpired()
+	}); err != nil {
+		return source.Token{}, err
 	}
-	return source.Token{}, source.NewError("authentication_required", "GitHub device authorization expired", nil)
+	return token, nil
 }
 
 func (c *Client) Refresh(ctx context.Context, refreshToken string) (source.Token, error) {
@@ -185,7 +198,11 @@ func (c *Client) HostKeys(ctx context.Context) ([]source.HostKey, error) {
 		return nil, err
 	}
 	advertised := map[string]bool{}
-	for _, fingerprint := range response.SSHFingerprints {
+	for _, value := range response.SSHFingerprints {
+		fingerprint, err := canonicalMetadataFingerprint(value)
+		if err != nil {
+			return nil, &source.Error{Code: "conflict", Message: "GitHub host-key metadata failed fingerprint validation", Context: map[string]string{"reason": "host_key_changed"}, Cause: err}
+		}
 		advertised[fingerprint] = true
 	}
 	keys := make([]source.HostKey, 0, len(response.SSHKeys))
@@ -201,6 +218,19 @@ func (c *Client) HostKeys(ctx context.Context) ([]source.HostKey, error) {
 		return nil, &source.Error{Code: "conflict", Message: "GitHub host-key metadata is invalid", Context: map[string]string{"reason": "host_key_changed"}, Cause: err}
 	}
 	return keys, nil
+}
+
+func canonicalMetadataFingerprint(value string) (string, error) {
+	if value == "" || strings.TrimSpace(value) != value {
+		return "", fmt.Errorf("GitHub SSH host-key fingerprint is invalid")
+	}
+	if !strings.HasPrefix(value, "SHA256:") {
+		value = "SHA256:" + value
+	}
+	if err := source.ValidateFingerprint(value); err != nil {
+		return "", err
+	}
+	return value, nil
 }
 
 func (c *Client) ListKeys(ctx context.Context, accessToken string) ([]source.RemoteKey, error) {
@@ -420,6 +450,10 @@ func validLogin(value string) bool {
 		}
 	}
 	return true
+}
+
+func deviceAuthorizationExpired() error {
+	return &source.Error{Code: "authentication_required", Message: "GitHub device authorization expired", Context: map[string]string{"reason": "device_code_expired"}}
 }
 
 func unavailable(message string, cause error) error {

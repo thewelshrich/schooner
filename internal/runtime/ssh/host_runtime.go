@@ -25,7 +25,13 @@ import (
 	"github.com/thewelshrich/schooner/internal/source"
 )
 
-const maxArtifactBytes = 256 << 20
+const (
+	maxArtifactBytes = 256 << 20
+
+	// OpenSSH forwards the local TERM with an allocated PTY. Keep it when the
+	// Box understands it, otherwise use the widely available 256-color entry.
+	interactiveTerminalFallback = `if command -v infocmp >/dev/null 2>&1 && ! infocmp "${TERM-}" >/dev/null 2>&1 && infocmp xterm-256color >/dev/null 2>&1; then TERM=xterm-256color; export TERM; fi`
+)
 
 var (
 	digestPattern           = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -505,7 +511,13 @@ func (r *Runtime) openHostInteractive(ctx context.Context, connection box.Connec
 	// The host CLI consumes this Base64 protocol value. fixedShellCommand adds
 	// a separate transport wrapper, which the remote shell removes first.
 	encoded := base64.StdEncoding.EncodeToString(payload)
-	command := fixedShellCommand(`runtime_path=$(printf %s "$1" | base64 -d) || exit 64; request=$(printf %s "$2" | base64 -d) || exit 64; exec "$runtime_path" `+hostOperation+` "$request"`, installed.Path, encoded)
+	commandBody := strings.Join([]string{
+		`runtime_path=$(printf %s "$1" | base64 -d) || exit 64`,
+		`request=$(printf %s "$2" | base64 -d) || exit 64`,
+		interactiveTerminalFallback,
+		`exec "$runtime_path" ` + hostOperation + ` "$request"`,
+	}, "; ")
+	command := fixedShellCommand(commandBody, installed.Path, encoded)
 	return r.openInteractiveCommand(ctx, connection, command, terminal)
 }
 

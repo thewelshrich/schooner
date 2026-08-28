@@ -141,7 +141,7 @@ func runClone(ctx context.Context, streams Streams, global *globalOptions, targe
 	if err != nil {
 		return repository.MutationResult{}, err
 	}
-	result, err := cloneWithRecovery(ctx, streams, global, target, repository.CloneRequest{Source: source, Branch: branch}, "", nil)
+	result, err := cloneWithRecovery(ctx, streams, global, target, repository.CloneRequest{Source: source, Branch: branch}, "Cloning onto "+targetBoxLabel(target), nil)
 	return result, withCloneCollisionGuidance(err)
 }
 

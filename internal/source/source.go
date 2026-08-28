@@ -105,6 +105,7 @@ type DeviceAuthorization struct {
 
 type DevicePresenter interface {
 	Present(context.Context, DeviceAuthorization) error
+	Wait(context.Context, string, func(context.Context) error) error
 }
 
 type RemoteAccount struct {
@@ -181,10 +182,20 @@ type Target interface {
 	VerifySourceRepository(context.Context, VerifyRequest) (VerifyResult, error)
 }
 
+type ConnectPhase string
+
+const (
+	ConnectPhaseCreatingKey    ConnectPhase = "creating_key"
+	ConnectPhaseRegisteringKey ConnectPhase = "registering_key"
+	ConnectPhaseVerifying      ConnectPhase = "verifying"
+)
+
 type ConnectRequest struct {
-	Target             Target
-	AllowAuthorization bool
-	Repository         string
+	Target              Target
+	AllowAuthorization  bool
+	Repository          string
+	BeforeAuthorization func(context.Context, RemoteAccount) error
+	RunPhase            func(ConnectPhase, func() error) error
 }
 
 type ConnectResult struct {
@@ -198,6 +209,13 @@ type ConnectResult struct {
 	State          State
 	Recovered      bool
 	Warning        string
+}
+
+// AuthorizationState is a local, best-effort read of whether GitHub device
+// flow is needed before Connect. It does not call GitHub.
+type AuthorizationState struct {
+	NeedsDeviceFlow bool
+	Account         RemoteAccount
 }
 
 type LayerObservation struct {
@@ -226,9 +244,25 @@ type StatusResult struct {
 }
 
 type DisconnectRequest struct {
-	Target             Target
-	BoxName            string
-	AllowAuthorization bool
+	Target              Target
+	BoxName             string
+	AllowAuthorization  bool
+	BeforeAuthorization func(context.Context, RemoteAccount) error
+	RunPhase            func(DisconnectPhase, func() error) error
+}
+
+type DisconnectPhase string
+
+const (
+	DisconnectPhaseRevokingKey DisconnectPhase = "revoking_key"
+	DisconnectPhaseRemovingKey DisconnectPhase = "removing_key"
+)
+
+type DisconnectPreview struct {
+	BoxName        string
+	Account        RemoteAccount
+	RemoteKeyTitle string
+	LastBox        bool
 }
 
 type DisconnectResult struct {
@@ -296,7 +330,7 @@ func (m *Manager) Connect(ctx context.Context, request ConnectRequest) (result C
 		return ConnectResult{}, accountErr
 	}
 	newAccount := IsNotFound(accountErr)
-	token, account, warning, err := m.resolveAccount(ctx, request.AllowAuthorization)
+	token, account, warning, err := m.resolveAccount(ctx, request.AllowAuthorization, request.BeforeAuthorization)
 	if err != nil {
 		return ConnectResult{}, err
 	}
@@ -331,61 +365,71 @@ func (m *Manager) Connect(ctx context.Context, request ConnectRequest) (result C
 			return preflight, preflightErr
 		}
 	}
-	hostKeys, err := m.github.HostKeys(ctx)
-	if err != nil {
+	var hostIdentity HostIdentity
+	if err = runConnectPhase(request.RunPhase, ConnectPhaseCreatingKey, func() error {
+		hostKeys, hostErr := m.github.HostKeys(ctx)
+		if hostErr != nil {
+			return hostErr
+		}
+		if hostErr = ValidateHostKeys(hostKeys); hostErr != nil {
+			return &Error{Code: "conflict", Message: "GitHub host-key metadata is invalid", Context: map[string]string{"reason": "host_key_changed"}, Cause: hostErr}
+		}
+		hostIdentity, hostErr = request.Target.EnsureSourceIdentity(ctx, EnsureIdentityRequest{Provider: GitHub, HostKeys: hostKeys})
+		if hostErr != nil {
+			return hostErr
+		}
+		actualFingerprint, fingerprintErr := PublicKeyFingerprint(hostIdentity.PublicKey)
+		if !hostIdentity.Exists || hostIdentity.Provider != GitHub || hostIdentity.Fingerprint == "" || hostIdentity.PublicKey == "" || !hostIdentity.TrustConfigured || !HostFingerprintsMatch(hostIdentity.HostFingerprints, hostKeys) || fingerprintErr != nil || actualFingerprint != hostIdentity.Fingerprint {
+			return NewError("outcome_unknown", "the Box did not return a complete GitHub source identity", nil)
+		}
+		if findErr == nil && binding.Fingerprint != "" && binding.Fingerprint != hostIdentity.Fingerprint {
+			return NewError("conflict", "the Box GitHub key differs from the recorded source identity", nil)
+		}
+		now := m.now().UTC()
+		binding.BoxIdentity = request.Target.BoxIdentity()
+		binding.BoxName = boxName
+		binding.Provider = GitHub
+		binding.AccountExternalID = account.ID
+		binding.Fingerprint = hostIdentity.Fingerprint
+		binding.State = StateConnecting
+		binding.UpdatedAt = now
+		if binding.CreatedAt.IsZero() {
+			binding.CreatedAt = now
+		}
+		if hostErr = m.store.SaveBoxSourceIdentity(ctx, binding); hostErr != nil {
+			return hostErr
+		}
+		bindingCheckpointed = true
+		return nil
+	}); err != nil {
 		return ConnectResult{}, err
-	}
-	if err = ValidateHostKeys(hostKeys); err != nil {
-		return ConnectResult{}, &Error{Code: "conflict", Message: "GitHub host-key metadata is invalid", Context: map[string]string{"reason": "host_key_changed"}, Cause: err}
-	}
-	hostIdentity, err := request.Target.EnsureSourceIdentity(ctx, EnsureIdentityRequest{Provider: GitHub, HostKeys: hostKeys})
-	if err != nil {
-		return ConnectResult{}, err
-	}
-	actualFingerprint, fingerprintErr := PublicKeyFingerprint(hostIdentity.PublicKey)
-	if !hostIdentity.Exists || hostIdentity.Provider != GitHub || hostIdentity.Fingerprint == "" || hostIdentity.PublicKey == "" || !hostIdentity.TrustConfigured || !HostFingerprintsMatch(hostIdentity.HostFingerprints, hostKeys) || fingerprintErr != nil || actualFingerprint != hostIdentity.Fingerprint {
-		return ConnectResult{}, NewError("outcome_unknown", "the Box did not return a complete GitHub source identity", nil)
 	}
 
-	if findErr == nil && binding.Fingerprint != "" && binding.Fingerprint != hostIdentity.Fingerprint {
-		return ConnectResult{}, NewError("conflict", "the Box GitHub key differs from the recorded source identity", nil)
-	}
-	now := m.now().UTC()
-	binding.BoxIdentity = request.Target.BoxIdentity()
-	binding.BoxName = boxName
-	binding.Provider = GitHub
-	binding.AccountExternalID = account.ID
-	binding.Fingerprint = hostIdentity.Fingerprint
-	binding.State = StateConnecting
-	binding.UpdatedAt = now
-	if binding.CreatedAt.IsZero() {
-		binding.CreatedAt = now
-	}
-	if err = m.store.SaveBoxSourceIdentity(ctx, binding); err != nil {
+	if err = runConnectPhase(request.RunPhase, ConnectPhaseRegisteringKey, func() error {
+		remoteKey, keyErr := m.reconcileKey(ctx, token.AccessToken, binding, hostIdentity.PublicKey)
+		if keyErr != nil {
+			return keyErr
+		}
+		binding.RemoteKeyID = remoteKey.ID
+		binding.RemoteKeyTitle = remoteKey.Title
+		binding.UpdatedAt = m.now().UTC()
+		return m.store.SaveBoxSourceIdentity(ctx, binding)
+	}); err != nil {
 		return ConnectResult{}, err
 	}
-	bindingCheckpointed = true
 
-	remoteKey, err := m.reconcileKey(ctx, token.AccessToken, binding, hostIdentity.PublicKey)
-	if err != nil {
-		return ConnectResult{}, err
-	}
-	binding.RemoteKeyID = remoteKey.ID
-	binding.RemoteKeyTitle = remoteKey.Title
-	binding.UpdatedAt = m.now().UTC()
-	if err = m.store.SaveBoxSourceIdentity(ctx, binding); err != nil {
-		return ConnectResult{}, err
-	}
-	verification, err := request.Target.VerifySourceRepository(ctx, VerifyRequest{Provider: GitHub, Repository: request.Repository})
-	if err != nil {
-		return ConnectResult{}, err
-	}
-	if !verification.Authenticated {
-		return ConnectResult{}, NewError("outcome_unknown", "the Box did not confirm GitHub source access", nil)
-	}
-	binding.State = StateConnected
-	binding.UpdatedAt = m.now().UTC()
-	if err = m.store.SaveBoxSourceIdentity(ctx, binding); err != nil {
+	if err = runConnectPhase(request.RunPhase, ConnectPhaseVerifying, func() error {
+		verification, verifyErr := request.Target.VerifySourceRepository(ctx, VerifyRequest{Provider: GitHub, Repository: request.Repository})
+		if verifyErr != nil {
+			return verifyErr
+		}
+		if !verification.Authenticated {
+			return NewError("outcome_unknown", "the Box did not confirm GitHub source access", nil)
+		}
+		binding.State = StateConnected
+		binding.UpdatedAt = m.now().UTC()
+		return m.store.SaveBoxSourceIdentity(ctx, binding)
+	}); err != nil {
 		return ConnectResult{}, err
 	}
 	return ConnectResult{
@@ -486,7 +530,7 @@ func (m *Manager) Status(ctx context.Context, request StatusRequest) (StatusResu
 		}
 	}
 
-	token, account, credentialWarning, tokenErr := m.resolveAccount(ctx, false)
+	token, account, credentialWarning, tokenErr := m.resolveAccount(ctx, false, nil)
 	if tokenErr != nil {
 		if ErrorCode(tokenErr) == "authentication_required" {
 			result.State = StatusActionRequired
@@ -671,43 +715,45 @@ func (m *Manager) Disconnect(ctx context.Context, request DisconnectRequest) (Di
 	}
 
 	if binding.State != StateCleanupPending {
-		token, account, credentialWarning, tokenErr := m.resolveAccount(ctx, request.AllowAuthorization)
+		token, account, credentialWarning, tokenErr := m.resolveAccount(ctx, request.AllowAuthorization, request.BeforeAuthorization)
 		if tokenErr != nil {
 			return DisconnectResult{}, tokenErr
 		}
 		result.Warning = appendWarning(result.Warning, credentialWarning)
 		result.Account = account
-		keys, listErr := m.github.ListKeys(ctx, token.AccessToken)
-		if listErr != nil {
-			return DisconnectResult{}, listErr
-		}
-		remote, present, mismatch := findRemoteKey(keys, binding)
-		if mismatch {
-			return DisconnectResult{}, NewError("conflict", "the recorded GitHub key ID now has a different fingerprint", nil)
-		}
-		binding.State = StateDisconnecting
-		binding.UpdatedAt = m.now().UTC()
-		if err = m.store.SaveBoxSourceIdentity(ctx, binding); err != nil {
+		if err = runDisconnectPhase(request.RunPhase, DisconnectPhaseRevokingKey, func() error {
+			keys, listErr := m.github.ListKeys(ctx, token.AccessToken)
+			if listErr != nil {
+				return listErr
+			}
+			remote, present, mismatch := findRemoteKey(keys, binding)
+			if mismatch {
+				return NewError("conflict", "the recorded GitHub key ID now has a different fingerprint", nil)
+			}
+			binding.State = StateDisconnecting
+			binding.UpdatedAt = m.now().UTC()
+			if saveErr := m.store.SaveBoxSourceIdentity(ctx, binding); saveErr != nil {
+				return saveErr
+			}
+			if present {
+				if _, deleteErr := m.github.DeleteKey(ctx, token.AccessToken, remote.ID); deleteErr != nil {
+					return deleteErr
+				}
+				// A false result means GitHub observed the key already absent. Either
+				// successful response still establishes the required revoked state.
+			}
+			result.Revoked = true
+			binding.State = StateCleanupPending
+			binding.UpdatedAt = m.now().UTC()
+			if saveErr := m.store.SaveBoxSourceIdentity(ctx, binding); saveErr != nil {
+				return NewError("outcome_unknown", "GitHub access was revoked but local cleanup could not be checkpointed", saveErr)
+			}
+			result.Local.State = string(StateCleanupPending)
+			result.Remote.State = "revoked"
+			return nil
+		}); err != nil {
 			return DisconnectResult{}, err
 		}
-		if present {
-			_, deleteErr := m.github.DeleteKey(ctx, token.AccessToken, remote.ID)
-			if deleteErr != nil {
-				return DisconnectResult{}, deleteErr
-			}
-			// A false result means GitHub observed the key already absent. Either
-			// successful response still establishes the required revoked state.
-			result.Revoked = true
-		} else {
-			result.Revoked = true
-		}
-		binding.State = StateCleanupPending
-		binding.UpdatedAt = m.now().UTC()
-		if err = m.store.SaveBoxSourceIdentity(ctx, binding); err != nil {
-			return DisconnectResult{}, NewError("outcome_unknown", "GitHub access was revoked but local cleanup could not be checkpointed", err)
-		}
-		result.Local.State = string(StateCleanupPending)
-		result.Remote.State = "revoked"
 	} else {
 		result.Revoked = true
 		result.State = StatusCleanupPending
@@ -720,7 +766,12 @@ func (m *Manager) Disconnect(ctx context.Context, request DisconnectRequest) (Di
 		result.Warning = appendWarning(result.Warning, "GitHub access is revoked; re-adopt the Box to remove its now-inactive private key.")
 		return result, nil
 	}
-	removed, removeErr := target.RemoveSourceIdentity(ctx, RemoveIdentityRequest{Provider: GitHub, ExpectedFingerprint: binding.Fingerprint})
+	var removed RemoveIdentityResult
+	removeErr := runDisconnectPhase(request.RunPhase, DisconnectPhaseRemovingKey, func() error {
+		var phaseErr error
+		removed, phaseErr = target.RemoveSourceIdentity(ctx, RemoveIdentityRequest{Provider: GitHub, ExpectedFingerprint: binding.Fingerprint})
+		return phaseErr
+	})
 	if removeErr != nil {
 		result.State = StatusCleanupPending
 		result.CleanupPending = true
@@ -858,7 +909,7 @@ func (m *Manager) ensureBoxNameAvailable(ctx context.Context, boxName, boxIdenti
 	return nil
 }
 
-func (m *Manager) resolveAccount(ctx context.Context, allowAuthorization bool) (Token, RemoteAccount, string, error) {
+func (m *Manager) resolveAccount(ctx context.Context, allowAuthorization bool, beforeAuthorization func(context.Context, RemoteAccount) error) (Token, RemoteAccount, string, error) {
 	account, err := m.store.FindSourceAccount(ctx, GitHub)
 	if err != nil && !IsNotFound(err) {
 		return Token{}, RemoteAccount{}, "", err
@@ -867,20 +918,20 @@ func (m *Manager) resolveAccount(ctx context.Context, allowAuthorization bool) (
 		if !allowAuthorization {
 			return Token{}, RemoteAccount{}, "", authenticationRequired("GitHub authorization is required")
 		}
-		return m.authorize(ctx, Account{})
+		return m.authorizeAfterConfirmation(ctx, Account{}, beforeAuthorization)
 	}
 	token, persisted, tokenErr := m.loadToken(account)
 	if tokenErr != nil {
 		if ErrorCode(tokenErr) != "authentication_required" || !allowAuthorization {
 			return Token{}, RemoteAccount{}, "", tokenErr
 		}
-		return m.authorize(ctx, account)
+		return m.authorizeAfterConfirmation(ctx, account, beforeAuthorization)
 	}
 	if token.AccessToken == "" {
 		if !allowAuthorization {
 			return Token{}, RemoteAccount{}, "", authenticationRequired("the GitHub Source Account needs to be reconnected")
 		}
-		return m.authorize(ctx, account)
+		return m.authorizeAfterConfirmation(ctx, account, beforeAuthorization)
 	}
 	warning := ""
 	if account.Status == "action_required" && persisted {
@@ -900,7 +951,7 @@ func (m *Manager) resolveAccount(ctx context.Context, allowAuthorization bool) (
 			verified, verifyErr := m.github.Account(ctx, token.AccessToken)
 			if verifyErr != nil {
 				if ErrorCode(verifyErr) == "authentication_required" {
-					return m.authorize(ctx, account)
+					return m.authorizeAfterConfirmation(ctx, account, beforeAuthorization)
 				}
 				return Token{}, RemoteAccount{}, "", verifyErr
 			}
@@ -934,7 +985,17 @@ func (m *Manager) resolveAccount(ctx context.Context, allowAuthorization bool) (
 	if !allowAuthorization {
 		return Token{}, RemoteAccount{}, "", authenticationRequired("the GitHub Source Account needs to be reauthorized")
 	}
-	return m.authorize(ctx, account)
+	return m.authorizeAfterConfirmation(ctx, account, beforeAuthorization)
+}
+
+func (m *Manager) authorizeAfterConfirmation(ctx context.Context, existing Account, before func(context.Context, RemoteAccount) error) (Token, RemoteAccount, string, error) {
+	if before != nil {
+		account := RemoteAccount{ID: existing.ExternalID, Login: existing.Login}
+		if err := before(ctx, account); err != nil {
+			return Token{}, RemoteAccount{}, "", err
+		}
+	}
+	return m.authorize(ctx, existing)
 }
 
 func (m *Manager) authorize(ctx context.Context, existing Account) (Token, RemoteAccount, string, error) {
@@ -1156,6 +1217,81 @@ func (m *Manager) HasBinding(ctx context.Context, boxIdentity string) (bool, err
 		return false, nil
 	}
 	return err == nil, err
+}
+
+// AuthorizationState reports whether Connect will need GitHub device flow
+// based on local Source Account and credential-store state.
+func (m *Manager) AuthorizationState(ctx context.Context) (AuthorizationState, error) {
+	account, err := m.store.FindSourceAccount(ctx, GitHub)
+	if IsNotFound(err) {
+		return AuthorizationState{NeedsDeviceFlow: true}, nil
+	}
+	if err != nil {
+		return AuthorizationState{}, err
+	}
+	remote := RemoteAccount{ID: account.ExternalID, Login: account.Login}
+	token, _, tokenErr := m.loadToken(account)
+	if tokenErr != nil {
+		if ErrorCode(tokenErr) == "authentication_required" {
+			return AuthorizationState{NeedsDeviceFlow: true, Account: remote}, nil
+		}
+		return AuthorizationState{}, tokenErr
+	}
+	if token.AccessToken == "" {
+		return AuthorizationState{NeedsDeviceFlow: true, Account: remote}, nil
+	}
+	fresh := token.AccessExpiresAt.IsZero() || token.AccessExpiresAt.After(m.now().UTC().Add(30*time.Second))
+	refreshable := token.RefreshToken != "" && (token.RefreshExpiresAt.IsZero() || token.RefreshExpiresAt.After(m.now().UTC()))
+	if !fresh && !refreshable {
+		return AuthorizationState{NeedsDeviceFlow: true, Account: remote}, nil
+	}
+	return AuthorizationState{NeedsDeviceFlow: false, Account: remote}, nil
+}
+
+func (m *Manager) BindingCount(ctx context.Context) (int, error) {
+	bindings, err := m.store.ListBoxSourceIdentities(ctx, GitHub)
+	if err != nil {
+		return 0, err
+	}
+	return len(bindings), nil
+}
+
+// PreviewDisconnect returns the safe local metadata needed for confirmation.
+// It does not inspect or mutate the Box, call GitHub, or resume pending cleanup.
+func (m *Manager) PreviewDisconnect(ctx context.Context, request StatusRequest) (DisconnectPreview, error) {
+	binding, _, err := m.resolveBinding(ctx, request.Target, request.BoxName)
+	if err != nil {
+		return DisconnectPreview{}, err
+	}
+	preview := DisconnectPreview{BoxName: binding.BoxName, RemoteKeyTitle: binding.RemoteKeyTitle}
+	if account, accountErr := m.store.FindSourceAccount(ctx, GitHub); accountErr == nil {
+		preview.Account = RemoteAccount{ID: account.ExternalID, Login: account.Login}
+		if !validRemoteAccount(preview.Account) {
+			return DisconnectPreview{}, NewError("conflict", "stored GitHub account metadata is invalid", nil)
+		}
+	} else if !IsNotFound(accountErr) {
+		return DisconnectPreview{}, accountErr
+	}
+	bindings, err := m.store.ListBoxSourceIdentities(ctx, GitHub)
+	if err != nil {
+		return DisconnectPreview{}, err
+	}
+	preview.LastBox = len(bindings) == 1
+	return preview, nil
+}
+
+func runConnectPhase(runner func(ConnectPhase, func() error) error, phase ConnectPhase, fn func() error) error {
+	if runner == nil {
+		return fn()
+	}
+	return runner(phase, fn)
+}
+
+func runDisconnectPhase(runner func(DisconnectPhase, func() error) error, phase DisconnectPhase, fn func() error) error {
+	if runner == nil {
+		return fn()
+	}
+	return runner(phase, fn)
 }
 
 func authenticationRequired(message string) error {

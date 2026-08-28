@@ -47,7 +47,7 @@ func newBoxAddCommand(streams Streams, global *globalOptions) *cobra.Command {
 			}
 			interactive := interactionAllowed(streams, global)
 			if name != "" && providerID == "" && !cmd.Flags().Changed("ssh") {
-				if op, resumeErr := interruptedDigitalOceanAdd(cmd.Context(), streams, global.build, name); resumeErr == nil {
+				if op, resumeErr := interruptedDigitalOceanAdd(cmd.Context(), streams, global, name); resumeErr == nil {
 					if interactive {
 						clearBoxAddScreen(streams, global)
 					}
@@ -135,7 +135,7 @@ func newBoxAddCommand(streams Streams, global *globalOptions) *cobra.Command {
 			} else if !yes {
 				return usageError{cause: fmt.Errorf("--yes is required when prompts are unavailable")}
 			}
-			service, closeService, err := openBoxService(cmd.Context(), streams, global.build)
+			service, closeService, err := openBoxService(cmd.Context(), streams, global)
 			if err != nil {
 				return executionError{cause: err}
 			}
@@ -181,8 +181,8 @@ type digitalOceanAddOptions struct {
 	Resume                                                                                  bool
 }
 
-func interruptedDigitalOceanAdd(ctx context.Context, streams Streams, build BuildInfo, name string) (acquisition.ProvisionOperation, error) {
-	services, closeServices, err := openApplication(ctx, streams, build)
+func interruptedDigitalOceanAdd(ctx context.Context, streams Streams, global *globalOptions, name string) (acquisition.ProvisionOperation, error) {
+	services, closeServices, err := openApplication(ctx, streams, global)
 	if err != nil {
 		return acquisition.ProvisionOperation{}, err
 	}
@@ -222,7 +222,7 @@ func runDigitalOceanAdd(cmd *cobra.Command, streams Streams, global *globalOptio
 	if err := box.ValidateWorktreeRoot(options.WorktreeRoot); err != nil {
 		return usageError{cause: err}
 	}
-	services, closeServices, err := openApplication(cmd.Context(), streams, global.build)
+	services, closeServices, err := openApplication(cmd.Context(), streams, global)
 	if err != nil {
 		return executionError{cause: err}
 	}
@@ -514,7 +514,7 @@ func newBoxListCommand(streams Streams, global *globalOptions) *cobra.Command {
 		Long:  "Show locally known boxes without probing them. Reachability and last observed time come from the latest successful observation; use box status for a live check.",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			service, closeService, err := openBoxService(cmd.Context(), streams, global.build)
+			service, closeService, err := openBoxService(cmd.Context(), streams, global)
 			if err != nil {
 				return executionError{cause: err}
 			}
@@ -534,7 +534,7 @@ func newBoxUseCommand(streams Streams, global *globalOptions) *cobra.Command {
 		Short: "Set the default box",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			services, closeServices, err := openApplication(cmd.Context(), streams, global.build)
+			services, closeServices, err := openApplication(cmd.Context(), streams, global)
 			if err != nil {
 				return executionError{cause: err}
 			}
@@ -555,7 +555,7 @@ func newBoxStatusCommand(streams Streams, global *globalOptions) *cobra.Command 
 	return &cobra.Command{
 		Use: "status [name]", Short: "Show live box status", Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			services, closeServices, err := openApplication(cmd.Context(), streams, global.build)
+			services, closeServices, err := openApplication(cmd.Context(), streams, global)
 			if err != nil {
 				return executionError{cause: err}
 			}
@@ -598,7 +598,7 @@ func newBoxMaintenanceCommand(streams Streams, global *globalOptions, use, short
 	return &cobra.Command{
 		Use: use, Short: short, Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			services, closeServices, err := openApplication(cmd.Context(), streams, global.build)
+			services, closeServices, err := openApplication(cmd.Context(), streams, global)
 			if err != nil {
 				return executionError{cause: err}
 			}
@@ -647,7 +647,7 @@ func newBoxSSHCommand(streams Streams, global *globalOptions) *cobra.Command {
 				return usageError{cause: fmt.Errorf("box ssh requires an interactive terminal")}
 			}
 
-			services, closeServices, err := openApplication(cmd.Context(), streams, global.build)
+			services, closeServices, err := openApplication(cmd.Context(), streams, global)
 			if err != nil {
 				return executionError{cause: err}
 			}
@@ -695,7 +695,7 @@ func newBoxRemoveCommand(streams Streams, global *globalOptions) *cobra.Command 
 	cmd := &cobra.Command{
 		Use: "remove [name]", Short: "Forget a box without changing its machine", Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			services, closeServices, err := openApplication(cmd.Context(), streams, global.build)
+			services, closeServices, err := openApplication(cmd.Context(), streams, global)
 			if err != nil {
 				return executionError{cause: err}
 			}
@@ -775,7 +775,7 @@ func newBoxDestroyCommand(streams Streams, global *globalOptions) *cobra.Command
 	var yes bool
 	cmd := &cobra.Command{Use: "destroy [name]", Short: "Permanently destroy provider infrastructure and remove its box", Args: cobra.MaximumNArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		interactive := interactionAllowed(streams, global)
-		services, closeServices, err := openApplication(cmd.Context(), streams, global.build)
+		services, closeServices, err := openApplication(cmd.Context(), streams, global)
 		if err != nil {
 			return executionError{cause: err}
 		}
