@@ -10,7 +10,8 @@ not a compatibility promise.
 - Provision and destroy DigitalOcean Droplets.
 - Install, inspect, repair, and update the on-demand remote runtime.
 - Install and upgrade the local CLI through Homebrew or the verified public
-  release installer on supported macOS and Linux platforms.
+  release installer on supported macOS and Linux platforms, with ownership-aware
+  local update checks and safe direct-install replacement.
 - Discover, create, inspect, remove, and prune remote Git worktrees.
 - Clone public and private GitHub repositories with Box-owned SSH identity
   recovery, while retaining explicit source connect and disconnect controls.

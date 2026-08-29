@@ -20,6 +20,7 @@ var (
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), terminationSignals()...)
 	defer stop()
+	executablePath, _ := os.Executable()
 
 	code := cli.Run(ctx, os.Args[1:], cli.Streams{
 		In:            os.Stdin,
@@ -36,6 +37,8 @@ func main() {
 		OS:             runtime.GOOS,
 		Arch:           runtime.GOARCH,
 		GitHubClientID: githubClientID,
+		ExecutablePath: executablePath,
+		InvocationPath: os.Args[0],
 	})
 
 	os.Exit(code)

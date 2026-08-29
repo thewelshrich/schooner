@@ -19,6 +19,7 @@ Available Commands:
   source      Manage source-host access for Boxes
   start       Open persistent work for a Repository
   stop        Stop a managed Session without changing its Worktree
+  update      Check or update the local Schooner executable
   version     Show Schooner build information
   worktree    Discover and inspect live Git worktrees
 

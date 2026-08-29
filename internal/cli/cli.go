@@ -22,6 +22,7 @@ import (
 	localHost "github.com/thewelshrich/schooner/internal/runtime/host"
 	sshRuntime "github.com/thewelshrich/schooner/internal/runtime/ssh"
 	"github.com/thewelshrich/schooner/internal/secretstore"
+	"github.com/thewelshrich/schooner/internal/selfupdate"
 	"github.com/thewelshrich/schooner/internal/source"
 	sourcegithub "github.com/thewelshrich/schooner/internal/source/github"
 	"github.com/thewelshrich/schooner/internal/ui/prompts"
@@ -52,6 +53,8 @@ type BuildInfo struct {
 	OS             string
 	Arch           string
 	GitHubClientID string
+	ExecutablePath string
+	InvocationPath string
 }
 
 type globalOptions struct {
@@ -63,6 +66,7 @@ type globalOptions struct {
 	accessible    bool
 	choiceSummary *prompts.ChoiceSummary
 	hostRuntime   func() *localHost.Runtime
+	selfUpdate    selfUpdateRunner
 }
 
 func Run(ctx context.Context, args []string, streams Streams, build BuildInfo) int {
@@ -78,13 +82,14 @@ func runWithHostRuntime(ctx context.Context, args []string, streams Streams, bui
 	if err := ctx.Err(); err != nil {
 		return exitAbort
 	}
-	options := &globalOptions{build: build, hostRuntime: newHostRuntime}
+	options := &globalOptions{build: build, hostRuntime: newHostRuntime, selfUpdate: defaultSelfUpdateRunner(build)}
 	root := newRootCommand(build, streams, options)
 	root.SetArgs(args)
 	root.SetIn(streams.In)
 	root.SetOut(streams.Out)
 	root.SetErr(streams.Err)
-	if err := root.ExecuteContext(ctx); err != nil {
+	executed, err := root.ExecuteContextC(ctx)
+	if err != nil {
 		if ctx.Err() != nil {
 			return exitAbort
 		}
@@ -107,6 +112,7 @@ func runWithHostRuntime(ctx context.Context, args []string, streams Streams, bui
 		}
 		return exitUsage
 	}
+	maybeWriteAutomaticUpdateNotice(ctx, args, executed, streams, options)
 	return exitSuccess
 }
 
@@ -145,6 +151,7 @@ func newRootCommand(build BuildInfo, streams Streams, options *globalOptions) *c
 	root.PersistentFlags().StringVar(&options.theme, "theme", "auto", "terminal theme: auto, light, or dark")
 	root.PersistentFlags().BoolVar(&options.accessible, "accessible", false, "use screen-reader-friendly prompts and progress")
 	root.AddCommand(newVersionCommand(streams, build, options))
+	root.AddCommand(newUpdateCommand(streams, options))
 	if defaultString(build.Version, "dev") == "dev" {
 		root.AddCommand(newDevelopmentCommand(options, artifact.BuildDevelopment))
 	}
@@ -295,6 +302,9 @@ func printError(w io.Writer, err error, output string, theme *uitheme.Theme) {
 		if sourceCode := source.ErrorCode(err); sourceCode != "" {
 			code = sourceCode
 		}
+		if updateCode := selfupdate.ErrorCode(err); updateCode != "" {
+			code = string(updateCode)
+		}
 		var usage usageError
 		if errors.As(err, &usage) {
 			code = "invalid_input"
@@ -307,6 +317,9 @@ func printError(w io.Writer, err error, output string, theme *uitheme.Theme) {
 		var sourceDomain *source.Error
 		if errors.As(err, &sourceDomain) && sourceDomain.Context != nil {
 			contextValues = sourceDomain.Context
+		}
+		if updateContext := selfupdate.ErrorContext(err); updateContext != nil {
+			contextValues = updateContext
 		}
 		document := struct {
 			SchemaVersion string `json:"schema_version"`
@@ -336,6 +349,11 @@ func printError(w io.Writer, err error, output string, theme *uitheme.Theme) {
 	if errors.As(err, &sourceDomain) {
 		if reason := sourceDomain.Context["reason"]; reason != "" {
 			_ = writeMutedNotice(w, theme, "Reason: "+reason)
+		}
+	}
+	if updateContext := selfupdate.ErrorContext(err); updateContext != nil {
+		if guidance := updateContext["guidance"]; guidance != "" {
+			_ = writeMutedNotice(w, theme, "Next: "+guidance)
 		}
 	}
 }

@@ -25,6 +25,7 @@ const (
 	developmentCurrentName      = ".current"
 	developmentGenerationPrefix = ".generation-"
 	maxManifest                 = 1 << 20
+	maxReleaseExecutable        = 256 << 20
 )
 
 type Code string
@@ -387,11 +388,14 @@ func (r *Resolver) download(ctx context.Context, version string, platform Platfo
 		return Result{}, &Error{Code: CodeUnavailable, Message: fmt.Sprintf("artifact is unavailable (HTTP %d)", response.StatusCode)}
 	}
 	hash := sha256.New()
-	_, copyErr := io.Copy(io.MultiWriter(temporary, hash), response.Body)
+	written, copyErr := io.Copy(io.MultiWriter(temporary, hash), io.LimitReader(response.Body, maxReleaseExecutable+1))
 	closeBodyErr := response.Body.Close()
 	closeFileErr := temporary.Close()
 	if copyErr != nil {
 		return Result{}, unavailable("download the artifact", copyErr)
+	}
+	if written == 0 || written > maxReleaseExecutable {
+		return Result{}, unavailable("download the artifact", errors.New("release executable is empty or exceeds 256 MiB"))
 	}
 	if closeBodyErr != nil {
 		return Result{}, unavailable("finish the artifact download", closeBodyErr)
