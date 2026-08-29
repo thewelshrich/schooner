@@ -6,16 +6,16 @@
 ## Context
 
 Schooner releases immutable executables through GitHub. Ordinary users need a
-package-like installation path without an account or hosted control plane, and a
-later local updater needs to know whether it has authority to replace the running
+package-like installation path without an account or hosted control plane, and the
+local updater needs to know whether it has authority to replace the running
 file. Files installed by Homebrew, source builds, and manually copied binaries
 remain owned by their respective users and tools.
 
 An executable path alone cannot establish ownership. Receipts can become stale,
 custom install directories can overlap package-manager prefixes, and an
 interrupted promotion can leave a valid new executable beside old metadata. The
-repository installer is Bash so its persistent and locking contracts must also
-be implementable by the future Go updater.
+repository installer is Bash, so its persistent and locking contracts must also
+be implemented by the Go updater.
 
 ## Considered options
 
@@ -30,7 +30,7 @@ be implementable by the future Go updater.
 
 ## Decision
 
-The repository installer consumes deterministic release archives. The future
+The repository installer consumes deterministic release archives. The
 local updater consumes the unchanged raw release executable. Both verify the
 concrete release manifest and executable identity before promotion; macOS also
 requires the Developer ID Application signature for Team ID `LDCWNW7T7K` and
@@ -40,7 +40,7 @@ A direct installation stores `.schooner-install-receipt.json` beside the
 executable with mode `0600`. Schema version 1 is strict canonical JSON containing
 the installation method, canonical executable path, installed version,
 executable SHA-256, release-asset kind/name/SHA-256, and installation timestamp.
-The installer writes `release_asset_kind` as `archive`; the future updater writes
+The installer writes `release_asset_kind` as `archive`; the updater writes
 `raw`. A receipt grants authority only when it is a current-user-owned regular
 file, is not group- or world-writable, names the running path, and its digest
 matches the current executable bytes.
@@ -72,7 +72,7 @@ published evidence but are not yet verified by installer clients.
 - Failure after executable promotion but before receipt promotion leaves a valid
   but unowned binary. Re-running the same explicit version verifies identical
   bytes and repairs the receipt.
-- The Bash installer and future Go updater must preserve the version-1 receipt
+- The Bash installer and Go updater must preserve the version-1 receipt
   serialization and lock protocol until an explicit migration is designed.
 - Package managers remain responsible for their own upgrades and uninstall
   behavior.

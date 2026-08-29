@@ -13,6 +13,9 @@ func TestValidAndCompare(t *testing.T) {
 			t.Errorf("Valid(%q) = true", value)
 		}
 	}
+	if !Stable("v1.2.3") || !Stable("v1.2.3+build.7") || Stable("v1.2.3-rc.1") || Stable("dev") {
+		t.Error("Stable did not distinguish stable releases from prereleases and development builds")
+	}
 	tests := []struct {
 		left, right string
 		want        int

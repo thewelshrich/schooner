@@ -95,4 +95,4 @@ schooner doctor
 Go normally installs the executable beneath `~/go/bin`; add that directory to
 `PATH` yourself when necessary. A source-built executable has no direct-install
 receipt and remains owned by the source workflow. The repository installer and
-future local updater must not replace it.
+local updater report source-build guidance and must not replace it.

@@ -84,6 +84,9 @@ brew update
 brew upgrade thewelshrich/tap/schooner
 ```
 
+`schooner update` detects a Homebrew installation and prints that same command;
+it never replaces the executable beneath Homebrew.
+
 Uninstall the package with:
 
 ```bash
@@ -126,10 +129,32 @@ ID Application signature before running the candidate. Linux authenticity relies
 on GitHub HTTPS, the immutable release, and its checksum manifest; published
 provenance is not yet checked by the installer.
 
-Until `schooner update` is available, rerun the installer to update a direct
-installation. It replaces only a matching installer-owned receipt and refuses
-package-managed, source-built, symlinked, or unknown executables. To uninstall a
-default direct installation, remove both owned files:
+Check the latest stable release without changing the executable, or update an
+installer-owned direct installation explicitly:
+
+```bash
+schooner update --check
+schooner update
+```
+
+The updater pins one exact release, verifies the raw executable against
+`SHA256SUMS`, validates its version and platform, and on macOS verifies the
+expected Developer ID signature before running or promoting it. It atomically
+replaces only an executable with a matching secure direct-install receipt.
+Homebrew and source installations receive owner-specific guidance; symlinked,
+manual, unknown, and stale-receipt installations are refused.
+
+During ordinary interactive terminal use, Schooner checks at most once every 24
+hours and writes an available-update notice to stderr after successful command
+output. The check has a one-second limit, is non-fatal, never runs for JSON or
+non-interactive commands, and keeps its validators in the operating system's
+user cache. Disable it with:
+
+```bash
+export SCHOONER_NO_UPDATE_CHECK=1
+```
+
+To uninstall a default direct installation, remove both owned files:
 
 ```bash
 rm -- "$HOME/.local/bin/schooner" \
@@ -157,7 +182,8 @@ schooner doctor
 Make sure Go's binary directory is on your `PATH`. It is normally `~/go/bin`.
 See the [development guide](docs/development.md) for the complete source-build
 workflow. Source builds are for development; use Homebrew or the direct installer
-for released versions. Tagged binaries remain available through
+for released versions. `schooner update` reports source-build guidance and does
+not replace them. Tagged binaries remain available through
 [GitHub Releases](https://github.com/thewelshrich/schooner/releases).
 
 ## Common workflows

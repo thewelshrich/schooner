@@ -15,6 +15,11 @@ func Valid(value string) bool {
 	return ok
 }
 
+func Stable(value string) bool {
+	parsed, ok := parse(value)
+	return ok && len(parsed.prerelease) == 0
+}
+
 func Compare(left, right string) (int, bool) {
 	a, ok := parse(left)
 	if !ok {

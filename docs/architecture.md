@@ -87,6 +87,7 @@ internal/session/             tmux-backed Sessions and optional Agents
 internal/runtime/             typed remote-operation contracts
 internal/runtime/ssh/         system-OpenSSH transport adapter
 internal/artifact/            verified remote-application artifacts and cache
+internal/selfupdate/          verified local update ownership and promotion
 internal/provider/            provider contracts and catalogue
 internal/provider/digitalocean/
 internal/provider/hetzner/
