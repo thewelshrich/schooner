@@ -169,7 +169,9 @@ func NewDefault(current Current) (*Updater, error) {
 		current: current, executablePath: executable, invokedSymlink: invokedSymlink,
 		cachePath: cachePath,
 		apiURL:    defaultAPIURL, client: &http.Client{Timeout: 30 * time.Second},
-		artifacts: artifact.NewDeferredDefault(), now: time.Now, hostname: os.Hostname,
+		// Local updates always use the official immutable release source. Remote
+		// runtime development overrides must never influence this trust boundary.
+		artifacts: artifact.NewDeferred(artifact.Config{}), now: time.Now, hostname: os.Hostname,
 		processAlive: processIsAlive, verifySignature: verifyPlatformSignature,
 		publishReceipt: writeReceipt,
 		maxCandidate:   maxCandidateBytes,
@@ -225,7 +227,10 @@ func (u *updater) run(ctx context.Context, mode Mode) (Result, error) {
 		return result, nil
 	}
 	if mode == ModeAutomatic {
-		ownership = classifyInstallation(u.current.Version, u.executablePath, u.invokedSymlink)
+		// Notices never need mutation authority. Avoid hashing the running
+		// executable on the latency-sensitive post-command path; the explicit
+		// update command performs the complete ownership classification.
+		ownership = automaticNoticeOwnership()
 	}
 	result := Result{InstalledVersion: u.current.Version, AvailableVersion: available, InstallationMethod: ownership.method}
 	if mode != ModeApply {
@@ -246,6 +251,10 @@ func (u *updater) run(ctx context.Context, mode Mode) (Result, error) {
 	default:
 		return Result{}, ownershipError(result, "installation ownership is unsupported")
 	}
+}
+
+func automaticNoticeOwnership() ownership {
+	return ownership{method: MethodUnknown}
 }
 
 func (u *updater) apply(ctx context.Context, result Result) (Result, error) {

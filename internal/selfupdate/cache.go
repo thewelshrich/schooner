@@ -72,7 +72,7 @@ func (u *updater) latest(ctx context.Context, mode Mode) (string, bool, error) {
 	cache.LastAttemptAt = now.Truncate(time.Second).Format(time.RFC3339)
 	switch response.StatusCode {
 	case http.StatusNotModified:
-		if !semver.Valid(cache.LatestVersion) {
+		if !semver.Stable(cache.LatestVersion) {
 			return "", false, u.releaseFailure(mode, now, cache, CodeInvalidRelease, "GitHub returned an unusable not-modified response", nil)
 		}
 		cache.LastSuccessfulAt = cache.LastAttemptAt
@@ -94,7 +94,7 @@ func (u *updater) latest(ctx context.Context, mode Mode) (string, bool, error) {
 		if trailingErr := requireJSONEOF(decoder); trailingErr != nil {
 			return "", false, u.releaseFailure(mode, now, cache, CodeInvalidRelease, "decode the latest-release response", trailingErr)
 		}
-		if document.Draft || document.Prerelease || !semver.Valid(document.TagName) {
+		if document.Draft || document.Prerelease || !semver.Stable(document.TagName) {
 			return "", false, u.releaseFailure(mode, now, cache, CodeInvalidRelease, "latest release is draft, prerelease, or has an invalid version", nil)
 		}
 		cache.LatestVersion = document.TagName

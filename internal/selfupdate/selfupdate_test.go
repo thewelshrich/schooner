@@ -218,6 +218,7 @@ func TestReleaseSelectionRejectsInvalidLatestAndNeverDowngrades(t *testing.T) {
 	}{
 		{name: "draft", body: `{"tag_name":"v0.3.0","draft":true,"prerelease":false}`},
 		{name: "prerelease", body: `{"tag_name":"v0.3.0-rc.1","draft":false,"prerelease":true}`},
+		{name: "prerelease tag with stable metadata", body: `{"tag_name":"v0.3.0-rc.1","draft":false,"prerelease":false}`},
 		{name: "invalid version", body: `{"tag_name":"latest","draft":false,"prerelease":false}`},
 		{name: "malformed", body: `{`},
 		{name: "trailing", body: `{"tag_name":"v0.3.0","draft":false,"prerelease":false}{}`},
@@ -237,6 +238,14 @@ func TestReleaseSelectionRejectsInvalidLatestAndNeverDowngrades(t *testing.T) {
 	result, err := u.run(t.Context(), ModeApply)
 	if err != nil || result.Action != ActionUpToDate || result.AvailableVersion != "v0.2.0" {
 		t.Fatalf("downgrade result=%#v err=%v", result, err)
+	}
+}
+
+func TestAutomaticNoticeDoesNotClaimOrHashDirectOwnership(t *testing.T) {
+	u, _, _ := testUpdater(t, "linux", "amd64", "v0.2.0", "v0.3.0")
+	result, err := u.run(t.Context(), ModeAutomatic)
+	if err != nil || result.Action != ActionUpdateAvailable || result.InstallationMethod != MethodUnknown {
+		t.Fatalf("result=%#v err=%v", result, err)
 	}
 }
 
