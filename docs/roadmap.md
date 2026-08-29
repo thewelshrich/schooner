@@ -9,6 +9,8 @@ not a compatibility promise.
 - Adopt existing Ubuntu machines through OpenSSH.
 - Provision and destroy DigitalOcean Droplets.
 - Install, inspect, repair, and update the on-demand remote runtime.
+- Install and upgrade the local CLI through Homebrew or the verified public
+  release installer on supported macOS and Linux platforms.
 - Discover, create, inspect, remove, and prune remote Git worktrees.
 - Clone public and private GitHub repositories with Box-owned SSH identity
   recovery, while retaining explicit source connect and disconnect controls.
@@ -17,8 +19,6 @@ not a compatibility promise.
 
 ## Before the first general release
 
-- Package straightforward installation and upgrades for supported local
-  platforms.
 - Add Hetzner as the second built-in provider.
 - Add explicit local links and one-shot `push`, `pull`, and `sync` workflows.
 - Add optional coding-agent sessions.

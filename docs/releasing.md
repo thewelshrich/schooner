@@ -220,9 +220,12 @@ binary when that variable is empty and links the value into
 `SCHOONER_GITHUB_CLIENT_ID` in the invoking environment; this override is read
 at runtime and is intended only for local development.
 
-Automatic local updates remain separate work. The first archive-bearing release
-must be installed through the public repository script on fresh macOS and Linux
-amd64/arm64 systems before direct installation becomes the primary README path.
+Automatic local updates remain separate work. Direct installation may be
+advertised only after an archive-bearing release has passed the public
+repository-script smoke on fresh macOS and Linux amd64/arm64 systems. Homebrew
+may become the recommended README path only after the generated tap pull request
+is merged and the tap's protected `main` branch passes its four-platform public
+install matrix.
 The macOS smoke applies quarantine metadata, requires the exact Developer ID
 signature, records Gatekeeper's standalone-command assessment, and executes the
 quarantined binary. `spctl` reports a valid notarized standalone CLI as valid

@@ -63,38 +63,41 @@ daemon or prevent you from continuing to use `ssh work-api` directly.
 
 ## Installation
 
-### From source during the packaging transition
+Schooner supports macOS 13 or later and contemporary Linux distributions on
+amd64 and arm64. The system OpenSSH client is required for Box connections.
 
-You need:
+### Homebrew
 
-- macOS 13 or later, or a contemporary Linux distribution;
-- amd64 or arm64;
-- the system OpenSSH client; and
-- Go 1.27 or later.
-
-Until an archive-bearing release is published, install the current development
-version from a source checkout and prepare its Linux host runtimes:
+Homebrew is the recommended installation method:
 
 ```bash
-git clone https://github.com/thewelshrich/schooner.git
-cd schooner
-go install ./cmd/schooner
-schooner dev artifacts
+brew install thewelshrich/tap/schooner
 schooner version
 schooner doctor
 ```
 
-Make sure Go's binary directory is on your `PATH`. It is normally `~/go/bin`.
-See the [development guide](docs/development.md) for the complete source-build
-workflow.
+Update Schooner through Homebrew so the package manager remains the owner of
+the installed executable and shell completions:
 
-Tagged binaries for macOS and Linux are published through
-[GitHub Releases](https://github.com/thewelshrich/schooner/releases).
+```bash
+brew update
+brew upgrade thewelshrich/tap/schooner
+```
 
-### Packaged installation for archive-bearing releases
+Uninstall the package with:
 
-When the latest GitHub Release contains `.tar.gz` assets, macOS and Linux users
-can install the matching signed or verified executable without a source checkout:
+```bash
+brew uninstall schooner
+```
+
+You can also remove the tap with `brew untap thewelshrich/tap` when you no
+longer use packages from it. Uninstalling the package does not remove Schooner's
+local inventory or change any remote machine.
+
+### Direct installation
+
+If you do not use Homebrew, the public installer selects the matching signed or
+verified release executable:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/thewelshrich/schooner/main/scripts/install.sh | bash
@@ -133,8 +136,29 @@ rm -- "$HOME/.local/bin/schooner" \
   "$HOME/.local/bin/.schooner-install-receipt.json"
 ```
 
-Homebrew packaging is the next distribution slice and must not be advertised as
-available until the tap has passed installation tests.
+### Development builds from source
+
+You need:
+
+- Go 1.27 or later.
+
+Build the current development version from a source checkout and prepare its
+Linux host runtimes:
+
+```bash
+git clone https://github.com/thewelshrich/schooner.git
+cd schooner
+go install ./cmd/schooner
+schooner dev artifacts
+schooner version
+schooner doctor
+```
+
+Make sure Go's binary directory is on your `PATH`. It is normally `~/go/bin`.
+See the [development guide](docs/development.md) for the complete source-build
+workflow. Source builds are for development; use Homebrew or the direct installer
+for released versions. Tagged binaries remain available through
+[GitHub Releases](https://github.com/thewelshrich/schooner/releases).
 
 ## Common workflows
 
