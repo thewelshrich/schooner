@@ -342,7 +342,9 @@ jobs:
       - name: Sign and verify macOS binaries
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
+          EXPECTED_TEAM_ID: LDCWNW7T7K
         run: |
+          requirement="anchor apple generic and identifier \"app.schooner.cli\" and certificate leaf[subject.OU] = \"${EXPECTED_TEAM_ID}\" and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists"
           for arch in amd64 arm64; do
             artifact="dist/schooner_${VERSION}_darwin_${arch}"
             test -f "${artifact}"
@@ -353,7 +355,7 @@ jobs:
               --timestamp \
               --identifier app.schooner.cli \
               "${artifact}"
-            codesign --verify --strict --verbose=4 "${artifact}"
+            codesign --verify --strict --verbose=4 -R="${requirement}" "${artifact}"
           done
 
       - name: Notarize macOS binaries
@@ -455,6 +457,11 @@ jobs:
       - sign-macos
     runs-on: ubuntu-24.04
     steps:
+      - name: Check out release source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+
       - name: Download Linux binaries
         uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
         with:
@@ -468,26 +475,17 @@ jobs:
           name: schooner-darwin-signed
           path: dist
 
-      - name: Verify artifact set and write checksums
+      - name: Package and verify release assets
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
+          BUILT_AT: ${{ needs.prepare.outputs.built_at }}
         run: |
-          expected=(
-            "schooner_${VERSION}_darwin_amd64"
-            "schooner_${VERSION}_darwin_arm64"
-            "schooner_${VERSION}_linux_amd64"
-            "schooner_${VERSION}_linux_arm64"
-          )
-          for artifact in "${expected[@]}"; do
-            test -f "dist/${artifact}"
-          done
-          if [[ "$(find dist -maxdepth 1 -type f -name 'schooner_*' | wc -l | tr -d ' ')" != "4" ]]; then
-            echo "release bundle must contain exactly four binaries" >&2
-            exit 1
-          fi
-          cd dist
-          sha256sum "${expected[@]}" | LC_ALL=C sort -k2 > SHA256SUMS
-          sha256sum --check SHA256SUMS
+          python3 scripts/package_release.py \
+            --version "${VERSION}" \
+            --built-at "${BUILT_AT}" \
+            --source-root . \
+            --dist dist
+          (cd dist && sha256sum --check SHA256SUMS)
 
       - name: Upload verified bundle
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -497,12 +495,50 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  install-smoke:
+    name: Install smoke ${{ matrix.os }}/${{ matrix.arch }}
+    needs:
+      - prepare
+      - bundle
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: linux
+            arch: amd64
+            runner: ubuntu-24.04
+          - os: linux
+            arch: arm64
+            runner: ubuntu-24.04-arm
+          - os: darwin
+            arch: amd64
+            runner: macos-15-intel
+          - os: darwin
+            arch: arm64
+            runner: macos-15
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Check out release source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+
+      - name: Download verified bundle
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: schooner-${{ needs.prepare.outputs.version }}
+          path: dist
+
+      - name: Install and verify packaged executable
+        run: scripts/release_install_smoke.sh "${{ needs.prepare.outputs.version }}" dist
+
   publish:
     name: Publish release
     if: needs.prepare.outputs.publish == 'true'
     needs:
       - prepare
       - bundle
+      - install-smoke
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -521,7 +557,7 @@ jobs:
           name: schooner-${{ needs.prepare.outputs.version }}
           path: dist
 
-      - name: Attest release binaries
+      - name: Attest release executables and archives
         uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
         with:
           subject-path: dist/schooner_*
@@ -606,9 +642,13 @@ jobs:
           expected = sorted([
               "SHA256SUMS",
               f"schooner_{version}_darwin_amd64",
+              f"schooner_{version}_darwin_amd64.tar.gz",
               f"schooner_{version}_darwin_arm64",
+              f"schooner_{version}_darwin_arm64.tar.gz",
               f"schooner_{version}_linux_amd64",
+              f"schooner_{version}_linux_amd64.tar.gz",
               f"schooner_{version}_linux_arm64",
+              f"schooner_{version}_linux_arm64.tar.gz",
           ])
           actual = sorted(asset["name"] for asset in json.loads(os.environ["UPLOADED_ASSETS"])["assets"])
           if actual != expected:

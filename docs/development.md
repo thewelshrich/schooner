@@ -78,3 +78,21 @@ verified local cache or downloaded from the matching GitHub Release.
 Bootstrap streams the verified bytes through system OpenSSH into a unique file
 beside the final runtime. The Box rechecks SHA-256 and validates the staged
 executable's identity, platform, and protocol before atomically installing it.
+
+## Local CLI source builds
+
+Source builds are for contributors and do not reproduce the signed production
+binary, embedded release timestamp, or embedded GitHub registration. From a
+checkout, install the development CLI and prepare both Linux Box runtimes with:
+
+```bash
+go install ./cmd/schooner
+schooner dev artifacts
+schooner version
+schooner doctor
+```
+
+Go normally installs the executable beneath `~/go/bin`; add that directory to
+`PATH` yourself when necessary. A source-built executable has no direct-install
+receipt and remains owned by the source workflow. The repository installer and
+future local updater must not replace it.

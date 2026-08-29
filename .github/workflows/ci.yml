@@ -41,6 +41,9 @@ jobs:
       - name: Test release tooling
         run: scripts/release_test.sh
 
+      - name: Test release packaging
+        run: scripts/package_release_test.sh
+
       - name: Vet
         run: go vet ./...
 
@@ -71,6 +74,9 @@ jobs:
 
       - name: Test
         run: go test ./...
+
+      - name: Test installer
+        run: scripts/install_test.sh
 
   build-platforms:
     name: Build (${{ matrix.goos }}/${{ matrix.goarch }})
