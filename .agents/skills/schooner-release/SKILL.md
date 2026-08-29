@@ -113,27 +113,32 @@ leave that tag untouched and prepare a new patch version instead.
 
 ## Complete packaged distribution
 
-A successful immutable release starts the separate, non-gating `Distribution
-rollout` workflow. Keep these outcomes distinct: distribution failure never
-invalidates, replaces, deletes, or moves the published release or tag.
+A successful stable immutable release starts the separate, non-gating
+`Distribution rollout` workflow. Prereleases intentionally stop after GitHub
+publication and do not update Homebrew. Keep these outcomes distinct:
+distribution failure never invalidates, replaces, deletes, or moves the
+published release or tag.
 
 After publication:
 
 1. Monitor the distribution workflow for the exact released version and
    commit. Require its native macOS and Linux amd64/arm64 public-installer
    smoke jobs to pass.
-2. Confirm the workflow revalidated the immutable release and exact asset set,
-   then opened or updated the version-specific pull request in
-   `thewelshrich/homebrew-tap`.
-3. Inspect the generated formula version, four release URLs, and checksums
-   against the published release. Confirm the tap pull request targets its
-   protected `main` branch and wait for all tap CI and public-install jobs.
-4. Report the tap pull request as ready, but never merge it without explicit
-   user authorization. Immediately before an authorized merge, re-check its
-   head, checks, reviews, and unresolved conversations.
-5. After merge, verify the tap `main` formula names the released version and
-   the public Homebrew installation gate succeeded. Only then describe the
-   release as available through Homebrew.
+2. Confirm the workflow revalidated the immutable release and exact asset set.
+   It either opens or updates the version-specific pull request in
+   `thewelshrich/homebrew-tap`, or succeeds without a pull request when the tap
+   `main` formula already exactly matches the release.
+3. Verify the rendered or existing formula version, four release URLs, and
+   checksums against the published release. For a generated pull request,
+   confirm it targets protected `main` and wait for all tap CI and
+   public-install jobs.
+4. Report a generated tap pull request as ready, but never merge it without
+   explicit user authorization. Immediately before an authorized merge,
+   re-check its head, checks, reviews, and unresolved conversations.
+5. Verify the tap `main` formula names the released version and the public
+   Homebrew installation gate succeeded, either through the valid no-op path
+   or after an authorized merge. Only then describe the release as available
+   through Homebrew.
 
 If dispatch or rollout fails, report it as a distribution blocker while
 leaving the immutable release successful. Inspect the failure before using the
@@ -146,7 +151,7 @@ tap credentials or repository permissions.
 When a release introduces or materially changes `schooner update`, distinguish
 shipping the updater from proving an update transition. The first such release
 can be installed but cannot update to itself. Record the remaining release
-smoke and, after a later approved stable patch exists, verify that:
+smoke and, after any later approved stable release exists, verify that:
 
 - a receipt-owned direct installation promotes from the earlier release to the
   later exact release;
