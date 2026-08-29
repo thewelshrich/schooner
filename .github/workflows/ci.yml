@@ -44,6 +44,11 @@ jobs:
       - name: Test release packaging
         run: scripts/package_release_test.sh
 
+      - name: Test distribution rollout
+        run: |
+          scripts/render_homebrew_formula_test.sh
+          scripts/distribution_test.sh
+
       - name: Vet
         run: go vet ./...
 

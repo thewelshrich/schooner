@@ -220,8 +220,51 @@ binary when that variable is empty and links the value into
 `SCHOONER_GITHUB_CLIENT_ID` in the invoking environment; this override is read
 at runtime and is intended only for local development.
 
-Homebrew packaging and automatic local updates remain separate work. The first
-archive-bearing release must be installed through the public repository script
-on fresh macOS and Linux amd64/arm64 systems before direct installation becomes
-the primary README path. macOS smoke testing includes quarantine and Gatekeeper
-behavior in addition to the installer's exact local signature requirement.
+Automatic local updates remain separate work. The first archive-bearing release
+must be installed through the public repository script on fresh macOS and Linux
+amd64/arm64 systems before direct installation becomes the primary README path.
+The macOS smoke applies quarantine metadata, requires the exact Developer ID
+signature, records Gatekeeper's standalone-command assessment, and executes the
+quarantined binary. `spctl` reports a valid notarized standalone CLI as valid
+code that is not an app; that expected result is distinct from an invalid
+signature or a failure to execute.
+
+## Homebrew tap rollout
+
+Stable publication starts a separate, non-gating `Distribution rollout`
+workflow. The release job sends the concrete version, GitHub release ID, and
+annotated-tag commit only after the immutable release is public. Failure to send
+that event emits a warning but does not change the successful release.
+Stable release versions with build metadata are rejected before tagging or
+publication because Homebrew cannot order SemVer build metadata as an upgrade.
+
+The rollout independently revalidates the latest stable immutable release and
+its exact nine-asset set. It then installs through the public repository script
+on native macOS and Linux amd64/arm64 runners. Only after all four jobs pass does
+it verify the released archives against `SHA256SUMS`, render the Homebrew
+formula, and open or update a version-specific pull request in
+`thewelshrich/homebrew-tap`. It never merges the tap pull request.
+
+Configure a dedicated GitHub App installed only on the tap with repository
+Contents and Pull requests read/write permissions. In the Schooner repository,
+create a `tap-update` environment restricted to `main`, set
+`HOMEBREW_TAP_APP_ID` as an environment variable, and store the generated
+private key as the `HOMEBREW_TAP_APP_PRIVATE_KEY` environment secret. The
+workflow mints a short-lived installation token and does not store that token.
+
+The formula installs the four upstream archives directly, pins each archive
+SHA-256, and generates Bash, Zsh, and Fish completions. Same-version formula
+drift, downgrades, prereleases, malformed manifests, ambiguous branches, and
+unexpected release assets fail closed. Tap CI must pass on both architectures
+of macOS and Homebrew on Linux before merge.
+
+If the rollout event was not delivered or its post-release work failed, recover
+the current latest stable release without changing it:
+
+```bash
+gh workflow run distribution.yml --ref main -f version=v0.2.0
+```
+
+Recovery refuses drafts, prereleases, mutable releases, non-latest versions,
+tag mismatches, and incomplete assets. A tap failure never permits deleting,
+moving, or replacing the release tag.
