@@ -37,6 +37,7 @@ AGENTS.md
 .impeccable/
 .ocr
 .codex
+/.scratch/
 
 # Working research is distilled into tracked documentation and decisions
 /docs/research/
