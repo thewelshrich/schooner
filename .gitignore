@@ -32,11 +32,15 @@ go.work.sum
 # .idea/
 # .vscode/
 
+# macOS metadata
+.DS_Store
+
 # Local agent and design-review artifacts
 AGENTS.md
 .impeccable/
 .ocr
 .codex
+/.scratch/
 
 # Working research is distilled into tracked documentation and decisions
 /docs/research/
