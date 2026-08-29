@@ -74,6 +74,8 @@ func TestSelfUpdateErrorsUseStandardJSONContext(t *testing.T) {
 }
 
 func TestAutomaticUpdateNoticeIsStderrOnlyAndNonFatal(t *testing.T) {
+	t.Setenv("CI", "")
+	t.Setenv("SCHOONER_NO_UPDATE_CHECK", "")
 	var stderr bytes.Buffer
 	options := &globalOptions{build: BuildInfo{Version: "v0.2.0"}, output: "human", selfUpdate: func(_ context.Context, mode selfupdate.Mode) (selfupdate.Result, error) {
 		if mode != selfupdate.ModeAutomatic {
