@@ -64,6 +64,10 @@ jobs:
             exit 1
           fi
           without_build="${version%%+*}"
+          if [[ "${version}" == *+* && "${without_build}" != *-* ]]; then
+            echo "stable release versions must not contain build metadata" >&2
+            exit 1
+          fi
           if [[ "${without_build}" == *-* ]]; then
             prerelease="${without_build#*-}"
             IFS='.' read -ra identifiers <<< "${prerelease}"
@@ -674,7 +678,10 @@ jobs:
             echo "prerelease ${VERSION} does not update the stable Homebrew formula"
             exit 0
           fi
-          release_id="$(gh api "repos/${GH_REPO}/releases/tags/${VERSION}" --jq .id)"
+          if ! release_id="$(gh api "repos/${GH_REPO}/releases/tags/${VERSION}" --jq .id)"; then
+            echo "::warning::The immutable release succeeded, but distribution rollout dispatch failed. Recover it manually from the Distribution rollout workflow."
+            exit 0
+          fi
           if ! gh api \
             --method POST \
             "repos/${GH_REPO}/dispatches" \

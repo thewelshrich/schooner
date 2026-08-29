@@ -93,6 +93,8 @@ git -C "${retry_fixture}" tag --annotate --cleanup=verbatim --file "${notes_file
 
 expect_failure_in_fixture "v-prefixed semantic version" "${happy_fixture}" \
   --dry-run --notes-file "${notes_file}" 0.1.0
+expect_failure_in_fixture "stable release versions must not contain build metadata" "${happy_fixture}" \
+  --dry-run --notes-file "${notes_file}" v0.1.1+build.1
 
 branch_fixture="$(make_fixture branch)"
 git -C "${branch_fixture}" switch --quiet -c feature/test
@@ -127,5 +129,6 @@ require_workflow_invariant 'schooner_{version}_linux_arm64.tar.gz'
 require_workflow_invariant "existing release is not the expected resumable draft"
 require_workflow_invariant 'gh release upload "${VERSION}" dist/* --clobber'
 require_workflow_invariant "draft release assets: got"
+require_workflow_invariant "stable release versions must not contain build metadata"
 
 printf 'release_test: all tests passed\n'

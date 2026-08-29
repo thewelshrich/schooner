@@ -235,6 +235,8 @@ Stable publication starts a separate, non-gating `Distribution rollout`
 workflow. The release job sends the concrete version, GitHub release ID, and
 annotated-tag commit only after the immutable release is public. Failure to send
 that event emits a warning but does not change the successful release.
+Stable release versions with build metadata are rejected before tagging or
+publication because Homebrew cannot order SemVer build metadata as an upgrade.
 
 The rollout independently revalidates the latest stable immutable release and
 its exact nine-asset set. It then installs through the public repository script

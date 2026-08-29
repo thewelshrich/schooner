@@ -39,6 +39,7 @@ require_release "Start non-gating distribution rollout"
 require_release "client_payload[version]"
 require_release "client_payload[release_id]"
 require_release "client_payload[tag_commit]"
+require_release 'if ! release_id="$(gh api'
 require_release "::warning::The immutable release succeeded, but distribution rollout dispatch failed"
 
 printf 'distribution_test: all tests passed\n'

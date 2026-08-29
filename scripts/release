@@ -31,6 +31,9 @@ validate_version() {
   fi
 
   local without_build="${value%%+*}"
+  if [[ "${value}" == *+* && "${without_build}" != *-* ]]; then
+    fail "stable release versions must not contain build metadata"
+  fi
   if [[ "${without_build}" == *-* ]]; then
     local prerelease="${without_build#*-}"
     local identifiers=()
