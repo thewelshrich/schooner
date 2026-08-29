@@ -1,0 +1,208 @@
+name: Distribution rollout
+
+on:
+  repository_dispatch:
+    types:
+      - release-published
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Exact published stable version to recover
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: distribution-${{ github.event.client_payload.version || inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Validate published release
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      tag_commit: ${{ steps.release.outputs.tag_commit }}
+    steps:
+      - name: Validate immutable release and asset set
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          REQUESTED_VERSION: ${{ github.event.client_payload.version || inputs.version }}
+          REQUESTED_RELEASE_ID: ${{ github.event.client_payload.release_id }}
+          REQUESTED_TAG_COMMIT: ${{ github.event.client_payload.tag_commit }}
+        run: |
+          version="${REQUESTED_VERSION}"
+          if [[ ! "${version}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "distribution requires a stable v-prefixed semantic version" >&2
+            exit 1
+          fi
+          release_json="$(gh api "repos/${GH_REPO}/releases/tags/${version}")"
+          latest_tag="$(gh api "repos/${GH_REPO}/releases/latest" --jq .tag_name)"
+          [[ "${latest_tag}" == "${version}" ]] || { echo "distribution recovery refuses a non-latest release" >&2; exit 1; }
+          RELEASE_JSON="${release_json}" VERSION="${version}" REQUESTED_RELEASE_ID="${REQUESTED_RELEASE_ID}" python3 - <<'PY'
+          import json
+          import os
+
+          release = json.loads(os.environ["RELEASE_JSON"])
+          version = os.environ["VERSION"]
+          expected = sorted([
+              "SHA256SUMS",
+              f"schooner_{version}_darwin_amd64",
+              f"schooner_{version}_darwin_amd64.tar.gz",
+              f"schooner_{version}_darwin_arm64",
+              f"schooner_{version}_darwin_arm64.tar.gz",
+              f"schooner_{version}_linux_amd64",
+              f"schooner_{version}_linux_amd64.tar.gz",
+              f"schooner_{version}_linux_arm64",
+              f"schooner_{version}_linux_arm64.tar.gz",
+          ])
+          checks = {
+              "published": release.get("draft") is False,
+              "stable": release.get("prerelease") is False,
+              "immutable": release.get("immutable") is True,
+              "tag": release.get("tag_name") == version,
+              "assets": sorted(asset["name"] for asset in release.get("assets", [])) == expected,
+          }
+          requested_id = os.environ.get("REQUESTED_RELEASE_ID", "")
+          if requested_id:
+              checks["release_id"] = str(release.get("id")) == requested_id
+          failed = [name for name, passed in checks.items() if not passed]
+          if failed:
+              raise SystemExit("published release validation failed: " + ", ".join(failed))
+          PY
+          tag_object="$(gh api "repos/${GH_REPO}/git/ref/tags/${version}")"
+          [[ "$(jq -r .object.type <<< "${tag_object}")" == tag ]] || { echo "release tag is not annotated" >&2; exit 1; }
+          tag_sha="$(jq -r .object.sha <<< "${tag_object}")"
+          tag_commit="$(gh api "repos/${GH_REPO}/git/tags/${tag_sha}" --jq '.object.sha')"
+          if [[ -n "${REQUESTED_TAG_COMMIT}" && "${REQUESTED_TAG_COMMIT}" != "${tag_commit}" ]]; then
+            echo "release dispatch tag commit does not match the immutable tag" >&2
+            exit 1
+          fi
+          {
+            echo "version=${version}"
+            echo "tag_commit=${tag_commit}"
+          } >> "${GITHUB_OUTPUT}"
+
+  public-smoke:
+    name: Public install ${{ matrix.os }}/${{ matrix.arch }}
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: linux
+            arch: amd64
+            runner: ubuntu-24.04
+          - os: linux
+            arch: arm64
+            runner: ubuntu-24.04-arm
+          - os: darwin
+            arch: amd64
+            runner: macos-15-intel
+          - os: darwin
+            arch: arm64
+            runner: macos-15
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Check out rollout scripts
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install through public release paths
+        run: scripts/public_release_smoke.sh "${{ needs.prepare.outputs.version }}"
+
+  update-tap:
+    name: Propose tap update
+    needs:
+      - prepare
+      - public-smoke
+    runs-on: ubuntu-24.04
+    environment: tap-update
+    steps:
+      - name: Check out formula renderer
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: source
+          persist-credentials: false
+
+      - name: Mint tap-scoped GitHub App token
+        id: tap-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.HOMEBREW_TAP_APP_ID }}
+          private-key: ${{ secrets.HOMEBREW_TAP_APP_PRIVATE_KEY }}
+          owner: thewelshrich
+          repositories: homebrew-tap
+
+      - name: Check out tap
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: thewelshrich/homebrew-tap
+          path: tap
+          token: ${{ steps.tap-token.outputs.token }}
+          persist-credentials: true
+
+      - name: Download and verify release archives
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          mkdir release
+          gh release download "${VERSION}" --dir release --pattern SHA256SUMS --pattern '*.tar.gz'
+          (cd release && sha256sum --check --ignore-missing SHA256SUMS)
+          [[ "$(find release -maxdepth 1 -type f -name '*.tar.gz' | wc -l | tr -d ' ')" == 4 ]] || {
+            echo "release archive download did not contain exactly four archives" >&2
+            exit 1
+          }
+
+      - name: Render formula and open update pull request
+        env:
+          GH_TOKEN: ${{ steps.tap-token.outputs.token }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          branch="automation/schooner-${VERSION}"
+          cd tap
+          git config user.name "Schooner Tap Updater"
+          git config user.email "schooner-tap-updater[bot]@users.noreply.github.com"
+          remote_exists=false
+          if git ls-remote --exit-code --heads origin "refs/heads/${branch}" >/dev/null 2>&1; then
+            remote_exists=true
+            git fetch origin "refs/heads/${branch}:refs/remotes/origin/${branch}"
+            git switch --create "${branch}" --track "origin/${branch}"
+          else
+            git switch --create "${branch}"
+          fi
+          result="$(python3 ../source/scripts/render_homebrew_formula.py \
+            --version "${VERSION}" \
+            --manifest ../release/SHA256SUMS \
+            --output Formula/schooner.rb)"
+          if [[ "${result}" == updated ]]; then
+            git add Formula/schooner.rb
+            git diff --cached --check
+            git commit -m "chore: update schooner formula to ${VERSION}"
+            git push --set-upstream origin "${branch}"
+          elif [[ "${remote_exists}" == false ]]; then
+            echo "formula already matches ${VERSION} on main; no tap update is needed"
+            exit 0
+          fi
+
+          existing_prs="$(gh pr list --repo thewelshrich/homebrew-tap --state open --head "${branch}" --json number,baseRefName,url)"
+          pr_count="$(jq length <<< "${existing_prs}")"
+          if [[ "${pr_count}" == 0 ]]; then
+            [[ "${remote_exists}" == false ]] || { echo "tap update branch exists without an open pull request" >&2; exit 1; }
+            gh pr create \
+              --repo thewelshrich/homebrew-tap \
+              --base main \
+              --head "${branch}" \
+              --title "chore: update schooner formula to ${VERSION}" \
+              --body "Updates Schooner to the verified immutable [${VERSION} release](https://github.com/thewelshrich/schooner/releases/tag/${VERSION}). The formula installs the four upstream archives without rebuilding the signed macOS executables."
+          elif [[ "${pr_count}" == 1 && "$(jq -r '.[0].baseRefName' <<< "${existing_prs}")" == main ]]; then
+            echo "updated existing tap pull request $(jq -r '.[0].url' <<< "${existing_prs}")"
+          else
+            echo "tap update pull request state is ambiguous" >&2
+            exit 1
+          fi
