@@ -76,7 +76,7 @@ func (u *updater) latest(ctx context.Context, mode Mode) (string, bool, error) {
 			return "", false, u.releaseFailure(mode, now, cache, CodeInvalidRelease, "GitHub returned an unusable not-modified response", nil)
 		}
 		cache.LastSuccessfulAt = cache.LastAttemptAt
-		_ = writeCheckCache(u.cachePath, cache)
+		_ = writeCheckCache(u.cachePath, cache, mode != ModeAutomatic)
 		return cache.LatestVersion, true, nil
 	case http.StatusOK:
 		contents, readErr := io.ReadAll(io.LimitReader(response.Body, maxReleaseResponse+1))
@@ -101,7 +101,7 @@ func (u *updater) latest(ctx context.Context, mode Mode) (string, bool, error) {
 		cache.LastSuccessfulAt = cache.LastAttemptAt
 		cache.ETag = boundedHeader(response.Header.Get("ETag"))
 		cache.LastModified = boundedHeader(response.Header.Get("Last-Modified"))
-		_ = writeCheckCache(u.cachePath, cache)
+		_ = writeCheckCache(u.cachePath, cache, mode != ModeAutomatic)
 		return document.TagName, true, nil
 	default:
 		return "", false, u.releaseFailure(mode, now, cache, CodeReleaseUnavailable, fmt.Sprintf("latest release is unavailable (HTTP %d)", response.StatusCode), nil)
@@ -134,9 +134,7 @@ func claimAutomaticCheck(cachePath string, now time.Time) (func(), bool) {
 		if createErr != nil {
 			return createErr
 		}
-		if _, createErr = file.WriteString(token + "\n"); createErr == nil {
-			createErr = file.Sync()
-		}
+		_, createErr = file.WriteString(token + "\n")
 		if closeErr := file.Close(); createErr == nil {
 			createErr = closeErr
 		}
@@ -171,7 +169,7 @@ func claimAutomaticCheck(cachePath string, now time.Time) (func(), bool) {
 func (u *updater) releaseFailure(mode Mode, now time.Time, cache checkCache, code Code, message string, cause error) error {
 	cache.SchemaVersion = SchemaVersion
 	cache.LastAttemptAt = now.UTC().Truncate(time.Second).Format(time.RFC3339)
-	_ = writeCheckCache(u.cachePath, cache)
+	_ = writeCheckCache(u.cachePath, cache, mode != ModeAutomatic)
 	if mode == ModeAutomatic {
 		return nil
 	}
@@ -204,7 +202,7 @@ func readCheckCache(path string) (checkCache, error) {
 	return cache, nil
 }
 
-func writeCheckCache(path string, cache checkCache) error {
+func writeCheckCache(path string, cache checkCache, durable bool) error {
 	if path == "" {
 		return errors.New("update-check cache path is unavailable")
 	}
@@ -223,7 +221,7 @@ func writeCheckCache(path string, cache checkCache) error {
 		encoder.SetEscapeHTML(false)
 		err = encoder.Encode(cache)
 	}
-	if err == nil {
+	if err == nil && durable {
 		err = temporary.Sync()
 	}
 	if closeErr := temporary.Close(); err == nil {

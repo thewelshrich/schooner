@@ -105,12 +105,19 @@ func writeLockOwner(path string, owner lockOwner) error {
 	if err != nil {
 		return err
 	}
+	complete := false
+	defer func() {
+		if !complete {
+			_ = os.Remove(path)
+		}
+	}()
 	if _, err = file.WriteString(contents); err == nil {
 		err = file.Sync()
 	}
 	if closeErr := file.Close(); err == nil {
 		err = closeErr
 	}
+	complete = err == nil
 	return err
 }
 

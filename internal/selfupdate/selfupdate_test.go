@@ -67,6 +67,7 @@ func TestExpectedOwnerGuidanceSucceedsAndUnknownOwnershipFails(t *testing.T) {
 			t.Fatal(err)
 		}
 		u.executablePath = cellarTarget
+		u.apiURL = "://invalid"
 		result, err := u.run(t.Context(), ModeApply)
 		if err != nil || result.Action != ActionUsePackageManager || result.InstallationMethod != MethodHomebrew {
 			t.Fatalf("result=%#v err=%v", result, err)

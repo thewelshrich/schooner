@@ -205,6 +205,12 @@ func (u *updater) run(ctx context.Context, mode Mode) (Result, error) {
 	if mode != ModeAutomatic {
 		ownership = classifyInstallation(u.current.Version, u.executablePath, u.invokedSymlink)
 	}
+	if mode == ModeApply && ownership.method == MethodHomebrew {
+		return Result{
+			InstalledVersion: u.current.Version, InstallationMethod: MethodHomebrew,
+			Action: ActionUsePackageManager, Guidance: homebrewGuidance(),
+		}, nil
+	}
 
 	available, found, err := u.latest(ctx, mode)
 	if err != nil {
