@@ -13,7 +13,9 @@ import tempfile
 
 VERSION_RE = re.compile(r"^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
-FORMULA_VERSION_RE = re.compile(r'^  version "([0-9]+\.[0-9]+\.[0-9]+)"$', re.MULTILINE)
+FORMULA_RELEASE_RE = re.compile(
+    r"/releases/download/(v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))/"
+)
 PLATFORMS = (
     ("darwin", "amd64"),
     ("darwin", "arm64"),
@@ -66,8 +68,6 @@ def parse_manifest(path: Path, version: str) -> dict[str, str]:
 
 
 def render(version: str, values: dict[str, str]) -> str:
-    formula_version = version.removeprefix("v")
-
     def stanza(os_name: str, arch: str) -> str:
         name = f"schooner_{version}_{os_name}_{arch}.tar.gz"
         url = f"https://github.com/thewelshrich/schooner/releases/download/{version}/{name}"
@@ -79,7 +79,6 @@ def render(version: str, values: dict[str, str]) -> str:
 class Schooner < Formula
   desc "Operate persistent, user-owned development machines"
   homepage "https://github.com/thewelshrich/schooner"
-  version "{formula_version}"
   license "Apache-2.0"
 
   on_macos do
@@ -124,16 +123,23 @@ def write_formula(path: Path, version: str, contents: str) -> str:
         if path.is_symlink() or not path.is_file():
             fail(f"output is not a regular file: {path}")
         current_contents = path.read_text(encoding="utf-8")
-        match = FORMULA_VERSION_RE.search(current_contents)
-        if match is None:
-            fail("existing formula has no supported version declaration")
-        current = tuple(int(part) for part in match.group(1).split("."))
+        release_versions = set(FORMULA_RELEASE_RE.findall(current_contents))
+        if len(release_versions) != 1:
+            fail("existing formula has no single supported release version")
+        current_version = release_versions.pop()
+        current = version_tuple(current_version)
         if current > requested:
             fail("refusing to downgrade the existing formula")
         if current == requested:
             if current_contents != contents:
-                fail("existing formula differs for the same version")
-            return "unchanged"
+                legacy_version = f'  version "{version.removeprefix("v")}"\n'
+                if (
+                    current_contents.count(legacy_version) != 1
+                    or current_contents.replace(legacy_version, "", 1) != contents
+                ):
+                    fail("existing formula differs for the same version")
+            else:
+                return "unchanged"
 
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)

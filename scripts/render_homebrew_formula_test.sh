@@ -33,12 +33,19 @@ write_manifest "${manifest}" v0.2.0
 
 [[ "$(python3 "${renderer}" --version v0.2.0 --manifest "${manifest}" --output "${formula}")" == updated ]] || fail "initial render did not update"
 [[ "$(python3 "${renderer}" --version v0.2.0 --manifest "${manifest}" --output "${formula}")" == unchanged ]] || fail "identical render was not idempotent"
-grep -Fq 'version "0.2.0"' "${formula}" || fail "formula version is missing"
+if grep -Fq 'version "0.2.0"' "${formula}"; then
+  fail "formula contains a redundant explicit version"
+fi
 grep -Fq 'generate_completions_from_executable(bin/"schooner", "completion")' "${formula}" || fail "completion generation is missing"
 grep -Fq 'schooner_v0.2.0_darwin_arm64.tar.gz' "${formula}" || fail "macOS arm64 archive is missing"
 grep -Fq 'schooner_v0.2.0_linux_amd64.tar.gz' "${formula}" || fail "Linux amd64 archive is missing"
 formula_mode="$(python3 -c 'import os, sys; print(format(os.stat(sys.argv[1]).st_mode & 0o777, "o"))' "${formula}")"
 [[ "${formula_mode}" == 644 ]] || fail "formula mode is not 0644"
+
+sed '/  homepage /a\
+  version "0.2.0"' "${formula}" > "${test_tmp}/legacy.rb"
+[[ "$(python3 "${renderer}" --version v0.2.0 --manifest "${manifest}" --output "${test_tmp}/legacy.rb")" == updated ]] || fail "legacy formula was not migrated"
+cmp -s "${formula}" "${test_tmp}/legacy.rb" || fail "legacy migration did not produce canonical output"
 
 cp "${manifest}" "${test_tmp}/duplicate"
 sed -n '1p' "${manifest}" >> "${test_tmp}/duplicate"
@@ -72,7 +79,7 @@ if python3 "${renderer}" --version v0.2.0-rc.1 --manifest "${manifest}" --output
   fail "prerelease version was accepted"
 fi
 
-sed 's/version "0.2.0"/version "0.3.0"/' "${formula}" > "${test_tmp}/newer.rb"
+sed 's/v0\.2\.0/v0.3.0/g' "${formula}" > "${test_tmp}/newer.rb"
 if python3 "${renderer}" --version v0.2.0 --manifest "${manifest}" --output "${test_tmp}/newer.rb" 2>/dev/null; then
   fail "formula downgrade was accepted"
 fi
