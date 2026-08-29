@@ -42,6 +42,11 @@ grep -Fq 'schooner_v0.2.0_linux_amd64.tar.gz' "${formula}" || fail "Linux amd64 
 formula_mode="$(python3 -c 'import os, sys; print(format(os.stat(sys.argv[1]).st_mode & 0o777, "o"))' "${formula}")"
 [[ "${formula_mode}" == 644 ]] || fail "formula mode is not 0644"
 
+sed '/  homepage /a\
+  version "0.2.0"' "${formula}" > "${test_tmp}/legacy.rb"
+[[ "$(python3 "${renderer}" --version v0.2.0 --manifest "${manifest}" --output "${test_tmp}/legacy.rb")" == updated ]] || fail "legacy formula was not migrated"
+cmp -s "${formula}" "${test_tmp}/legacy.rb" || fail "legacy migration did not produce canonical output"
+
 cp "${manifest}" "${test_tmp}/duplicate"
 sed -n '1p' "${manifest}" >> "${test_tmp}/duplicate"
 if python3 "${renderer}" --version v0.2.0 --manifest "${test_tmp}/duplicate" --output "${test_tmp}/duplicate.rb" 2>/dev/null; then

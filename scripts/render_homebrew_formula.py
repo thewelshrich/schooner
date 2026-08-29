@@ -132,8 +132,14 @@ def write_formula(path: Path, version: str, contents: str) -> str:
             fail("refusing to downgrade the existing formula")
         if current == requested:
             if current_contents != contents:
-                fail("existing formula differs for the same version")
-            return "unchanged"
+                legacy_version = f'  version "{version.removeprefix("v")}"\n'
+                if (
+                    current_contents.count(legacy_version) != 1
+                    or current_contents.replace(legacy_version, "", 1) != contents
+                ):
+                    fail("existing formula differs for the same version")
+            else:
+                return "unchanged"
 
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
