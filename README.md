@@ -63,7 +63,7 @@ daemon or prevent you from continuing to use `ssh work-api` directly.
 
 ## Installation
 
-### From source during the technical preview
+### From source during the packaging transition
 
 You need:
 
@@ -72,8 +72,8 @@ You need:
 - the system OpenSSH client; and
 - Go 1.27 or later.
 
-Install the current development version from a source checkout and prepare its
-Linux host runtimes:
+Until an archive-bearing release is published, install the current development
+version from a source checkout and prepare its Linux host runtimes:
 
 ```bash
 git clone https://github.com/thewelshrich/schooner.git
@@ -85,10 +85,56 @@ schooner doctor
 ```
 
 Make sure Go's binary directory is on your `PATH`. It is normally `~/go/bin`.
+See the [development guide](docs/development.md) for the complete source-build
+workflow.
 
 Tagged binaries for macOS and Linux are published through
-[GitHub Releases](https://github.com/thewelshrich/schooner/releases). A simpler
-packaged installation path is planned before the first general release.
+[GitHub Releases](https://github.com/thewelshrich/schooner/releases).
+
+### Packaged installation for archive-bearing releases
+
+When the latest GitHub Release contains `.tar.gz` assets, macOS and Linux users
+can install the matching signed or verified executable without a source checkout:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/thewelshrich/schooner/main/scripts/install.sh | bash
+```
+
+The default target is `~/.local/bin/schooner`. The installer does not use
+`sudo` or edit shell profiles; when necessary it prints the exact `PATH` entry to
+add. Choose a different user-writable directory explicitly:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/thewelshrich/schooner/main/scripts/install.sh | \
+  bash -s -- --install-dir "$HOME/bin"
+```
+
+Pin an exact release, including an explicitly requested prerelease, with:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/thewelshrich/schooner/main/scripts/install.sh | \
+  bash -s -- --version v0.2.0
+```
+
+The installer resolves one concrete release, verifies the archive and embedded
+executable against `SHA256SUMS`, rejects unsafe archive contents, and validates
+the executable's version and platform. On macOS it verifies Schooner's Developer
+ID Application signature before running the candidate. Linux authenticity relies
+on GitHub HTTPS, the immutable release, and its checksum manifest; published
+provenance is not yet checked by the installer.
+
+Until `schooner update` is available, rerun the installer to update a direct
+installation. It replaces only a matching installer-owned receipt and refuses
+package-managed, source-built, symlinked, or unknown executables. To uninstall a
+default direct installation, remove both owned files:
+
+```bash
+rm -- "$HOME/.local/bin/schooner" \
+  "$HOME/.local/bin/.schooner-install-receipt.json"
+```
+
+Homebrew packaging is the next distribution slice and must not be advertised as
+available until the tap has passed installation tests.
 
 ## Common workflows
 

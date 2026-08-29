@@ -114,9 +114,16 @@ require_workflow_invariant "grep -Fxq \"\${expected_intermediate_sha256}\""
 require_workflow_invariant 'security list-keychains -d user | \'
 require_workflow_invariant '-s "${keychain_path}" "${original_keychains[@]}"'
 require_workflow_invariant "Developer ID identity is unavailable through the Keychain search list"
+require_workflow_invariant "EXPECTED_TEAM_ID: LDCWNW7T7K"
+require_workflow_invariant 'codesign --verify --strict --verbose=4 -R="${requirement}"'
 reject_workflow_invariant '--keychain "${SIGNING_KEYCHAIN}"'
 require_workflow_invariant "if: needs.prepare.outputs.publish == 'true'"
 require_workflow_invariant 'ref: ${{ needs.prepare.outputs.version }}'
+require_workflow_invariant "python3 scripts/package_release.py"
+require_workflow_invariant "install-smoke:"
+require_workflow_invariant 'scripts/release_install_smoke.sh "${{ needs.prepare.outputs.version }}" dist'
+require_workflow_invariant 'schooner_{version}_darwin_amd64.tar.gz'
+require_workflow_invariant 'schooner_{version}_linux_arm64.tar.gz'
 require_workflow_invariant "existing release is not the expected resumable draft"
 require_workflow_invariant 'gh release upload "${VERSION}" dist/* --clobber'
 require_workflow_invariant "draft release assets: got"

@@ -1,13 +1,17 @@
 # Releasing Schooner
 
 Pushing a `v`-prefixed semantic-version tag builds four raw executables on
-native GitHub-hosted runners:
+native GitHub-hosted runners and packages four additional archives:
 
 ```text
 schooner_<version>_darwin_amd64
 schooner_<version>_darwin_arm64
 schooner_<version>_linux_amd64
 schooner_<version>_linux_arm64
+schooner_<version>_darwin_amd64.tar.gz
+schooner_<version>_darwin_arm64.tar.gz
+schooner_<version>_linux_amd64.tar.gz
+schooner_<version>_linux_arm64.tar.gz
 SHA256SUMS
 ```
 
@@ -16,7 +20,22 @@ metadata for the version, full commit, and UTC commit timestamp. The workflow
 runs each binary natively. It then signs both macOS executables with Developer
 ID Application, submits them together to Apple's notary service, and requires
 an accepted response with no reported issues. Checksums and GitHub
-build-provenance attestations cover the resulting signed release binaries.
+build-provenance attestations cover the resulting signed release binaries and
+archives.
+
+Each deterministic USTAR/gzip archive contains exactly `LICENSE`, `README.md`,
+and `schooner`. Repository documentation has mode `0644`, the executable has
+mode `0755`, ownership is numeric root, member timestamps use the release commit
+time, and the gzip header carries no filename or timestamp. The archived
+executable must have the same SHA-256 as the corresponding raw release asset.
+The four raw names remain unchanged because remote Box runtime resolution uses
+them directly.
+
+Before publication, the installer consumes the verified bundle on native Linux
+and macOS runners for amd64 and arm64. Each job installs, verifies, and reruns
+the exact packaged executable. The release draft is published only after all
+four jobs pass, and its asset set must contain exactly the eight executable or
+archive assets plus `SHA256SUMS`.
 
 A normal manual workflow run performs the same build and verification but
 uploads a workflow artifact instead of publishing a release. A guarded recovery
@@ -104,8 +123,8 @@ and version test fixtures change only when their own compatibility contracts
 change. A `v2` or later release also requires review of Go's major-version
 module path rules.
 
-Before the first public tag, update README statements that say no tagged public
-release exists and enable GitHub Immutable Releases.
+GitHub Immutable Releases must remain enabled. Published tags and releases are
+never moved or replaced.
 
 ## Release notes
 
@@ -174,8 +193,10 @@ GitHub plan supports it.
 The workflow imports the signing identity into a temporary Keychain, adds that
 Keychain to the runner's search list so `codesign` can combine the private key
 with Apple's system certificate chain, and restores the original search list
-during cleanup. It signs both Mac architectures with the hardened runtime and a
-secure timestamp, then deletes the temporary credential files. It downloads and
+during cleanup. It signs both Mac architectures with the hardened runtime,
+identifier `app.schooner.cli`, and a secure timestamp. The workflow verifies the
+exact Developer ID requirement for Team ID `LDCWNW7T7K`, then deletes the
+temporary credential files. It downloads and
 validates the notarization log and retains that log as a private workflow
 artifact for 90 days. A failed or delayed notarization prevents bundling and
 publication.
@@ -199,10 +220,8 @@ binary when that variable is empty and links the value into
 `SCHOONER_GITHUB_CLIENT_ID` in the invoking environment; this override is read
 at runtime and is intended only for local development.
 
-Homebrew packaging, archives, remote installation, and automatic updates
-remain separate work.
-
-Directly downloaded macOS binaries should be signed with Developer ID,
-notarized, and tested with quarantine metadata before they become the primary
-installation path. A project-owned Homebrew tap can provide an earlier
-source-built installation path without making unsigned downloads the default.
+Homebrew packaging and automatic local updates remain separate work. The first
+archive-bearing release must be installed through the public repository script
+on fresh macOS and Linux amd64/arm64 systems before direct installation becomes
+the primary README path. macOS smoke testing includes quarantine and Gatekeeper
+behavior in addition to the installer's exact local signature requirement.
