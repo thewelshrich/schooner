@@ -1,6 +1,6 @@
 ---
 name: schooner-release
-description: Prepare or publish a Schooner version release from protected main, including a SemVer recommendation, verified narrative release notes, and the repository release script. Use when asked to cut, publish, or draft notes for a Schooner release. Do not use for ordinary development builds or Apple signing setup.
+description: Prepare or publish a Schooner version release from protected main, including SemVer, verified narrative notes, the repository release script, public install smoke, and Homebrew tap rollout. Use when asked to cut, publish, or draft notes for a Schooner release. Do not use for ordinary development builds or Apple signing setup.
 ---
 
 # Schooner Release
@@ -110,3 +110,57 @@ mutable draft and must never replace an already-published release. Because
 GitHub runs the workflow definition stored at the dispatched ref, an immutable
 tag that predates the guarded recovery cannot consume a later workflow fix;
 leave that tag untouched and prepare a new patch version instead.
+
+## Complete packaged distribution
+
+A successful stable immutable release starts the separate, non-gating
+`Distribution rollout` workflow. Prereleases intentionally stop after GitHub
+publication and do not update Homebrew. Keep these outcomes distinct:
+distribution failure never invalidates, replaces, deletes, or moves the
+published release or tag.
+
+After publication:
+
+1. Monitor the distribution workflow for the exact released version and
+   commit. Require its native macOS and Linux amd64/arm64 public-installer
+   smoke jobs to pass.
+2. Confirm the workflow revalidated the immutable release and exact asset set.
+   It either opens or updates the version-specific pull request in
+   `thewelshrich/homebrew-tap`, or succeeds without a pull request when the tap
+   `main` formula already exactly matches the release.
+3. Verify the rendered or existing formula version, four release URLs, and
+   checksums against the published release. For a generated pull request,
+   confirm it targets protected `main` and wait for all tap CI and
+   public-install jobs.
+4. Report a generated tap pull request as ready, but never merge it without
+   explicit user authorization. Immediately before an authorized merge,
+   re-check its head, checks, reviews, and unresolved conversations.
+5. Verify the tap `main` formula names the released version and the public
+   Homebrew installation gate succeeded, either through the valid no-op path
+   or after an authorized merge. Only then describe the release as available
+   through Homebrew.
+
+If dispatch or rollout fails, report it as a distribution blocker while
+leaving the immutable release successful. Inspect the failure before using the
+documented `distribution.yml` recovery for the current latest stable release;
+do not retry an unchanged external or credential failure, and do not broaden
+tap credentials or repository permissions.
+
+## Prove local updater rollout
+
+When a release introduces or materially changes `schooner update`, distinguish
+shipping the updater from proving an update transition. The first such release
+can be installed but cannot update to itself. Record the remaining release
+smoke and, after any later approved stable release exists, verify that:
+
+- a receipt-owned direct installation promotes from the earlier release to the
+  later exact release;
+- a Homebrew installation prints package-manager guidance and is not replaced;
+- source, manual, symlinked, and stale-receipt installations remain unowned;
+  and
+- local update does not implicitly mutate any Box runtime; `schooner box
+  update` remains explicit.
+
+Do not create an otherwise-unapproved tag merely to satisfy this smoke test.
+Do not claim the updater rollout or its tracking issue complete until the
+cross-version evidence exists.
