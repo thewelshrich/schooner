@@ -34,6 +34,7 @@ const (
 	CodePermissionDenied    Code = "permission_denied"
 	CodeOperationInProgress Code = "operation_in_progress"
 	CodeOutcomeUnknown      Code = "outcome_unknown"
+	CodeUnsupported         Code = "unsupported"
 )
 
 type WorktreeUse interface {
@@ -82,8 +83,9 @@ func (lock *MutationLock) Close() error {
 }
 
 type CloneRequest struct {
-	Source string
-	Branch string
+	Source      string
+	Branch      string
+	Destination string
 }
 
 type AddRequest struct {
@@ -199,7 +201,11 @@ func (l *Lifecycle) Clone(ctx context.Context, request CloneRequest) (MutationRe
 	if err = validateRef(request.Branch); err != nil {
 		return MutationResult{}, err
 	}
-	target, err := l.newPath(name)
+	targetValue := name
+	if request.Destination != "" {
+		targetValue = request.Destination
+	}
+	target, err := l.newPath(targetValue)
 	if err != nil {
 		return MutationResult{}, err
 	}
@@ -235,7 +241,11 @@ func (l *Lifecycle) CloneV2(ctx context.Context, request CloneRequest) (Mutation
 		identity = shorthand
 		cloneSource = identity.CanonicalHTTPS()
 	}
-	legacyTarget, err := l.newPath(name)
+	legacyTargetValue := name
+	if request.Destination != "" {
+		legacyTargetValue = request.Destination
+	}
+	legacyTarget, err := l.newPath(legacyTargetValue)
 	if err != nil {
 		return MutationResult{}, err
 	}
@@ -248,7 +258,11 @@ func (l *Lifecycle) CloneV2(ctx context.Context, request CloneRequest) (Mutation
 	if err = validateRef(request.Branch); err != nil {
 		return MutationResult{}, err
 	}
-	target, err := l.newPath(name)
+	targetValue := name
+	if request.Destination != "" {
+		targetValue = request.Destination
+	}
+	target, err := l.newPath(targetValue)
 	if err != nil {
 		return MutationResult{}, err
 	}
@@ -307,7 +321,7 @@ func (l *Lifecycle) CloneV2(ctx context.Context, request CloneRequest) (Mutation
 				return l.clone(ctx, request, cloneSource, legacyTarget, legacyResumeIntent, source.RepositoryIdentity{})
 			}
 		}
-		if !exact || exactRecord.Checkpoint == "aborted" || retireExact {
+		if request.Destination == "" && (!exact || exactRecord.Checkpoint == "aborted" || retireExact) {
 			if equivalent, _, found, findErr := l.findEquivalentVersion1Clone(ctx, "", request.Branch, identity); findErr != nil {
 				return MutationResult{}, findErr
 			} else if found {

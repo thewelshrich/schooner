@@ -2,12 +2,14 @@ package boxtarget
 
 import (
 	"context"
+	"io"
 
 	"github.com/thewelshrich/schooner/internal/box"
 	"github.com/thewelshrich/schooner/internal/repository"
 	sshruntime "github.com/thewelshrich/schooner/internal/runtime/ssh"
 	"github.com/thewelshrich/schooner/internal/session"
 	"github.com/thewelshrich/schooner/internal/source"
+	"github.com/thewelshrich/schooner/internal/workspacetransfer"
 )
 
 type sshAdapter struct {
@@ -30,8 +32,20 @@ func (a sshAdapter) inspectWorktree(ctx context.Context, selector string) (repos
 	return a.runtime.InspectWorktree(ctx, a.connection, a.installed, a.state.boxIdentity, selector)
 }
 
+func (a sshAdapter) observePushDestination(ctx context.Context, worktree string) (*repository.CheckoutState, error) {
+	return a.runtime.InspectWorkspacePush(ctx, a.connection, a.installed, a.state.boxIdentity, worktree)
+}
+
+func (a sshAdapter) preflightPushDestination(ctx context.Context, worktree string, source repository.CheckoutState, branch bool) (workspacetransfer.PreflightResult, error) {
+	return a.runtime.PreflightWorkspacePush(ctx, a.connection, a.installed, a.state.boxIdentity, worktree, source, branch)
+}
+
+func (a sshAdapter) applyPush(ctx context.Context, request workspacetransfer.ApplyRequest, payload io.Reader) (workspacetransfer.ApplyResult, error) {
+	return a.runtime.ApplyWorkspacePush(ctx, a.connection, a.installed, a.state.boxIdentity, request, payload)
+}
+
 func (a sshAdapter) cloneRepository(ctx context.Context, request repository.CloneRequest) (repository.MutationResult, error) {
-	return a.runtime.CloneRepository(ctx, a.connection, a.installed, a.state.boxIdentity, a.state.worktreeRoot, request.Source, request.Branch)
+	return a.runtime.CloneRepository(ctx, a.connection, a.installed, a.state.boxIdentity, a.state.worktreeRoot, request.Source, request.Branch, request.Destination)
 }
 
 func (a sshAdapter) addWorktree(ctx context.Context, request repository.AddRequest) (repository.MutationResult, error) {

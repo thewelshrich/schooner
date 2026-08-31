@@ -27,6 +27,7 @@ import (
 	sourcegithub "github.com/thewelshrich/schooner/internal/source/github"
 	"github.com/thewelshrich/schooner/internal/ui/prompts"
 	uitheme "github.com/thewelshrich/schooner/internal/ui/theme"
+	"github.com/thewelshrich/schooner/internal/workspacetransfer"
 )
 
 const (
@@ -161,6 +162,7 @@ func newRootCommand(build BuildInfo, streams Streams, options *globalOptions) *c
 	root.AddCommand(newProviderCommand(streams, options))
 	root.AddCommand(newBoxCommand(streams, options))
 	root.AddCommand(newCloneCommand(streams, options, targets))
+	root.AddCommand(newPushCommand(streams, options, targets))
 	root.AddCommand(newWorktreeCommand(streams, options, targets))
 	root.AddCommand(newSessionCommands(streams, options, targets)...)
 	root.AddCommand(newSourceCommand(streams, options, targets))
@@ -191,6 +193,13 @@ func newBoxTargetResolver(streams Streams, options *globalOptions) *boxtarget.Re
 			}
 			store, err := invsqlite.Open(ctx, path)
 			return store, err == nil, err
+		},
+		OpenReadOnlyInventory: func(ctx context.Context) (boxtarget.Inventory, bool, error) {
+			path, err := invsqlite.DefaultPath()
+			if err != nil {
+				return nil, false, err
+			}
+			return invsqlite.OpenReadOnly(ctx, path)
 		},
 	})
 }
@@ -334,6 +343,24 @@ func printError(w io.Writer, err error, output string, theme *uitheme.Theme) {
 		return
 	}
 	printHumanError(w, err, theme)
+	var workspaceConflict *workspacetransfer.Error
+	if errors.As(err, &workspaceConflict) && workspaceConflict.Code == workspacetransfer.CodeConflict {
+		for _, value := range []struct{ key, label string }{
+			{key: "staged", label: "staged"},
+			{key: "unstaged", label: "unstaged"},
+			{key: "untracked", label: "untracked"},
+			{key: "conflicted", label: "conflicted"},
+		} {
+			if count := workspaceConflict.Context[value.key]; count != "" && count != "0" {
+				_ = writeMutedNotice(w, theme, "  "+count+" "+value.label)
+			}
+		}
+		if workspaceConflict.Context["remote_created"] == "true" {
+			_ = writeMutedNotice(w, theme, "The remote clone was created, but no local workspace files were applied.")
+		} else {
+			_ = writeMutedNotice(w, theme, "No remote files were changed.")
+		}
+	}
 	var guidance guidanceError
 	if errors.As(err, &guidance) {
 		_ = writeMutedNotice(w, theme, "Next: "+guidance.guidance)

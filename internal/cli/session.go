@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/thewelshrich/schooner/internal/box"
 	"github.com/thewelshrich/schooner/internal/boxtarget"
+	"github.com/thewelshrich/schooner/internal/link"
 	"github.com/thewelshrich/schooner/internal/repository"
 	"github.com/thewelshrich/schooner/internal/session"
 	"github.com/thewelshrich/schooner/internal/ui/prompts"
@@ -37,13 +38,38 @@ func newStartSessionCommand(streams Streams, global *globalOptions, targets *box
 		if err := requireInteractiveTerminal(streams, global, "start"); err != nil {
 			return err
 		}
-		target, err := resolveBoxExecutionTarget(cmd.Context(), streams, global, targets, explicitBox)
+		var local *repository.LocalCheckout
+		var linkedValue link.LocalLink
+		var hasLink bool
+		var err error
+		if sessionSelectorOmitted(args) {
+			local, err = inspectCurrentCheckout(cmd.Context())
+			if err == nil {
+				linkedValue, hasLink, err = currentLocalLink(cmd.Context(), local)
+			}
+			linkedValue, hasLink, err = contextualLinkForBox(explicitBox, linkedValue, hasLink, err)
+			if err != nil {
+				return executionError{cause: normalizePushError(err)}
+			}
+		}
+		linkedBoxID := ""
+		if hasLink {
+			linkedBoxID = linkedValue.BoxID
+		}
+		target, err := resolveBoxExecutionTargetLinked(cmd.Context(), streams, global, targets, explicitBox, linkedBoxID)
 		if err != nil {
+			if hasLink && explicitBox == "" && box.ErrorCode(err) == "not_found" {
+				err = normalizePushError(&link.Error{Code: link.CodeStale, Message: "the Local Link refers to a Box that is no longer configured"})
+			}
 			return executionError{cause: err}
 		}
 		selector := firstArgument(args)
 		if sessionSelectorOmitted(args) {
-			selector, err = resolveContextualStart(cmd.Context(), streams, global, target)
+			if hasLink && target.BoxID() == linkedValue.BoxID {
+				selector, err = validateLinkedContext(cmd.Context(), target, linkedValue)
+			} else {
+				selector, err = resolveContextualStart(cmd.Context(), streams, global, target)
+			}
 			if err != nil {
 				return err
 			}
@@ -83,13 +109,38 @@ func newResumeSessionCommand(streams Streams, global *globalOptions, targets *bo
 		if err := requireInteractiveTerminal(streams, global, "resume"); err != nil {
 			return err
 		}
-		target, err := resolveBoxExecutionTarget(cmd.Context(), streams, global, targets, explicitBox)
+		var local *repository.LocalCheckout
+		var linkedValue link.LocalLink
+		var hasLink bool
+		var err error
+		if sessionSelectorOmitted(args) {
+			local, err = inspectCurrentCheckout(cmd.Context())
+			if err == nil {
+				linkedValue, hasLink, err = currentLocalLink(cmd.Context(), local)
+			}
+			linkedValue, hasLink, err = contextualLinkForBox(explicitBox, linkedValue, hasLink, err)
+			if err != nil {
+				return executionError{cause: normalizePushError(err)}
+			}
+		}
+		linkedBoxID := ""
+		if hasLink {
+			linkedBoxID = linkedValue.BoxID
+		}
+		target, err := resolveBoxExecutionTargetLinked(cmd.Context(), streams, global, targets, explicitBox, linkedBoxID)
 		if err != nil {
+			if hasLink && explicitBox == "" && box.ErrorCode(err) == "not_found" {
+				err = normalizePushError(&link.Error{Code: link.CodeStale, Message: "the Local Link refers to a Box that is no longer configured"})
+			}
 			return executionError{cause: err}
 		}
 		selector := firstArgument(args)
 		if sessionSelectorOmitted(args) {
-			selector, err = resolveContextualResume(cmd.Context(), streams, global, target)
+			if hasLink && target.BoxID() == linkedValue.BoxID {
+				selector, err = resolveLinkedResume(cmd.Context(), target, linkedValue)
+			} else {
+				selector, err = resolveContextualResume(cmd.Context(), streams, global, target)
+			}
 			if err != nil {
 				return err
 			}
@@ -108,6 +159,48 @@ func newResumeSessionCommand(streams Streams, global *globalOptions, targets *bo
 	}}
 	command.Flags().StringVar(&explicitBox, "box", "", "box name (always uses OpenSSH)")
 	return command
+}
+
+func contextualLinkForBox(explicitBox string, value link.LocalLink, found bool, err error) (link.LocalLink, bool, error) {
+	if explicitBox != "" && link.ErrorCode(err) == link.CodeStale {
+		return link.LocalLink{}, false, nil
+	}
+	return value, found, err
+}
+
+func validateLinkedContext(ctx context.Context, target boxtarget.Target, value link.LocalLink) (string, error) {
+	if target.BoxIdentity() != value.ExpectedBoxIdentity {
+		return "", executionError{cause: normalizePushError(&link.Error{Code: link.CodeStale, Message: "the Local Link's Box identity no longer matches the selected Box"})}
+	}
+	inspection, err := target.InspectWorktree(ctx, value.RemoteWorktree)
+	if err != nil {
+		if box.ErrorCode(err) == "not_found" {
+			return "", executionError{cause: normalizePushError(&link.Error{Code: link.CodeStale, Message: "the linked remote Worktree no longer exists"})}
+		}
+		return "", executionError{cause: err}
+	}
+	observedIdentity := repository.OriginKey(inspection.Repository.Origin)
+	if value.RepositoryIdentity != "" && observedIdentity != value.RepositoryIdentity {
+		return "", executionError{cause: normalizePushError(&link.Error{Code: link.CodeStale, Message: "the linked remote Worktree now belongs to a different Repository"})}
+	}
+	return inspection.Worktree.Path, nil
+}
+
+func resolveLinkedResume(ctx context.Context, target boxtarget.Target, value link.LocalLink) (string, error) {
+	worktree, err := validateLinkedContext(ctx, target, value)
+	if err != nil {
+		return "", err
+	}
+	catalog, err := target.ListSessions(ctx)
+	if err != nil {
+		return "", executionError{cause: err}
+	}
+	for _, candidate := range catalog.Sessions {
+		if candidate.Ownership == session.Managed && candidate.Association == session.AssociationLive && candidate.WorktreePath == worktree && candidate.ID != "" {
+			return candidate.ID, nil
+		}
+	}
+	return "", contextualUnavailable("no managed live Session exists for the linked remote Worktree", "run `schooner start` to open persistent work in the linked Worktree")
 }
 
 func newSessionsCommand(streams Streams, global *globalOptions, targets *boxtarget.Resolver) *cobra.Command {

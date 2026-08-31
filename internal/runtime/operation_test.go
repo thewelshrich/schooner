@@ -47,6 +47,55 @@ func TestOperationKeepsStrictDecodingAndSemanticValidationSeparate(t *testing.T)
 	}
 }
 
+func TestWorkspacePushInspectSeparatesObservationFromValidatedPreflight(t *testing.T) {
+	operation := WorkspacePushInspectOperation()
+	observation := NewWorkspacePushInspectRequest("/worktrees/repo", testIdentity)
+	if err := operation.ValidateRequest(observation); err != nil {
+		t.Fatal(err)
+	}
+
+	digest := strings.Repeat("a", 64)
+	preflight := observation
+	preflight.IncomingStateDigest = digest
+	preflight.IncomingBranch = "main"
+	preflight.PreflightBranch = true
+	preflight.IncomingFiles = []repository.CheckoutFile{{Path: "file.txt", Kind: "file", Size: 4, SHA256: digest, Tracked: true}}
+	if err := operation.ValidateRequest(preflight); err != nil {
+		t.Fatal(err)
+	}
+	absent := preflight
+	absent.IncomingFiles = []repository.CheckoutFile{{Path: "staged.txt", Kind: "absent", Tracked: true}}
+	if err := operation.ValidateRequest(absent); err != nil {
+		t.Fatalf("valid absent path error = %v", err)
+	}
+	invalidAbsent := absent
+	invalidAbsent.IncomingFiles[0].Tracked = false
+	if err := operation.ValidateRequest(invalidAbsent); ErrorCode(err) != CodeInvalidInput {
+		t.Fatalf("untracked absent path error = %v", err)
+	}
+
+	invalidObservation := observation
+	invalidObservation.IncomingBranch = "main"
+	if err := operation.ValidateRequest(invalidObservation); ErrorCode(err) != CodeInvalidInput {
+		t.Fatalf("observation metadata error = %v", err)
+	}
+	invalidManifest := preflight
+	invalidManifest.IncomingFiles = append(invalidManifest.IncomingFiles, invalidManifest.IncomingFiles[0])
+	if err := operation.ValidateRequest(invalidManifest); ErrorCode(err) != CodeInvalidInput {
+		t.Fatalf("duplicate manifest error = %v", err)
+	}
+	invalidManifest = preflight
+	invalidManifest.IncomingFiles[0].SHA256 = "not-a-digest"
+	if err := operation.ValidateRequest(invalidManifest); ErrorCode(err) != CodeInvalidInput {
+		t.Fatalf("manifest digest error = %v", err)
+	}
+	invalidManifest = preflight
+	invalidManifest.IncomingFiles = []repository.CheckoutFile{{Path: "nested/.git/config", Kind: "file", Size: 4, SHA256: digest}}
+	if err := operation.ValidateRequest(invalidManifest); ErrorCode(err) != CodeInvalidInput {
+		t.Fatalf("Git metadata path error = %v", err)
+	}
+}
+
 func TestContextWorktreeListRequiresOriginIdentityCapability(t *testing.T) {
 	request := NewWorktreeRequest("", testIdentity)
 	hello := Hello{
@@ -89,6 +138,57 @@ func TestRepositoryCloneCapabilitiesNegotiateIndependently(t *testing.T) {
 	withoutV1.Capabilities = slices.DeleteFunc(append([]string(nil), hello.Capabilities...), func(value string) bool { return value == CapabilityRepositoryCloneV1 })
 	if err := RepositoryCloneV2Operation().ValidateHello(request, withoutV1); err != nil {
 		t.Fatalf("v2 clone unexpectedly depends on v1: %v", err)
+	}
+}
+
+func TestRepositoryCloneOperationPreservesExactDestination(t *testing.T) {
+	request := NewCloneRequest("https://github.com/owner/repo.git", "main", "/worktrees", testIdentity)
+	request.Destination = "/worktrees/chosen-destination"
+	operation := RepositoryCloneV2Operation()
+
+	encoded, err := operation.EncodeRequest(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"destination":"/worktrees/chosen-destination"`) {
+		t.Fatalf("encoded request = %s", encoded)
+	}
+	decoded, err := operation.DecodeRequest(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = operation.ValidateRequest(decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Destination != request.Destination {
+		t.Fatalf("destination = %q, want %q", decoded.Destination, request.Destination)
+	}
+
+	outside := request
+	outside.Destination = "/elsewhere/repo"
+	if err = operation.ValidateRequest(outside); ErrorCode(err) != CodeInvalidInput {
+		t.Fatalf("outside destination error = %v", err)
+	}
+}
+
+func TestWorkspacePushApplyOperationCarriesCreatedDestinationProof(t *testing.T) {
+	digest := strings.Repeat("a", 64)
+	request := NewWorkspacePushApplyRequest(strings.Repeat("b", 32), "/worktrees/repo", digest, digest, 3, digest, testIdentity)
+	request.OperationCreatedDestination = true
+	operation := WorkspacePushApplyOperation()
+	if err := operation.ValidateRequest(request); err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := operation.EncodeRequest(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"operation_created_destination":true`) {
+		t.Fatalf("encoded request = %s", encoded)
+	}
+	request.ExpectedStateDigest = ""
+	if err = operation.ValidateRequest(request); ErrorCode(err) != CodeInvalidInput {
+		t.Fatalf("created destination without expected state error = %v", err)
 	}
 }
 

@@ -9,7 +9,28 @@ import (
 	"testing"
 
 	hostruntime "github.com/thewelshrich/schooner/internal/runtime"
+	"github.com/thewelshrich/schooner/internal/runtime/host"
 )
+
+func TestWorkspacePushApplyBoundsHeaderRead(t *testing.T) {
+	contents := bytes.Repeat([]byte("x"), 2*hostruntime.MaxMessageBytes)
+	input := bytes.NewReader(contents)
+	runtime := host.NewAtHome(hostruntime.BuildInfo{}, t.TempDir())
+	command := newHostCommand(Streams{In: input}, &globalOptions{hostRuntime: func() *host.Runtime { return runtime }})
+	command.SetArgs([]string{"workspace", "push-apply"})
+	var output bytes.Buffer
+	command.SetOut(&output)
+
+	err := command.ExecuteContext(t.Context())
+	var execution executionError
+	if !errors.As(err, &execution) || !strings.Contains(err.Error(), "workspace push header is invalid") {
+		t.Fatalf("error = %v", err)
+	}
+	consumed := len(contents) - input.Len()
+	if consumed > hostruntime.MaxMessageBytes+1 {
+		t.Fatalf("header reader consumed %d bytes, want at most %d", consumed, hostruntime.MaxMessageBytes+1)
+	}
+}
 
 func TestDecodeInteractiveHostRequestAcceptsStandardPaddedBase64(t *testing.T) {
 	want := hostruntime.NewWorktreeShellRequest("/home/alice/worktrees", "11111111-1111-4111-8111-111111111111", "repo")

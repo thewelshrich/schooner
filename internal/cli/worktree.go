@@ -106,11 +106,19 @@ func newCloneCommand(streams Streams, global *globalOptions, targets *boxtarget.
 }
 
 func resolveBoxExecutionTarget(ctx context.Context, streams Streams, global *globalOptions, targets *boxtarget.Resolver, explicit string) (boxtarget.Target, error) {
+	return resolveBoxExecutionTargetLinked(ctx, streams, global, targets, explicit, "")
+}
+
+func resolveBoxExecutionTargetLinked(ctx context.Context, streams Streams, global *globalOptions, targets *boxtarget.Resolver, explicit, linkedBoxID string) (boxtarget.Target, error) {
+	return resolveBoxExecutionTargetPolicy(ctx, streams, global, targets, explicit, linkedBoxID, false)
+}
+
+func resolveBoxExecutionTargetPolicy(ctx context.Context, streams Streams, global *globalOptions, targets *boxtarget.Resolver, explicit, linkedBoxID string, readOnly bool) (boxtarget.Target, error) {
 	var selector box.Selector
 	if interactionAllowed(streams, global) {
 		selector = promptBoxSelector{options: promptOptions(streams, global), title: "Choose a box"}
 	}
-	target, err := targets.Resolve(ctx, boxtarget.ResolveRequest{ExplicitBox: explicit, Selector: selector, NonInteractive: !interactionAllowed(streams, global), NoInput: global.noInput})
+	target, err := targets.Resolve(ctx, boxtarget.ResolveRequest{ExplicitBox: explicit, LinkedBoxID: linkedBoxID, Selector: selector, NonInteractive: !interactionAllowed(streams, global), NoInput: global.noInput, ReadOnly: readOnly})
 	if errors.Is(err, prompts.ErrAborted) {
 		return boxtarget.Target{}, abortError{cause: err}
 	}

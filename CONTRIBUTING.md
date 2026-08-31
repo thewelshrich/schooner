@@ -128,7 +128,7 @@ separate architectural decision demonstrating behavior that must continue
 without a connected CLI. tmux owns persistence for user-visible Sessions and
 optional coding Agents.
 
-## Adding Repository, Worktree, or synchronization behavior
+## Adding Repository, Worktree, or workspace-transfer behavior
 
 1. Treat Git's canonical common directory as Repository identity and Git's
    registered checkout paths as Worktree identity.
@@ -137,10 +137,9 @@ optional coding Agents.
 3. Use fixed Git operations and revalidate live state before acting on a path.
 4. Store only Schooner-owned Session and Operation metadata outside repositories;
    do not require a repository configuration file.
-5. Keep `push` local-to-remote, `pull` remote-to-local, and `sync` a comparison
-   of both sides against their Sync Point.
-6. Run synchronization only through explicit one-shot commands and update the
-   Sync Point only after verifying the shared result.
+5. Keep implemented `push` local-to-remote and planned `pull` remote-to-local.
+6. Run transfer only through explicit one-shot commands and compare current
+   state without persisted synchronization history.
 7. Return conflicts instead of silently choosing a winning checkout.
 
 ## Adding a module

@@ -75,8 +75,9 @@ remote Worktree.
 
 A local checkout may link to one Worktree, while a Worktree may be linked
 from more than one local machine. The relationship lives in Schooner state,
-not in a required repository configuration file. An explicit `push` or `pull`
-may establish it.
+not in a required repository configuration file. A successful, non-dry-run
+`push` establishes or updates it. The planned `pull` command will use the same
+routing contract.
 
 ### Session
 
@@ -114,24 +115,16 @@ A Session can exist without an Agent, and an Agent ending does not end the
 Session or Worktree. Schooner's on-demand remote application is never called
 an Agent.
 
-### Sync Point
+## Workspace transfer language
 
-A **Sync Point** is the last verified shared state of a Local Link and remote
-Worktree.
+- **Push** transfers the current local checkout to its remote Worktree.
+- **Pull** will transfer the current remote Worktree to its local checkout.
 
-It is evidence for later comparison, not authority over either checkout and
-not a promise that the two sides have remained unchanged.
-
-## Synchronization language
-
-- **Push** synchronizes from a local checkout to its remote Worktree.
-- **Pull** synchronizes from a remote Worktree to its local checkout.
-- **Sync** compares both sides with their Sync Point and reconciles only a
-  safely determined result.
-
-Push, Pull, and Sync are explicit, one-shot, Git-aware operations. They update
-the Sync Point only after verifying the shared result. A conflict is reported
-for explicit resolution; Schooner never silently chooses one side or runs a
+Push is implemented; Pull is planned as an explicit, one-shot, Git-aware
+operation under the same contract. The side named as the source is
+authoritative, but the destination is changed only when Schooner can prove that
+it contains no work unique to that destination. A conflict is reported for
+explicit resolution; Schooner never silently chooses a side, merges, or runs a
 continuous synchronizer.
 
 ## Supporting language
@@ -213,7 +206,7 @@ no background worker; later CLI invocations resume checkpointed Operations.
 | Repository and Worktree identity and lifecycle | Git and the filesystem on the Box |
 | Sessions, Agents, and capabilities | Live Box state |
 | Local checkout contents | Local filesystem and Git repository |
-| Local Links and Sync Points | Local Schooner state plus verified observations of both sides |
+| Local Links | Local Schooner state plus revalidated live Box and Worktree identity |
 | Provider resource existence | Provider |
 | Provider secret value | Environment or operating-system credential store |
 | Operation recovery metadata | Local Schooner state plus verified external observations |

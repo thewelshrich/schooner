@@ -36,6 +36,30 @@ func RunWithoutEnvironment(ctx context.Context, maximum int, excluded []string, 
 	return run(ctx, maximum, environment, name, arguments...)
 }
 
+// RunWithoutEnvironmentAndExtra removes inherited variables and installs
+// fixed caller-owned values before executing a bounded command.
+func RunWithoutEnvironmentAndExtra(ctx context.Context, maximum int, excluded, extra []string, name string, arguments ...string) ([]byte, error) {
+	blocked := make(map[string]struct{}, len(excluded)+len(extra))
+	for _, key := range excluded {
+		blocked[key] = struct{}{}
+	}
+	for _, entry := range extra {
+		if key, _, found := strings.Cut(entry, "="); found {
+			blocked[key] = struct{}{}
+		}
+	}
+	environment := make([]string, 0, len(os.Environ())+len(extra))
+	for _, entry := range os.Environ() {
+		key, _, found := strings.Cut(entry, "=")
+		if _, remove := blocked[key]; found && remove {
+			continue
+		}
+		environment = append(environment, entry)
+	}
+	environment = append(environment, extra...)
+	return run(ctx, maximum, environment, name, arguments...)
+}
+
 // Result contains bounded command output. Output beyond the configured limit
 // is discarded without interrupting the command, which is important for
 // mutations whose external effect must not be coupled to progress volume.
@@ -54,6 +78,44 @@ func RunCapturedWithoutEnvironment(ctx context.Context, maximum int, excluded []
 // preserve their first reported cause.
 func RunCapturedTailWithoutEnvironment(ctx context.Context, maximum int, excluded []string, extra []string, name string, arguments ...string) (Result, error) {
 	return runCapturedWithoutEnvironment(ctx, maximum, excluded, extra, true, name, arguments...)
+}
+
+// RunStreamingWithoutEnvironment executes one fixed tool operation with
+// caller-supplied streams while retaining bounded diagnostics.
+func RunStreamingWithoutEnvironment(ctx context.Context, directory string, excluded, extra []string, stdin io.Reader, stdout io.Writer, name string, arguments ...string) (Result, error) {
+	blocked := make(map[string]struct{}, len(excluded)+len(extra))
+	for _, key := range excluded {
+		blocked[key] = struct{}{}
+	}
+	for _, entry := range extra {
+		if key, _, found := strings.Cut(entry, "="); found {
+			blocked[key] = struct{}{}
+		}
+	}
+	command := exec.CommandContext(ctx, name, arguments...)
+	configureCommandCancellation(command)
+	command.WaitDelay = commandPipeWaitDelay
+	command.Dir = directory
+	for _, entry := range os.Environ() {
+		key, _, found := strings.Cut(entry, "=")
+		if _, remove := blocked[key]; found && remove {
+			continue
+		}
+		command.Env = append(command.Env, entry)
+	}
+	command.Env = append(command.Env, extra...)
+	command.Stdin = stdin
+	command.Stdout = stdout
+	stderr := &boundedWriter{maximum: 64 << 10}
+	command.Stderr = stderr
+	err := command.Run()
+	if errors.Is(err, exec.ErrWaitDelay) {
+		err = nil
+	}
+	if ctx.Err() != nil {
+		return Result{Stderr: stderr.data, Truncated: stderr.truncated}, ctx.Err()
+	}
+	return Result{Stderr: stderr.data, Truncated: stderr.truncated}, err
 }
 
 func runCapturedWithoutEnvironment(ctx context.Context, maximum int, excluded []string, extra []string, tail bool, name string, arguments ...string) (Result, error) {

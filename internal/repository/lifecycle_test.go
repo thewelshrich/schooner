@@ -177,6 +177,66 @@ func TestLifecycleCloneAddRemoveAndRecover(t *testing.T) {
 	}
 }
 
+func TestLifecycleCloneHonorsExactDestination(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "worktrees")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sourcePath := createLifecycleSource(t)
+	lifecycle, err := NewLifecycle(root, filepath.Join(t.TempDir(), "state"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(lifecycle.root, "chosen-destination")
+	outside := filepath.Join(filepath.Dir(lifecycle.root), "outside-destination")
+	if _, err = lifecycle.Clone(t.Context(), CloneRequest{Source: sourcePath, Destination: outside}); ErrorCode(err) != CodeInvalidInput {
+		t.Fatalf("outside destination error = %v", err)
+	}
+
+	cloned, err := lifecycle.Clone(t.Context(), CloneRequest{Source: sourcePath, Destination: destination})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cloned.Path != destination || cloned.Inspection == nil || cloned.Inspection.Worktree.Path != destination {
+		t.Fatalf("clone = %+v, want exact destination %q", cloned, destination)
+	}
+	derived := filepath.Join(lifecycle.root, strings.TrimSuffix(filepath.Base(sourcePath), ".git"))
+	if derived != destination {
+		if _, statErr := os.Lstat(derived); !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatalf("source-derived destination %q was created: %v", derived, statErr)
+		}
+	}
+}
+
+func TestLifecycleCloneV2HonorsExactDestination(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "worktrees")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	executor := &lifecycleCloneExecutor{localSource: createLifecycleSource(t)}
+	lifecycle, err := NewLifecycleWithOptions(root, filepath.Join(t.TempDir(), "state"), nil, LifecycleOptions{CloneExecutor: executor})
+	if err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(lifecycle.root, "chosen-v2-destination")
+
+	cloned, err := lifecycle.CloneV2(t.Context(), CloneRequest{Source: "https://example.test/owner/repo.git", Destination: destination})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cloned.Path != destination || cloned.Inspection == nil || cloned.Inspection.Worktree.Path != destination {
+		t.Fatalf("clone = %+v, want exact destination %q", cloned, destination)
+	}
+	if len(executor.requests) != 1 {
+		t.Fatalf("clone requests = %+v", executor.requests)
+	}
+	if derived := filepath.Join(lifecycle.root, "repo"); derived != destination {
+		if _, statErr := os.Lstat(derived); !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatalf("source-derived destination %q was created: %v", derived, statErr)
+		}
+	}
+}
+
 func TestLifecycleCloneV2RecoversByRepositoryIdentityAndPreservesFirstOrigin(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "worktrees")
 	if err := os.MkdirAll(root, 0o755); err != nil {

@@ -25,6 +25,7 @@ type Options struct {
 	Remote                *sshruntime.Runtime
 	OpenInventory         func(context.Context) (Inventory, error)
 	OpenExistingInventory func(context.Context) (Inventory, bool, error)
+	OpenReadOnlyInventory func(context.Context) (Inventory, bool, error)
 	ReadHostConfig        func() (config.Host, error)
 }
 
@@ -36,6 +37,7 @@ type ResolveRequest struct {
 	Selector       box.Selector
 	NonInteractive bool
 	NoInput        bool
+	ReadOnly       bool
 }
 
 // Resolver applies Box selection policy and binds one execution adapter.
@@ -58,14 +60,18 @@ func (r *Resolver) Resolve(ctx context.Context, request ResolveRequest) (Target,
 		return Target{}, err
 	}
 	if request.ExplicitBox == "" {
-		if target, ok, err := r.resolveDirect(ctx, request.NonInteractive); ok || err != nil {
-			return target, err
+		if target, ok, err := r.resolveDirect(ctx, request.NonInteractive, request.ReadOnly); err != nil {
+			if request.LinkedBoxID == "" {
+				return Target{}, err
+			}
+		} else if ok && (request.LinkedBoxID == "" || target.BoxID() == request.LinkedBoxID) {
+			return target, nil
 		}
 	}
 	return r.resolveRemote(ctx, request)
 }
 
-func (r *Resolver) resolveDirect(ctx context.Context, nonInteractive bool) (Target, bool, error) {
+func (r *Resolver) resolveDirect(ctx context.Context, nonInteractive, readOnly bool) (Target, bool, error) {
 	local := r.options.Direct()
 	if local == nil {
 		return Target{}, false, nil
@@ -78,11 +84,12 @@ func (r *Resolver) resolveDirect(ctx context.Context, nonInteractive bool) (Targ
 	if err != nil {
 		return Target{}, true, box.NewError("conflict", "direct Box configuration is unavailable; run box setup from a workstation", err)
 	}
-	record := r.matchingLocalRecord(ctx, hello.BoxIdentity)
+	record := r.matchingLocalRecord(ctx, hello.BoxIdentity, readOnly)
 	if record.Name != "" && configured.WorktreeRoot != record.WorktreeRoot {
 		return Target{}, true, box.NewError("conflict", fmt.Sprintf("direct Box worktree root differs from local inventory; run \"schooner box setup %s\" from a workstation", record.Name), nil)
 	}
 	state := &targetState{
+		boxID:        record.ID,
 		boxName:      record.Name,
 		boxIdentity:  hello.BoxIdentity,
 		worktreeRoot: configured.WorktreeRoot,
@@ -92,8 +99,12 @@ func (r *Resolver) resolveDirect(ctx context.Context, nonInteractive bool) (Targ
 	return Target{state: state}, true, nil
 }
 
-func (r *Resolver) matchingLocalRecord(ctx context.Context, identity string) box.Record {
-	inventory, exists, err := r.options.OpenExistingInventory(ctx)
+func (r *Resolver) matchingLocalRecord(ctx context.Context, identity string, readOnly bool) box.Record {
+	open := r.options.OpenExistingInventory
+	if readOnly && r.options.OpenReadOnlyInventory != nil {
+		open = r.options.OpenReadOnlyInventory
+	}
+	inventory, exists, err := open(ctx)
 	if err != nil || !exists {
 		return box.Record{}
 	}
@@ -111,7 +122,20 @@ func (r *Resolver) matchingLocalRecord(ctx context.Context, identity string) box
 }
 
 func (r *Resolver) resolveRemote(ctx context.Context, request ResolveRequest) (Target, error) {
-	inventory, err := r.options.OpenInventory(ctx)
+	var inventory Inventory
+	var err error
+	if request.ReadOnly {
+		if r.options.OpenReadOnlyInventory == nil {
+			return Target{}, box.NewError("internal", "read-only Box inventory resolution is not configured", nil)
+		}
+		var exists bool
+		inventory, exists, err = r.options.OpenReadOnlyInventory(ctx)
+		if err == nil && !exists {
+			return Target{}, box.NewError("not_found", "no Boxes are configured", nil)
+		}
+	} else {
+		inventory, err = r.options.OpenInventory(ctx)
+	}
 	if err != nil {
 		return Target{}, err
 	}
@@ -128,6 +152,7 @@ func (r *Resolver) resolveRemote(ctx context.Context, request ResolveRequest) (T
 		return Target{}, box.NewError("host_runtime_missing", fmt.Sprintf("the box does not have a host runtime; run \"schooner box setup %s\"", record.Name), nil)
 	}
 	state := &targetState{
+		boxID:        record.ID,
 		boxName:      record.Name,
 		boxIdentity:  record.RemoteIdentity,
 		worktreeRoot: record.WorktreeRoot,

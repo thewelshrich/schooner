@@ -1,6 +1,7 @@
 package ssh
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -13,11 +14,69 @@ import (
 
 	"github.com/thewelshrich/schooner/internal/artifact"
 	"github.com/thewelshrich/schooner/internal/box"
+	"github.com/thewelshrich/schooner/internal/repository"
 	hostruntime "github.com/thewelshrich/schooner/internal/runtime"
 	"github.com/thewelshrich/schooner/internal/source"
+	"github.com/thewelshrich/schooner/internal/workspacetransfer"
 )
 
 const hostTestIdentity = "11111111-1111-4111-8111-111111111111"
+
+func TestWorkspacePushUsesFixedStreamingHostOperation(t *testing.T) {
+	testRemoteShell(t)
+	target := filepath.Join(t.TempDir(), "host-runtime")
+	digest := strings.Repeat("a", 64)
+	hello := fmt.Sprintf(`{"schema_version":"1","protocol_version":"1","schooner_version":"v1.2.3","commit":"abc123","box_identity":%q,"os":"linux","architecture":"amd64","capabilities":["workspace.push.apply.v1","workspace.push.inspect.v1"]}`, hostTestIdentity)
+	inspect := fmt.Sprintf(`{"schema_version":"1","protocol_version":"1","box_identity":%q,"present":false}`, hostTestIdentity)
+	preflight := fmt.Sprintf(`{"schema_version":"1","protocol_version":"1","box_identity":%q,"present":true,"existing_files":1,"matching_files":1}`, hostTestIdentity)
+	apply := fmt.Sprintf(`{"schema_version":"1","protocol_version":"1","box_identity":%q,"state":{"schema_version":"1","head":"abc","detached":true,"index_entries":[],"index_count":0,"files":[],"file_count":0,"digest":%q,"status":{}},"bytes_transferred":3}`, hostTestIdentity, digest)
+	contents := fmt.Sprintf(`#!/bin/sh
+case "$1 $2 $3" in
+  "host hello ") printf '%%s\n' '%s' ;;
+  "host workspace push-inspect") request=$(cat); case "$request" in *incoming_state_digest*) printf '%%s\n' '%s' ;; *) printf '%%s\n' '%s' ;; esac ;;
+  "host workspace push-apply") IFS= read -r header || exit 64; case "$header" in *operation_created_destination*) ;; *) exit 66 ;; esac; payload=$(cat); [ "$payload" = abc ] || exit 65; printf '%%s\n' '%s' ;;
+  *) exit 64 ;;
+esac
+`, hello, preflight, inspect, apply)
+	if err := os.WriteFile(target, []byte(contents), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runtime := NewHost(testSSHExecutable(t), nil, "v1.2.3", nil)
+	connection := box.Connection{Destination: "trusted-host"}
+	installed := box.HostRuntime{Path: target}
+	state, err := runtime.InspectWorkspacePush(t.Context(), connection, installed, hostTestIdentity, "/remote/repo")
+	if err != nil || state != nil {
+		t.Fatalf("inspect = %+v, %v", state, err)
+	}
+	comparison, err := runtime.PreflightWorkspacePush(t.Context(), connection, installed, hostTestIdentity, "/remote/repo", repository.CheckoutState{
+		Branch: "main", Digest: digest, Files: []repository.CheckoutFile{{Path: "file.txt", Kind: "file", Size: 3, SHA256: digest, Tracked: true}},
+	}, true)
+	if err != nil || comparison.ExistingFiles != 1 || comparison.MatchingFiles != 1 {
+		t.Fatalf("preflight = %+v, %v", comparison, err)
+	}
+	payloadDigest := fmt.Sprintf("%x", sha256.Sum256([]byte("abc")))
+	result, err := runtime.ApplyWorkspacePush(t.Context(), connection, installed, hostTestIdentity, workspacetransfer.ApplyRequest{OperationID: strings.Repeat("b", 32), RemoteWorktree: "/remote/repo", ExpectedStateDigest: digest, PayloadSize: 3, PayloadSHA256: payloadDigest, SourceState: repository.CheckoutState{Digest: digest}, OperationCreatedDestination: true}, bytes.NewBufferString("abc"))
+	if err != nil || result.State.Digest != digest || result.BytesTransferred != 3 {
+		t.Fatalf("apply = %+v, %v", result, err)
+	}
+}
+
+func TestWorkspacePushReportsUnknownOutcomeWhenSSHResultIsLost(t *testing.T) {
+	testRemoteShell(t)
+	target := filepath.Join(t.TempDir(), "host-runtime")
+	hello := fmt.Sprintf(`{"schema_version":"1","protocol_version":"1","schooner_version":"v1.2.3","commit":"abc123","box_identity":%q,"os":"linux","architecture":"amd64","capabilities":["workspace.push.apply.v1"]}`, hostTestIdentity)
+	contents := fmt.Sprintf("#!/bin/sh\ncase \"$1 $2 $3\" in\n  'host hello ') printf '%%s\\n' '%s' ;;\n  'host workspace push-apply') cat >/dev/null; exit 255 ;;\n  *) exit 64 ;;\nesac\n", hello)
+	if err := os.WriteFile(target, []byte(contents), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runtime := NewHost(testSSHExecutable(t), nil, "v1.2.3", nil)
+	digest := strings.Repeat("a", 64)
+	payloadDigest := fmt.Sprintf("%x", sha256.Sum256([]byte("abc")))
+	_, err := runtime.ApplyWorkspacePush(t.Context(), box.Connection{Destination: "trusted-host"}, box.HostRuntime{Path: target}, hostTestIdentity, workspacetransfer.ApplyRequest{OperationID: strings.Repeat("b", 32), RemoteWorktree: "/remote/repo", PayloadSize: 3, PayloadSHA256: payloadDigest, SourceState: repository.CheckoutState{Digest: digest}}, bytes.NewBufferString("abc"))
+	if box.ErrorCode(err) != "outcome_unknown" {
+		t.Fatalf("lost SSH apply result error = %v, code=%s", err, box.ErrorCode(err))
+	}
+}
 
 func TestInteractiveHostHandshakePreservesTransportError(t *testing.T) {
 	ssh := writeExecutable(t, "#!/bin/sh\nprintf 'Permission denied (publickey).\\n' >&2\nexit 255\n")
@@ -110,11 +169,11 @@ func TestCloneRepositoryUsesTypedHostLifecycleOperation(t *testing.T) {
 		t.Fatal(err)
 	}
 	runtime := NewHost(testSSHExecutable(t), nil, "v1.2.3", nil)
-	got, err := runtime.CloneRepository(t.Context(), box.Connection{Destination: "trusted-host"}, box.HostRuntime{Path: target}, hostTestIdentity, "/worktrees", "git@example.com:owner/repo.git", "main")
+	got, err := runtime.CloneRepository(t.Context(), box.Connection{Destination: "trusted-host"}, box.HostRuntime{Path: target}, hostTestIdentity, "/worktrees", "git@example.com:owner/repo.git", "main", "")
 	if err != nil || got.Action != "clone" || got.Path != "/home/alice/schooner/repo" || got.Inspection == nil {
 		t.Fatalf("clone = %+v, %v", got, err)
 	}
-	if _, err = runtime.CloneRepository(t.Context(), box.Connection{Destination: "trusted-host", BatchMode: true}, box.HostRuntime{Path: target}, hostTestIdentity, "/worktrees", "git@example.com:owner/repo.git", "main"); err != nil {
+	if _, err = runtime.CloneRepository(t.Context(), box.Connection{Destination: "trusted-host", BatchMode: true}, box.HostRuntime{Path: target}, hostTestIdentity, "/worktrees", "git@example.com:owner/repo.git", "main", ""); err != nil {
 		t.Fatalf("noninteractive clone = %v", err)
 	}
 }
@@ -133,7 +192,7 @@ func TestLegacyCloneAuthenticationRequiresRuntimeUpdateBeforeManagedRecovery(t *
 		t.Fatal(err)
 	}
 	runtime := NewHost(testSSHExecutable(t), nil, "v1.2.3", nil)
-	_, err = runtime.CloneRepository(t.Context(), box.Connection{Destination: "trusted-host"}, box.HostRuntime{Path: target}, hostTestIdentity, "/worktrees", "https://github.com/owner/repo.git", "")
+	_, err = runtime.CloneRepository(t.Context(), box.Connection{Destination: "trusted-host"}, box.HostRuntime{Path: target}, hostTestIdentity, "/worktrees", "https://github.com/owner/repo.git", "", "")
 	var domain *box.Error
 	if !errors.As(err, &domain) || domain.Code != "authentication_required" || domain.Context["reason"] != "host_runtime_update_required" {
 		t.Fatalf("error = %#v", err)
@@ -151,7 +210,7 @@ func TestCloneRepositoryPrefersV2WhenAdvertised(t *testing.T) {
 	}
 	runtime := NewHost(testSSHExecutable(t), nil, "v1.2.3", nil)
 	installed := box.HostRuntime{Path: target}
-	got, err := runtime.CloneRepository(t.Context(), box.Connection{Destination: "trusted-host"}, installed, hostTestIdentity, "/worktrees", "https://github.com/owner/repo.git", "")
+	got, err := runtime.CloneRepository(t.Context(), box.Connection{Destination: "trusted-host"}, installed, hostTestIdentity, "/worktrees", "https://github.com/owner/repo.git", "", "")
 	if err != nil || got.Action != "clone" || got.Path != "/worktrees/repo" {
 		t.Fatalf("clone = %+v, %v", got, err)
 	}
