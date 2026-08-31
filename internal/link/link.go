@@ -80,7 +80,7 @@ func Find(ctx context.Context, store Store, localWorktree, currentRepositoryIden
 		return LocalLink{}, err
 	}
 	if err = value.Validate(); err != nil {
-		return LocalLink{}, &Error{Code: CodeStale, Message: "the Local Link is invalid; run a successful push with an explicit Box and Worktree to replace it", Cause: err}
+		return LocalLink{}, &Error{Code: CodeStale, Message: "the Local Link is invalid; run a successful push or pull with an explicit Box and Worktree to replace it", Cause: err}
 	}
 	if value.LocalWorktree != localWorktree {
 		return LocalLink{}, &Error{Code: CodeStale, Message: "the Local Link no longer matches this Worktree"}

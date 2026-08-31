@@ -13,8 +13,8 @@ the product does not need.
 
 ## Decision
 
-`schooner push` is the first explicit, one-shot directional command. A future
-`schooner pull` will apply the same contract in the opposite direction. The
+`schooner push` and `schooner pull` are explicit, one-shot directional
+commands. `pull` applies the same contract as `push` in the opposite direction. The
 command's source is authoritative, but Schooner mutates the destination only
 after proving that it contains no work unique to that destination. Conflicts
 stop without automatic merging, last-writer-wins, timestamp authority, or a
@@ -23,8 +23,8 @@ force mode.
 A Local Link stores only routing from a canonical local Worktree through a
 stable Box record to one exact canonical remote Worktree. It stores no file
 manifest, shared snapshot, merge base, or synchronization history.
-The implemented slice creates or updates this link only after a successful,
-non-dry-run `push`.
+The implemented commands create or refresh this link only after a successful,
+non-dry-run transfer, including an already-identical destination.
 
 Checkout state is observed deterministically for one operation. Git objects
 reachable from source HEAD and the stage-zero index entries are transferred as
@@ -45,7 +45,18 @@ exception and retain the normal ancestry protection.
 Large payloads use fixed, compiled-in streaming commands over the existing
 system OpenSSH transport. Control operations remain typed and versioned. The
 remote application remains on-demand and holds the existing Worktree mutation
-lock while it revalidates and applies a prepared payload.
+lock while it revalidates and applies a prepared payload. Pull inspection is a
+bounded, digest-pinned paged operation. Pull capture emits one validated JSON
+header followed by exactly the declared payload bytes; retries recapture the
+current remote state under a new operation ID rather than resuming old data.
+
+Both directions apply to an existing destination through one repository-owned
+transaction. The transaction locks and revalidates the destination, captures
+rollback state, revalidates again, preflights filesystem and branch topology,
+applies the payload, and verifies the result. A post-mutation failure restores
+the captured destination. If restoration cannot be proven, the result is
+`outcome_unknown`. Push alone retains the narrow branch-rewind exception for a
+checkout created by that same first-push operation; pull never enables it.
 
 ## Consequences
 
@@ -71,12 +82,12 @@ filesystem so final promotion can be atomic.
 
 ## Delivery slices
 
-The first slice implements Local Links and `push`, including first-push clone
+The first slice implemented Local Links and `push`, including first-push clone
 or direct Repository creation, remote safety checks, streaming upload, apply,
 verification, dry-run, and contextual start/resume routing.
 
-A later slice will implement `pull` by mirroring the same contracts: remote
-capture and fixed download preparation, local destination dirtiness and
-ancestry protection, local mutation locking and revalidation, local apply and
-verification, dry-run, human/JSON presentation, and direct/SSH end-to-end
-tests. It will not add reconciliation, automatic merging, or `sync`.
+The second slice implements `pull`: remote bounded inspection and fixed-stream
+capture, local destination dirtiness and ancestry protection, shared local
+mutation locking and rollback, local apply and verification, dry-run,
+human/JSON presentation, Local Link refresh, and direct/SSH conformance. It
+does not add reconciliation, automatic merging, remote creation, or `sync`.

@@ -124,7 +124,7 @@ func runPush(ctx context.Context, streams Streams, global *globalOptions, target
 			return workspacetransfer.PushResult{}, target, false, &link.Error{Code: link.CodeStale, Message: "the linked remote Worktree no longer has the expected Repository identity"}
 		}
 	} else if remoteSelector != "" {
-		remoteWorktree, err = resolveRemotePushPath(target.WorktreeRoot(), remoteSelector)
+		remoteWorktree, err = resolveRemoteWorktreePath(target.WorktreeRoot(), remoteSelector)
 		if err != nil {
 			return workspacetransfer.PushResult{}, target, false, err
 		}
@@ -307,7 +307,7 @@ func resolvePushWorktree(ctx context.Context, streams Streams, global *globalOpt
 	}
 }
 
-func resolveRemotePushPath(root, selector string) (string, error) {
+func resolveRemoteWorktreePath(root, selector string) (string, error) {
 	value := selector
 	if !filepath.IsAbs(value) {
 		value = filepath.Join(root, filepath.FromSlash(value))

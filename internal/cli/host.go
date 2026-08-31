@@ -8,8 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"slices"
 	"strings"
+	"syscall"
 
 	"github.com/spf13/cobra"
 	"github.com/thewelshrich/schooner/internal/box"
@@ -381,6 +383,46 @@ func newHostCommand(streams Streams, options *globalOptions) *cobra.Command {
 			}
 			return encodeHostOperationResult(cmd.OutOrStdout(), operation, request, result)
 		}},
+		&cobra.Command{Use: "pull-inspect", Args: cobra.NoArgs, SilenceUsage: true, RunE: func(cmd *cobra.Command, _ []string) error {
+			operation := hostruntime.WorkspacePullInspectOperation()
+			request, err := readHostOperationRequest(streams, operation)
+			if err != nil {
+				return executionError{cause: err}
+			}
+			result, err := runtime.InspectWorkspacePull(cmd.Context(), request)
+			if err != nil {
+				return encodeLifecycleError(cmd.OutOrStdout(), request.BoxIdentity, err)
+			}
+			return encodeHostOperationResult(cmd.OutOrStdout(), operation, request, result)
+		}},
+		&cobra.Command{Use: "pull-capture", Args: cobra.NoArgs, SilenceUsage: true, RunE: func(cmd *cobra.Command, _ []string) error {
+			operation := hostruntime.WorkspacePullCaptureOperation()
+			request, err := readHostOperationRequest(streams, operation)
+			if err != nil {
+				return executionError{cause: err}
+			}
+			result, capture, err := runtime.CaptureWorkspacePull(cmd.Context(), request)
+			if err != nil {
+				return encodeLifecycleError(cmd.OutOrStdout(), request.BoxIdentity, err)
+			}
+			defer capture.Release()
+			payload, err := os.Open(capture.PayloadPath)
+			if err != nil {
+				return executionError{cause: err}
+			}
+			defer payload.Close()
+			if err = encodeHostOperationResult(cmd.OutOrStdout(), operation, request, result); err != nil {
+				return err
+			}
+			written, err := io.Copy(cmd.OutOrStdout(), payload)
+			if err != nil {
+				return executionError{cause: fmt.Errorf("stream workspace pull payload: %w", err)}
+			}
+			if written != capture.PayloadSize {
+				return executionError{cause: fmt.Errorf("stream workspace pull payload: wrote %d of %d bytes", written, capture.PayloadSize)}
+			}
+			return nil
+		}},
 	)
 	cmd.AddCommand(workspace)
 	return cmd
@@ -402,6 +444,9 @@ func decodeInteractiveHostRequest(value string, target any) error {
 
 func encodeLifecycleError(writer io.Writer, identity string, err error) error {
 	code := repository.ErrorCode(err)
+	if code != repository.CodeOutcomeUnknown && hostruntime.ErrorCode(err) != hostruntime.CodeOutcomeUnknown && errors.Is(err, syscall.ENOSPC) {
+		return encodeHostResult(writer, hostruntime.NewOperationError(identity, hostruntime.CodeInsufficientSpace, "the Box does not have enough disk space for this workspace operation"))
+	}
 	switch code {
 	case repository.CodeNotFound, repository.CodeInvalidInput, repository.CodeConflict, repository.CodeAuthentication, repository.CodePermissionDenied, repository.CodeOperationInProgress, repository.CodeOutcomeUnknown:
 		var domain *repository.Error
@@ -414,7 +459,7 @@ func encodeLifecycleError(writer io.Writer, identity string, err error) error {
 		return encodeHostResult(writer, hostruntime.NewOperationError(identity, hostruntime.CodeCapabilityUnavailable, err.Error()))
 	default:
 		hostCode := hostruntime.ErrorCode(err)
-		if slices.Contains([]hostruntime.Code{hostruntime.CodeInvalidInput, hostruntime.CodeConflict, hostruntime.CodeAuthentication, hostruntime.CodePermissionDenied, hostruntime.CodeOperationInProgress, hostruntime.CodeOutcomeUnknown}, hostCode) {
+		if slices.Contains([]hostruntime.Code{hostruntime.CodeInvalidInput, hostruntime.CodeConflict, hostruntime.CodeAuthentication, hostruntime.CodePermissionDenied, hostruntime.CodeOperationInProgress, hostruntime.CodeInsufficientSpace, hostruntime.CodeOutcomeUnknown}, hostCode) {
 			return encodeHostResult(writer, hostruntime.NewOperationError(identity, hostCode, err.Error()))
 		}
 		return executionError{cause: err}

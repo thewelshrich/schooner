@@ -472,6 +472,69 @@ func ApplyCheckoutIfOperationCreatedAndUnchanged(ctx context.Context, target str
 	return applyCheckout(ctx, filepath.Dir(target), target, payload, expectedDigest, createdBranch)
 }
 
+// CheckoutTransactionOptions configures the shared existing-Worktree
+// transaction used by directional workspace transfers.
+type CheckoutTransactionOptions struct {
+	ExpectedStateDigest    string
+	LockStateDirectory     string
+	StagingDirectory       string
+	OperationCreatedBranch string
+}
+
+// ApplyCheckoutTransaction applies an extracted checkout to an existing
+// Worktree while holding Schooner's mutation lock. It reserves a complete
+// rollback capture before application and restores it after any failure that
+// reached destination mutation.
+func ApplyCheckoutTransaction(ctx context.Context, target string, payload ExtractedCheckout, options CheckoutTransactionOptions) (CheckoutState, error) {
+	if options.ExpectedStateDigest == "" || options.LockStateDirectory == "" || options.StagingDirectory == "" {
+		return CheckoutState{}, &Error{Code: CodeInvalidInput, Message: "workspace transaction is not configured"}
+	}
+	lock, err := AcquireWorktreeMutationLock(options.LockStateDirectory, target)
+	if err != nil {
+		return CheckoutState{}, err
+	}
+	defer lock.Close()
+
+	current, err := ObserveCheckout(ctx, target)
+	if err != nil {
+		return CheckoutState{}, err
+	}
+	if current.RevalidationDigest != options.ExpectedStateDigest {
+		return CheckoutState{}, &Error{Code: CodeConflict, Message: "the destination Worktree changed after workspace preflight"}
+	}
+	backup, err := CaptureCheckout(ctx, target, options.StagingDirectory)
+	if err != nil {
+		return CheckoutState{}, err
+	}
+	defer backup.Release()
+	current, err = ObserveCheckout(ctx, target)
+	if err != nil {
+		return CheckoutState{}, err
+	}
+	if current.RevalidationDigest != options.ExpectedStateDigest {
+		return CheckoutState{}, &Error{Code: CodeConflict, Message: "the destination Worktree changed while rollback state was being prepared"}
+	}
+
+	var applied CheckoutState
+	if options.OperationCreatedBranch != "" {
+		applied, err = ApplyCheckoutIfOperationCreatedAndUnchanged(ctx, target, payload, options.ExpectedStateDigest, options.OperationCreatedBranch)
+	} else {
+		applied, err = ApplyCheckoutIfUnchanged(ctx, target, payload, options.ExpectedStateDigest)
+	}
+	if err == nil || !CheckoutMutationStarted(err) {
+		return applied, err
+	}
+	restore, restoreErr := ExtractCheckoutPayload(backup.PayloadPath, options.StagingDirectory)
+	if restoreErr == nil {
+		_, restoreErr = RestoreCheckoutAfterFailedApply(context.WithoutCancel(ctx), target, restore, payload)
+		restore.Release()
+	}
+	if restoreErr != nil {
+		return CheckoutState{}, &Error{Code: CodeOutcomeUnknown, Message: "workspace application failed and the previous destination state could not be restored", Cause: errors.Join(err, restoreErr)}
+	}
+	return CheckoutState{}, err
+}
+
 // RestoreCheckoutAfterFailedApply restores a captured destination after an
 // apply that reached checkout mutation. It first proves that every path the
 // operation could have touched is either absent, still equal to the incoming
@@ -485,7 +548,7 @@ func RestoreCheckoutAfterFailedApply(ctx context.Context, target string, backup,
 	headKnown := checkoutHeadEqual(currentState, backup.State) || checkoutHeadEqual(currentState, incoming.State)
 	indexKnown := checkoutIndexEqual(currentState, backup.State) || checkoutIndexEqual(currentState, incoming.State)
 	if !headKnown || !indexKnown {
-		return CheckoutState{}, &Error{Code: CodeConflict, Message: "destination Git HEAD or index changed independently while workspace push was being rolled back"}
+		return CheckoutState{}, &Error{Code: CodeConflict, Message: "destination Git HEAD or index changed independently while workspace application was being rolled back"}
 	}
 	root, err := os.OpenRoot(target)
 	if err != nil {
@@ -515,7 +578,7 @@ func RestoreCheckoutAfterFailedApply(ctx context.Context, target string, backup,
 		if !present || checkoutFileContentEqual(current, backupFiles[path]) || checkoutFileContentEqual(current, incomingFiles[path]) {
 			continue
 		}
-		return CheckoutState{}, &Error{Code: CodeConflict, Message: fmt.Sprintf("destination path %q changed independently while workspace push was being rolled back", path)}
+		return CheckoutState{}, &Error{Code: CodeConflict, Message: fmt.Sprintf("destination path %q changed independently while workspace application was being rolled back", path)}
 	}
 
 	for _, path := range ordered {
@@ -530,7 +593,7 @@ func RestoreCheckoutAfterFailedApply(ctx context.Context, target string, backup,
 			continue
 		}
 		if !checkoutFileContentEqual(current, incomingFiles[path]) {
-			return CheckoutState{}, &Error{Code: CodeConflict, Message: fmt.Sprintf("destination path %q changed independently while workspace push was being rolled back", path)}
+			return CheckoutState{}, &Error{Code: CodeConflict, Message: fmt.Sprintf("destination path %q changed independently while workspace application was being rolled back", path)}
 		}
 		if err = root.Remove(filepath.FromSlash(path)); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return CheckoutState{}, err
@@ -994,7 +1057,7 @@ func applyCheckout(ctx context.Context, root, target string, payload ExtractedCh
 	}
 	if _, err := os.Lstat(target); errors.Is(err, os.ErrNotExist) {
 		if expectedDigest != "" {
-			return CheckoutState{}, &Error{Code: CodeConflict, Message: "destination Worktree disappeared after push preflight"}
+			return CheckoutState{}, &Error{Code: CodeConflict, Message: "destination Worktree disappeared after workspace preflight"}
 		}
 		return createCheckout(ctx, root, target, payload)
 	} else if err != nil {
@@ -1123,7 +1186,7 @@ func applyExistingCheckout(ctx context.Context, target string, payload Extracted
 		return CheckoutState{}, err
 	}
 	if expectedDigest != "" && destination.RevalidationDigest != expectedDigest {
-		return CheckoutState{}, &Error{Code: CodeConflict, Message: "the destination Worktree changed after push preflight"}
+		return CheckoutState{}, &Error{Code: CodeConflict, Message: "the destination Worktree changed after workspace preflight"}
 	}
 	incarnation, err := captureCheckoutIncarnation(ctx, target)
 	if err != nil {

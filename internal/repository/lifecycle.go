@@ -193,6 +193,14 @@ func WorktreeLockStateDirectory(home string) (string, error) {
 	return filepath.Join(filepath.Clean(home), ".local", "state", "schooner", "operations", "git"), nil
 }
 
+func DefaultWorktreeLockStateDirectory() (string, error) {
+	current, err := user.Current()
+	if err != nil || current.HomeDir == "" || !filepath.IsAbs(current.HomeDir) {
+		return "", fmt.Errorf("resolve Worktree lock state directory: current user home is invalid")
+	}
+	return WorktreeLockStateDirectory(current.HomeDir)
+}
+
 func (l *Lifecycle) Clone(ctx context.Context, request CloneRequest) (MutationResult, error) {
 	cloneSource, name, err := validateCloneSource(request.Source)
 	if err != nil {

@@ -44,6 +44,14 @@ func (a sshAdapter) applyPush(ctx context.Context, request workspacetransfer.App
 	return a.runtime.ApplyWorkspacePush(ctx, a.connection, a.installed, a.state.boxIdentity, request, payload)
 }
 
+func (a sshAdapter) inspectPullSource(ctx context.Context, request workspacetransfer.PullInspectRequest) (workspacetransfer.PullInspection, error) {
+	return a.runtime.InspectWorkspacePull(ctx, a.connection, a.installed, a.state.boxIdentity, request)
+}
+
+func (a sshAdapter) capturePullSource(ctx context.Context, request workspacetransfer.PullCaptureRequest) (workspacetransfer.PullCapture, error) {
+	return a.runtime.CaptureWorkspacePull(ctx, a.connection, a.installed, a.state.boxIdentity, request)
+}
+
 func (a sshAdapter) cloneRepository(ctx context.Context, request repository.CloneRequest) (repository.MutationResult, error) {
 	return a.runtime.CloneRepository(ctx, a.connection, a.installed, a.state.boxIdentity, a.state.worktreeRoot, request.Source, request.Branch, request.Destination)
 }

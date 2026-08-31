@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -204,5 +205,33 @@ func TestRunRemotePreservesRemoteExitAndRejectsOversizedOutput(t *testing.T) {
 	runtime = New(writeExecutable(t, "#!/bin/sh\ndd if=/dev/zero bs=1048577 count=1 2>/dev/null\n"), nil)
 	if _, err = runtime.runRemote(t.Context(), box.Connection{Destination: "work"}, "fixed operation", nil); box.ErrorCode(err) != "internal" {
 		t.Fatalf("oversized output error = %v", err)
+	}
+}
+
+func TestRunRemoteStreamConsumesUnboundedStdoutWithBoundedDiagnostics(t *testing.T) {
+	runtime := New(writeExecutable(t, "#!/bin/sh\nprintf 'header\\npayload'\n"), nil)
+	var output bytes.Buffer
+	result, err := runtime.runRemoteStream(t.Context(), box.Connection{Destination: "work"}, "fixed operation", nil, func(reader io.Reader) error {
+		_, copyErr := io.Copy(&output, reader)
+		return copyErr
+	})
+	if err != nil || result.ExitCode != 0 || output.String() != "header\npayload" {
+		t.Fatalf("result=%+v output=%q err=%v", result, output.String(), err)
+	}
+
+	want := errors.New("invalid stream")
+	runtime = New(writeExecutable(t, "#!/bin/sh\nprintf 'bad'\n"), nil)
+	if _, err = runtime.runRemoteStream(t.Context(), box.Connection{Destination: "work"}, "fixed operation", nil, func(io.Reader) error { return want }); !errors.Is(err, want) {
+		t.Fatalf("consumer error = %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+	defer cancel()
+	runtime = New(writeExecutable(t, "#!/bin/sh\nexec sleep 30\n"), nil)
+	if _, err = runtime.runRemoteStream(ctx, box.Connection{Destination: "work"}, "fixed operation", nil, func(reader io.Reader) error {
+		_, copyErr := io.Copy(io.Discard, reader)
+		return copyErr
+	}); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("stream cancellation error = %v", err)
 	}
 }

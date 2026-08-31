@@ -35,6 +35,8 @@ type executionAdapter interface {
 	observePushDestination(context.Context, string) (*repository.CheckoutState, error)
 	preflightPushDestination(context.Context, string, repository.CheckoutState, bool) (workspacetransfer.PreflightResult, error)
 	applyPush(context.Context, workspacetransfer.ApplyRequest, io.Reader) (workspacetransfer.ApplyResult, error)
+	inspectPullSource(context.Context, workspacetransfer.PullInspectRequest) (workspacetransfer.PullInspection, error)
+	capturePullSource(context.Context, workspacetransfer.PullCaptureRequest) (workspacetransfer.PullCapture, error)
 }
 
 type targetState struct {
@@ -221,6 +223,22 @@ func (t Target) ApplyPush(ctx context.Context, request workspacetransfer.ApplyRe
 		return workspacetransfer.ApplyResult{}, err
 	}
 	result, err := t.state.run.applyPush(ctx, request, payload)
+	return result, normalizeError(err)
+}
+
+func (t Target) InspectPullSource(ctx context.Context, request workspacetransfer.PullInspectRequest) (workspacetransfer.PullInspection, error) {
+	if err := t.valid(); err != nil {
+		return workspacetransfer.PullInspection{}, err
+	}
+	result, err := t.state.run.inspectPullSource(ctx, request)
+	return result, normalizeError(err)
+}
+
+func (t Target) CapturePullSource(ctx context.Context, request workspacetransfer.PullCaptureRequest) (workspacetransfer.PullCapture, error) {
+	if err := t.valid(); err != nil {
+		return workspacetransfer.PullCapture{}, err
+	}
+	result, err := t.state.run.capturePullSource(ctx, request)
 	return result, normalizeError(err)
 }
 

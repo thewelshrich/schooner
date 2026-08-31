@@ -3,6 +3,7 @@ package runtime
 import (
 	"encoding/json"
 
+	"github.com/thewelshrich/schooner/internal/repository"
 	"github.com/thewelshrich/schooner/internal/source"
 )
 
@@ -47,6 +48,8 @@ func boundedOperationContracts() []operationDescriptor {
 		WorktreeRemoveOperation(),
 		WorkspacePushInspectOperation(),
 		WorkspacePushApplyOperation(),
+		WorkspacePullInspectOperation(),
+		WorkspacePullCaptureOperation(),
 	}
 }
 
@@ -123,6 +126,8 @@ func (request SourceIdentityRemoveRequest) operationIdentity() string   { return
 func (request SourceRepositoryVerifyRequest) operationIdentity() string { return request.BoxIdentity }
 func (request WorkspacePushInspectRequest) operationIdentity() string   { return request.BoxIdentity }
 func (request WorkspacePushApplyRequest) operationIdentity() string     { return request.BoxIdentity }
+func (request WorkspacePullInspectRequest) operationIdentity() string   { return request.BoxIdentity }
+func (request WorkspacePullCaptureRequest) operationIdentity() string   { return request.BoxIdentity }
 
 func ConfigureOperation() Operation[ConfigureRequest, ConfigureResult] {
 	return newOperation(
@@ -205,6 +210,85 @@ func WorkspacePushApplyOperation() Operation[WorkspacePushApplyRequest, Workspac
 			return nil
 		},
 	)
+}
+
+func WorkspacePullInspectOperation() Operation[WorkspacePullInspectRequest, WorkspacePullInspection] {
+	return newOperation(
+		"host workspace pull-inspect", CapabilityWorkspacePullInspectV1, ValidateWorkspacePullInspectRequest,
+		func(request WorkspacePullInspectRequest, result WorkspacePullInspection) error {
+			if err := validateOperationEnvelope(result.SchemaVersion, result.ProtocolVersion, result.BoxIdentity, request.BoxIdentity, "workspace pull inspection returned an incompatible result"); err != nil {
+				return err
+			}
+			if err := validateWorkspacePullState(request.Worktree, result.State); err != nil {
+				return err
+			}
+			if request.ExpectedSourceRevalidationDigest != "" && result.State.RevalidationDigest != request.ExpectedSourceRevalidationDigest {
+				return invalidOperationResult("workspace pull source changed during manifest inspection")
+			}
+			if !request.IncludeManifest {
+				if len(result.Manifest) != 0 || result.NextManifestOffset != 0 || !result.ManifestComplete {
+					return invalidOperationResult("workspace pull summary returned manifest data")
+				}
+				return nil
+			}
+			seen := make(map[string]struct{}, len(result.Manifest))
+			for _, entry := range result.Manifest {
+				if !validWorkspaceManifestEntry(entry) {
+					return invalidOperationResult("workspace pull manifest is invalid")
+				}
+				if _, duplicate := seen[entry.Path]; duplicate {
+					return invalidOperationResult("workspace pull manifest contains duplicate paths")
+				}
+				seen[entry.Path] = struct{}{}
+			}
+			total := result.State.FileCount + result.State.AbsentCount
+			if result.NextManifestOffset != request.ManifestOffset+len(result.Manifest) || result.NextManifestOffset > total || result.ManifestComplete != (result.NextManifestOffset == total) {
+				return invalidOperationResult("workspace pull manifest continuation is invalid")
+			}
+			return nil
+		},
+	)
+}
+
+func WorkspacePullCaptureOperation() Operation[WorkspacePullCaptureRequest, WorkspacePullCaptureResult] {
+	return newOperation(
+		"host workspace pull-capture", CapabilityWorkspacePullCaptureV1, ValidateWorkspacePullCaptureRequest,
+		func(request WorkspacePullCaptureRequest, result WorkspacePullCaptureResult) error {
+			if err := validateOperationEnvelope(result.SchemaVersion, result.ProtocolVersion, result.BoxIdentity, request.BoxIdentity, "workspace pull capture returned an incompatible result"); err != nil {
+				return err
+			}
+			if result.OperationID != request.OperationID || result.PayloadSize <= 0 || result.PayloadSize > 1<<40 || !sha256Pattern.MatchString(result.PayloadSHA256) {
+				return invalidOperationResult("workspace pull capture returned an invalid payload declaration")
+			}
+			if err := validateWorkspacePullState(request.Worktree, result.State); err != nil {
+				return err
+			}
+			if result.State.RevalidationDigest != request.ExpectedSourceRevalidationDigest {
+				return invalidOperationResult("workspace pull source changed before capture")
+			}
+			return nil
+		},
+	)
+}
+
+func validateWorkspacePullState(worktree string, state repository.CheckoutState) error {
+	if state.Worktree != worktree || !sha1Pattern.MatchString(state.HEAD) || !sha256Pattern.MatchString(state.Digest) || !sha256Pattern.MatchString(state.RevalidationDigest) || state.FileCount < 0 || state.AbsentCount < 0 || state.IndexCount < 0 || len(state.Files) != 0 || len(state.IndexEntries) != 0 || len(state.AbsentPaths) != 0 {
+		return invalidOperationResult("workspace pull returned an invalid checkout summary")
+	}
+	if state.Detached == (state.Branch != "") {
+		return invalidOperationResult("workspace pull returned invalid checkout metadata")
+	}
+	return nil
+}
+
+func validWorkspaceManifestEntry(entry repository.CheckoutFile) bool {
+	if !validCheckoutPath(entry.Path) {
+		return false
+	}
+	if entry.Kind == "absent" {
+		return entry.Tracked && entry.Size == 0 && entry.SHA256 == "" && !entry.Executable
+	}
+	return (entry.Kind == "file" || entry.Kind == "symlink") && entry.Size >= 0 && sha256Pattern.MatchString(entry.SHA256) && (entry.Kind != "symlink" || !entry.Executable)
 }
 
 func RepositoryCloneOperation() Operation[CloneRequest, LifecycleResult] {

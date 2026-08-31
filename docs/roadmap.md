@@ -18,14 +18,14 @@ not a compatibility promise.
 - Push the complete current state of a local checkout to a safe remote
   Worktree and persist a lightweight, revalidated Local Link for later
   `push`, `start`, and `resume` routing.
+- Pull the complete current state of a remote Worktree into a safe local
+  checkout, preserving ignored local files and refreshing the same Local Link.
 - Start, list, resume, inspect, and stop tmux-backed sessions.
 - Produce human-readable and versioned JSON output.
 
 ## Before the first general release
 
 - Add Hetzner as the second built-in provider.
-- Add one-shot remote-to-local `pull` workspace transfer using the same
-  conflict and Local Link contracts as `push`.
 - Add optional coding-agent sessions.
 - Open private development previews through OpenSSH forwarding.
 - Complete recovery paths for interrupted setup and provider operations.
