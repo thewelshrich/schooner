@@ -98,6 +98,17 @@ func TestCheckoutCaptureAndApplyPreservesWorkspaceState(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer extracted.Release()
+	extractedLink := filepath.Join(extracted.Directory, "files", "link")
+	linkInfo, err := os.Lstat(extractedLink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !linkInfo.Mode().IsRegular() {
+		t.Fatalf("extracted symlink mode = %v, want inert regular staging file", linkInfo.Mode())
+	}
+	if linkTarget, readErr := os.ReadFile(extractedLink); readErr != nil || string(linkTarget) != "mixed.txt" {
+		t.Fatalf("extracted symlink target = %q, error = %v", linkTarget, readErr)
+	}
 	destination := filepath.Join(t.TempDir(), "destination")
 	applied, err := ApplyCheckout(t.Context(), destination, extracted)
 	if err != nil {
@@ -113,6 +124,9 @@ func TestCheckoutCaptureAndApplyPreservesWorkspaceState(t *testing.T) {
 	}
 	if _, err = os.Lstat(filepath.Join(destination, "ignored.env")); !os.IsNotExist(err) {
 		t.Fatalf("ignored file transferred: %v", err)
+	}
+	if linkTarget, readErr := os.Readlink(filepath.Join(destination, "link")); readErr != nil || linkTarget != "mixed.txt" {
+		t.Fatalf("applied symlink target = %q, error = %v", linkTarget, readErr)
 	}
 }
 

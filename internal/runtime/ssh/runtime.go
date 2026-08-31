@@ -509,7 +509,7 @@ func fixedShellCommand(body string, arguments ...string) string {
 }
 
 func scriptCommand(arguments []string) string {
-	parts := make([]string, 0, len(arguments)+1)
+	parts := make([]string, 0, len(arguments))
 	references := make([]string, 0, len(arguments))
 	for index := range arguments {
 		name := fmt.Sprintf("argument_%d", index+1)

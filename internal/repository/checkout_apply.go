@@ -399,6 +399,9 @@ func ExtractCheckoutPayload(payloadPath, stagingDirectory string) (ExtractedChec
 				return ExtractedCheckout{}, &Error{Code: CodeInvalidInput, Message: "workspace payload contains an unexpected entry"}
 			}
 			relative := strings.TrimPrefix(header.Name, "files/")
+			if validateErr := validateCheckoutPath(relative); validateErr != nil {
+				return ExtractedCheckout{}, &Error{Code: CodeInvalidInput, Message: "workspace payload file path is invalid", Cause: validateErr}
+			}
 			entry, ok := manifest[relative]
 			if !ok {
 				return ExtractedCheckout{}, &Error{Code: CodeInvalidInput, Message: "workspace payload file is absent from its manifest"}
@@ -426,7 +429,10 @@ func ExtractCheckoutPayload(payloadPath, stagingDirectory string) (ExtractedChec
 				if hex.EncodeToString(digest[:]) != entry.SHA256 {
 					return ExtractedCheckout{}, &Error{Code: CodeInvalidInput, Message: "workspace payload symlink digest does not match its manifest"}
 				}
-				if err = os.Symlink(header.Linkname, target); err != nil {
+				// Keep extracted payloads inert. The symlink target is stored in a
+				// regular staging file and materialized only when the checkout entry
+				// is promoted through a destination-scoped os.Root.
+				if err = copyPayloadRegular(strings.NewReader(header.Linkname), target, entry.Size, 0o600, entry.SHA256); err != nil {
 					return ExtractedCheckout{}, err
 				}
 			}
@@ -1906,11 +1912,12 @@ func stageCheckoutEntry(root *os.Root, sourceRoot string, entry CheckoutFile) (s
 		}
 	}()
 	if entry.Kind == "symlink" {
-		targetValue, err := os.Readlink(source)
+		targetBytes, err := os.ReadFile(source)
 		if err != nil {
 			_ = temporary.Close()
 			return "", err
 		}
+		targetValue := string(targetBytes)
 		if err = temporary.Close(); err != nil {
 			return "", err
 		}
