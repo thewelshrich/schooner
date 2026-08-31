@@ -954,7 +954,7 @@ func createCheckout(ctx context.Context, root, target string, payload ExtractedC
 	if err = validateImportedCheckoutObjects(ctx, stage, payload.State); err != nil {
 		return CheckoutState{}, err
 	}
-	if _, err = updateCheckoutHEAD(ctx, stage, payload.State); err != nil {
+	if _, err = initializeCheckoutHEAD(ctx, stage, payload.State); err != nil {
 		return CheckoutState{}, err
 	}
 	if payload.State.CloneSource != "" {
@@ -995,6 +995,24 @@ func createCheckout(ctx context.Context, root, target string, payload ExtractedC
 		return CheckoutState{}, &Error{Code: CodeConflict, Message: "destination Worktree appeared or changed while the workspace was being created", Cause: moveErr}
 	}
 	return ObserveCheckout(ctx, target)
+}
+
+// initializeCheckoutHEAD runs only inside createCheckout's private, randomly
+// named staging Repository. Some Git versions treat an unborn symbolic HEAD as
+// an existing ref when --no-deref is combined with a zero old OID, while
+// others treat its unresolved object value as absent. There is no concurrent
+// destination to protect in this unpublished staging directory, so detached
+// initialization deliberately omits that ambiguous old-value assertion.
+// Updates to live Worktrees continue to use updateCheckoutHEAD's compare-and-
+// swap behavior.
+func initializeCheckoutHEAD(ctx context.Context, target string, state CheckoutState) (*checkoutHEADUpdate, error) {
+	if !state.Detached {
+		return updateCheckoutHEAD(ctx, target, state)
+	}
+	if _, err := git(ctx, commandRunner{}, target, "update-ref", "--no-deref", "HEAD", state.HEAD); err != nil {
+		return nil, fmt.Errorf("initialize detached destination HEAD: %w", err)
+	}
+	return &checkoutHEADUpdate{target: target, newHEAD: state.HEAD, headChanged: true}, nil
 }
 
 func applyExistingCheckout(ctx context.Context, target string, payload ExtractedCheckout, expectedDigest string, operationCreated bool) (CheckoutState, error) {
