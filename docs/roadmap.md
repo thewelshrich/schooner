@@ -1,10 +1,9 @@
 # Roadmap
 
-Schooner is working toward a coherent first general release of its open-source,
-CLI-first development-machine workflow. This roadmap describes intended scope,
-not a compatibility promise.
+Schooner is an open-source, CLI-first development-machine workflow. This
+roadmap describes intended direction, not a compatibility promise.
 
-## Available in the technical preview
+## Available now
 
 - Adopt existing Ubuntu machines through OpenSSH.
 - Provision and destroy DigitalOcean Droplets.
@@ -23,7 +22,7 @@ not a compatibility promise.
 - Start, list, resume, inspect, and stop tmux-backed sessions.
 - Produce human-readable and versioned JSON output.
 
-## Before the first general release
+## Planned next
 
 - Add Hetzner as the second built-in provider.
 - Add optional coding-agent sessions.
@@ -32,7 +31,7 @@ not a compatibility promise.
 - Stabilize documented command behavior, JSON schemas, configuration, and
   local migrations.
 
-## Not planned for the initial release
+## Not planned
 
 - A hosted control plane, accounts, organizations, billing, or licensing.
 - A persistent remote daemon.

@@ -14,11 +14,6 @@ and tmux sessions into one resumable workflow.
 
 **No account. No hosted control plane. No loss of ordinary SSH access.**
 
-> [!IMPORTANT]
-> Schooner is currently a technical preview. The implemented workflows are
-> usable, but commands and stored data may change before the first stable
-> release.
-
 ## Why Schooner?
 
 - **Keep your machines.** Adopt a server you already use or provision a
@@ -345,7 +340,7 @@ escape hatch.
 
 ## Current scope
 
-The technical preview currently includes:
+Schooner currently includes:
 
 - adopting existing Ubuntu machines over OpenSSH;
 - provisioning and destroying DigitalOcean Droplets;
@@ -356,9 +351,9 @@ The technical preview currently includes:
 - persistent tmux session lifecycle; and
 - human-readable and versioned JSON output.
 
-The first general-release direction also includes Hetzner provisioning,
-one-shot remote-to-local `pull`, optional coding-agent sessions, private SSH
-previews, and recovery improvements. These are not all implemented yet.
+The roadmap also includes Hetzner provisioning, optional coding-agent sessions,
+private SSH previews, and recovery improvements. These are not all implemented
+yet.
 
 Supported remote systems are Ubuntu 24.04 and 26.04 on amd64 and arm64.
 
@@ -372,6 +367,8 @@ Supported remote systems are Ubuntu 24.04 and 26.04 on amd64 and arm64.
 - [Private GitHub source access](docs/source-access.md)
 - [Release process](docs/releasing.md)
 - [Architecture decisions](docs/adr/)
+- [Security policy](SECURITY.md)
+- [Support](SUPPORT.md)
 
 Run `schooner --help` or `schooner <command> --help` for the complete command
 reference.
@@ -379,7 +376,8 @@ reference.
 ## Contributing
 
 Schooner is early, and focused bug reports and design feedback are welcome.
-Please read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request.
+Please read [CONTRIBUTING.md](CONTRIBUTING.md) and the
+[Code of Conduct](CODE_OF_CONDUCT.md) before opening a pull request.
 
 ## License
 

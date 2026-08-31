@@ -1,5 +1,11 @@
 blank_issues_enabled: false
 contact_links:
+  - name: Security vulnerability
+    url: https://github.com/thewelshrich/schooner/security/advisories/new
+    about: Report a suspected vulnerability privately. Do not open a public issue.
+  - name: Support and usage guidance
+    url: https://github.com/thewelshrich/schooner/blob/main/SUPPORT.md
+    about: Check the support policy and diagnostic guidance before opening an issue.
   - name: Product direction
     url: https://github.com/thewelshrich/schooner/blob/main/docs/roadmap.md
     about: Check Schooner's initial scope and explicit exclusions before requesting a large feature.

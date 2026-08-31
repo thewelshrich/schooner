@@ -10,8 +10,11 @@ duplicated or out-of-direction work.
 - Use a feature request to describe a user problem before proposing a large
   implementation.
 - Do not open a public issue for a suspected security vulnerability. Follow
-  the security policy once it is published.
+  the private reporting process in [SECURITY.md](SECURITY.md).
 - Keep pull requests focused. Unrelated cleanup is easier to review separately.
+
+By participating in the project, you agree to follow the
+[Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## Local setup
 
