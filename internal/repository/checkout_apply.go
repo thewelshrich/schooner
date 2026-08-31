@@ -938,7 +938,7 @@ func createCheckout(ctx context.Context, root, target string, payload ExtractedC
 	}
 	stageRoot = canonicalStageRoot
 	defer os.RemoveAll(stage)
-	result, err := process.RunCapturedWithoutEnvironment(ctx, 64<<10, gitRepositoryEnvironment, nil, "git", "init", "--quiet", stage)
+	result, err := process.RunCapturedWithoutEnvironment(ctx, 64<<10, gitRepositoryEnvironment, nil, "git", "init", "--quiet", "--object-format=sha1", stage)
 	if err != nil {
 		return CheckoutState{}, gitTransferError("initialize destination Repository", result, err)
 	}

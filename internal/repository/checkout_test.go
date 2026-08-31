@@ -283,6 +283,22 @@ func TestCheckoutCaptureAndApplyDetachedHEAD(t *testing.T) {
 	}
 }
 
+func TestCheckoutCreateForcesSHA1ObjectFormat(t *testing.T) {
+	source := checkoutTestRepository(t)
+	capture, err := CaptureCheckout(t.Context(), source, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer capture.Release()
+	t.Setenv("GIT_DEFAULT_HASH", "sha256")
+	destination := filepath.Join(t.TempDir(), "destination")
+	applyCheckoutCapture(t, destination, capture)
+	format := strings.TrimSpace(string(runCheckoutGit(t, "-C", destination, "rev-parse", "--show-object-format")))
+	if format != "sha1" {
+		t.Fatalf("destination object format = %q, want sha1", format)
+	}
+}
+
 func TestCheckoutCreateRecordsCredentialFreeNetworkOriginBeforeVerification(t *testing.T) {
 	source := checkoutTestRepository(t)
 	runCheckoutGit(t, "-C", source, "remote", "add", "origin", "https://example.com/owner/repo.git")

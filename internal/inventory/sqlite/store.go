@@ -53,16 +53,18 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	return store, nil
 }
 
-// OpenReadOnly opens an existing inventory snapshot without creating state,
-// changing journal files, or applying migrations. It is used by dry-run
-// routing, where even local bookkeeping writes are forbidden.
+// OpenReadOnly opens an existing inventory without applying migrations or
+// allowing logical writes. It is used by dry-run routing, where local
+// bookkeeping must remain unchanged. The connection remains WAL-aware so
+// committed records not yet checkpointed into the main database are visible;
+// SQLite may still maintain its WAL shared-memory coordination file.
 func OpenReadOnly(ctx context.Context, path string) (*Store, bool, error) {
 	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
 		return nil, false, nil
 	} else if err != nil {
 		return nil, false, fmt.Errorf("inspect inventory: %w", err)
 	}
-	uri := (&url.URL{Scheme: "file", Path: path, RawQuery: "mode=ro&immutable=1"}).String()
+	uri := (&url.URL{Scheme: "file", Path: path, RawQuery: "mode=ro"}).String()
 	db, err := sql.Open("sqlite3", uri)
 	if err != nil {
 		return nil, false, fmt.Errorf("open read-only inventory: %w", err)

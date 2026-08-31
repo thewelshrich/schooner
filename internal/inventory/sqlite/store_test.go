@@ -113,12 +113,11 @@ func TestOpenReadOnlyReadsBoxesAndLocalLinksWithoutChangingInventory(t *testing.
 		t.Fatal(err)
 	}
 
-	before := inventoryTreeSnapshot(t, root)
+	before := inventoryPersistentTreeSnapshot(t, root)
 	readOnly, exists, err := OpenReadOnly(t.Context(), path)
 	if err != nil || !exists || readOnly == nil {
 		t.Fatalf("OpenReadOnly() = %+v, %t, %v", readOnly, exists, err)
 	}
-	assertInventoryTreeUnchanged(t, root, before)
 	var migrationCount int
 	if err = readOnly.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM schema_migrations`).Scan(&migrationCount); err != nil || migrationCount != 7 {
 		t.Fatalf("migration count = %d, %v; want 7, nil", migrationCount, err)
@@ -131,11 +130,54 @@ func TestOpenReadOnlyReadsBoxesAndLocalLinksWithoutChangingInventory(t *testing.
 	if err != nil || gotLink != localLink {
 		t.Fatalf("FindLocalLink() = %+v, %v; want %+v, nil", gotLink, err, localLink)
 	}
-	assertInventoryTreeUnchanged(t, root, before)
+	if _, err = readOnly.db.ExecContext(t.Context(), `DELETE FROM local_links`); err == nil {
+		t.Fatal("read-only inventory accepted a logical write")
+	}
 	if err = readOnly.Close(); err != nil {
 		t.Fatal(err)
 	}
-	assertInventoryTreeUnchanged(t, root, before)
+	assertInventoryPersistentTreeUnchanged(t, root, before)
+}
+
+func TestOpenReadOnlyReadsCommittedWALRecords(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "state.db")
+	store, err := Open(t.Context(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, err = store.db.ExecContext(t.Context(), `PRAGMA wal_checkpoint(TRUNCATE)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.db.ExecContext(t.Context(), `PRAGMA wal_autocheckpoint = 0`); err != nil {
+		t.Fatal(err)
+	}
+
+	record := box.Record{ID: "box-wal", Name: "wal", Acquisition: "adopted", SSHDestination: "wal-host", RemoteIdentity: "remote-wal", RuntimePath: "/home/alice/.local/bin/schooner", WorktreeRoot: "/home/alice/schooner"}
+	saveStoreBox(t, store, record)
+	now := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
+	want := link.LocalLink{LocalWorktree: "/local/wal", BoxID: record.ID, ExpectedBoxIdentity: record.RemoteIdentity, RemoteWorktree: "/home/alice/schooner/wal", RepositoryIdentity: "github.com/owner/wal", CreatedAt: now, UpdatedAt: now}
+	if err = store.SaveLocalLink(t.Context(), want); err != nil {
+		t.Fatal(err)
+	}
+
+	before := inventoryPersistentTreeSnapshot(t, root)
+	readOnly, exists, err := OpenReadOnly(t.Context(), path)
+	if err != nil || !exists || readOnly == nil {
+		t.Fatalf("OpenReadOnly() = %+v, %t, %v", readOnly, exists, err)
+	}
+	got, err := readOnly.FindLocalLink(t.Context(), want.LocalWorktree)
+	if err != nil || got != want {
+		t.Fatalf("FindLocalLink() = %+v, %v; want %+v, nil", got, err, want)
+	}
+	if _, err = readOnly.db.ExecContext(t.Context(), `DELETE FROM local_links`); err == nil {
+		t.Fatal("read-only inventory accepted a logical write")
+	}
+	if err = readOnly.Close(); err != nil {
+		t.Fatal(err)
+	}
+	assertInventoryPersistentTreeUnchanged(t, root, before)
 }
 
 func TestDefaultBoxSwitchingAndRemoval(t *testing.T) {
@@ -472,10 +514,31 @@ func inventoryTreeSnapshot(t *testing.T, root string) map[string]string {
 	return snapshot
 }
 
-func assertInventoryTreeUnchanged(t *testing.T, root string, before map[string]string) {
+func inventoryPersistentTreeSnapshot(t *testing.T, root string) map[string]string {
 	t.Helper()
-	after := inventoryTreeSnapshot(t, root)
+	snapshot := inventoryTreeSnapshot(t, root)
+	for name := range snapshot {
+		if strings.HasSuffix(name, "-shm") {
+			delete(snapshot, name)
+			continue
+		}
+		if strings.HasSuffix(name, "-wal") {
+			info, err := os.Stat(filepath.Join(root, name))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if info.Size() == 0 {
+				delete(snapshot, name)
+			}
+		}
+	}
+	return snapshot
+}
+
+func assertInventoryPersistentTreeUnchanged(t *testing.T, root string, before map[string]string) {
+	t.Helper()
+	after := inventoryPersistentTreeSnapshot(t, root)
 	if !maps.Equal(before, after) {
-		t.Fatalf("read-only inventory changed filesystem tree\nbefore: %+v\nafter:  %+v", before, after)
+		t.Fatalf("read-only inventory changed persistent filesystem tree\nbefore: %+v\nafter:  %+v", before, after)
 	}
 }
