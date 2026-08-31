@@ -11,6 +11,7 @@ import (
 	hostruntime "github.com/thewelshrich/schooner/internal/runtime"
 	"github.com/thewelshrich/schooner/internal/session"
 	"github.com/thewelshrich/schooner/internal/source"
+	"github.com/thewelshrich/schooner/internal/workspacetransfer"
 )
 
 type executionAdapter interface {
@@ -31,14 +32,25 @@ type executionAdapter interface {
 	ensureSourceIdentity(context.Context, source.EnsureIdentityRequest) (source.HostIdentity, error)
 	removeSourceIdentity(context.Context, source.RemoveIdentityRequest) (source.RemoveIdentityResult, error)
 	verifySourceRepository(context.Context, source.VerifyRequest) (source.VerifyResult, error)
+	observePushDestination(context.Context, string) (*repository.CheckoutState, error)
+	preflightPushDestination(context.Context, string, repository.CheckoutState, bool) (workspacetransfer.PreflightResult, error)
+	applyPush(context.Context, workspacetransfer.ApplyRequest, io.Reader) (workspacetransfer.ApplyResult, error)
 }
 
 type targetState struct {
+	boxID        string
 	boxName      string
 	boxIdentity  string
 	worktreeRoot string
 	direct       bool
 	run          executionAdapter
+}
+
+func (t Target) BoxID() string {
+	if t.state == nil {
+		return ""
+	}
+	return t.state.boxID
 }
 
 // Target is an immutable Box execution target with one adapter already bound.
@@ -72,6 +84,13 @@ func (t Target) BoxIdentity() string {
 		return ""
 	}
 	return t.state.boxIdentity
+}
+
+func (t Target) WorktreeRoot() string {
+	if t.state == nil {
+		return ""
+	}
+	return t.state.worktreeRoot
 }
 
 func (t Target) InspectSourceIdentity(ctx context.Context, provider string) (source.HostIdentity, error) {
@@ -179,6 +198,30 @@ func (t Target) InspectWorktree(ctx context.Context, selector string) (repositor
 		return repository.Inspection{}, err
 	}
 	return result, nil
+}
+
+func (t Target) ObservePushDestination(ctx context.Context, worktree string) (*repository.CheckoutState, error) {
+	if err := t.valid(); err != nil {
+		return nil, err
+	}
+	result, err := t.state.run.observePushDestination(ctx, worktree)
+	return result, normalizeError(err)
+}
+
+func (t Target) PreflightPushDestination(ctx context.Context, worktree string, source repository.CheckoutState, branch bool) (workspacetransfer.PreflightResult, error) {
+	if err := t.valid(); err != nil {
+		return workspacetransfer.PreflightResult{}, err
+	}
+	result, err := t.state.run.preflightPushDestination(ctx, worktree, source, branch)
+	return result, normalizeError(err)
+}
+
+func (t Target) ApplyPush(ctx context.Context, request workspacetransfer.ApplyRequest, payload io.Reader) (workspacetransfer.ApplyResult, error) {
+	if err := t.valid(); err != nil {
+		return workspacetransfer.ApplyResult{}, err
+	}
+	result, err := t.state.run.applyPush(ctx, request, payload)
+	return result, normalizeError(err)
 }
 
 func (t Target) CloneRepository(ctx context.Context, request repository.CloneRequest) (repository.MutationResult, error) {
@@ -297,7 +340,7 @@ func normalizeError(err error) error {
 		var domain *repository.Error
 		_ = errors.As(err, &domain)
 		switch code {
-		case repository.CodeNotFound, repository.CodeInvalidInput, repository.CodeConflict, repository.CodeAuthentication, repository.CodePermissionDenied, repository.CodeOperationInProgress, repository.CodeOutcomeUnknown:
+		case repository.CodeNotFound, repository.CodeInvalidInput, repository.CodeConflict, repository.CodeAuthentication, repository.CodePermissionDenied, repository.CodeOperationInProgress, repository.CodeOutcomeUnknown, repository.CodeUnsupported:
 			return &box.Error{Code: string(code), Message: err.Error(), Context: domain.Context, Cause: err}
 		}
 	}

@@ -48,10 +48,11 @@ Then adopt the machine and start persistent work:
 schooner doctor
 schooner box add work-api --ssh work-api
 
-# From a local Git checkout, start persistent work. If the repository is not
-# on the box yet, Schooner reviews and offers to clone its network origin.
+# From a local Git checkout, push its complete current state and remember the
+# exact remote Worktree, then start persistent work there.
 cd repository
-schooner start --box work-api
+schooner push --box work-api
+schooner start
 
 # Disconnect whenever you like, then return to the same tmux session.
 schooner resume --box work-api
@@ -60,6 +61,11 @@ schooner resume --box work-api
 `box add` verifies the remote system, installs or checks Git and tmux, and
 installs the matching Schooner runtime for that SSH user. It does not install a
 daemon or prevent you from continuing to use `ssh work-api` directly.
+
+`push` is an explicit one-shot workspace transfer, not Git push and not a
+background synchronizer. It moves the current HEAD, index, tracked changes,
+and untracked non-ignored files to a safe remote Worktree, then remembers that
+exact Box and Worktree for later `push`, `start`, and `resume` commands.
 
 ## Installation
 
@@ -275,20 +281,24 @@ schooner shell repository --box work-api
 Each worktree has at most one Schooner-managed persistent shell session.
 Unmanaged tmux sessions remain visible and independently usable.
 
-Without a selector, `start` matches the current local checkout to a remote
-repository by its network origin. It uses the remote primary worktree as-is;
-it does not switch that worktree to the local branch. When no match exists,
-Schooner can clone the origin's default branch after showing local dirty,
-unpushed, detached-HEAD, or missing-upstream warnings. Local files and
-unpushed commits are never copied by this flow.
+Without a selector, `start` first revalidates and uses the Local Link created
+or updated by a successful `push`. If no Local Link applies to the selected
+Box, it matches the current local checkout to a remote repository by its
+network origin. It uses the remote primary worktree as-is; it does not switch
+that worktree to the local branch. When no match exists, Schooner can clone the
+origin's default branch after showing local dirty, unpushed, detached-HEAD, or
+missing-upstream warnings. Local files and unpushed commits are never copied by
+this fallback flow.
 
-Without a selector, `resume` chooses the most recently active managed live
-session for the matching repository. If none matches, it suggests `schooner
-start` instead of opening work for an unrelated repository. Outside a local
-repository, it chooses the most recent managed live session on the selected
-box. Unmanaged or uncertain tmux sessions require an explicit choice. These
-decisions use live Git and tmux state; Schooner does not persist a
-local-to-remote repository link.
+Without a selector, `resume` first looks for a managed live session on the
+exact Worktree recorded by an applicable Local Link. Without one, it chooses
+the most recently active managed live session for the matching repository. If
+none matches, it suggests `schooner start` instead of opening unrelated work.
+Outside a local repository, it chooses the most recent managed live session on
+the selected Box. Unmanaged or uncertain tmux sessions require an explicit
+choice. Only a successful `push` persists Local Link routing; `start` and
+`resume` revalidate and consume that routing without transferring files or
+creating a link from an inferred origin match.
 
 ### Provision with DigitalOcean
 
@@ -341,13 +351,14 @@ The technical preview currently includes:
 - provisioning and destroying DigitalOcean Droplets;
 - remote runtime setup, status, repair, and updates;
 - remote repository and Git worktree lifecycle;
+- one-shot local-to-remote workspace push with lightweight Local Links;
 - explicit Box-owned access to private GitHub repositories;
 - persistent tmux session lifecycle; and
 - human-readable and versioned JSON output.
 
-The first general-release direction also includes Hetzner provisioning, local
-links and explicit synchronization, optional coding-agent sessions, private
-SSH previews, and recovery improvements. These are not all implemented yet.
+The first general-release direction also includes Hetzner provisioning,
+one-shot remote-to-local `pull`, optional coding-agent sessions, private SSH
+previews, and recovery improvements. These are not all implemented yet.
 
 Supported remote systems are Ubuntu 24.04 and 26.04 on amd64 and arm64.
 

@@ -31,7 +31,7 @@ Local machine                                Remote Box
           |                                             |
 +---------v---------------------------------------------v-----------+
 | Deep domain modules and use cases                                |
-| Box, Repository, Worktree, Local Link, Session, Agent, Sync Point   |
+| Box, Repository, Worktree, Local Link, Session, Agent            |
 +----+-----------------+------------------+-------------------------+
      |                 |                  |
 +----v-----+     +-----v-----+      +-----v-----------------+
@@ -81,8 +81,8 @@ internal/repository/          live Git Repository and Worktree inspection
 internal/source/              source identity, authorization, and reconciliation
 internal/source/github/       bounded GitHub device-flow and SSH-key API adapter
 internal/source/boxgit/       Box-owned key files and strict managed SSH adapter
-internal/link/                Local Links and Sync Points
-internal/sync/                explicit push, pull, and sync behavior
+internal/link/                lightweight local-to-remote Worktree routing
+internal/workspacetransfer/   implemented push and directional-transfer contracts
 internal/session/             tmux-backed Sessions and optional Agents
 internal/runtime/             typed remote-operation contracts
 internal/runtime/ssh/         system-OpenSSH transport adapter
@@ -201,7 +201,7 @@ its own state separate from visible Worktrees:
 
 The runtime resolves the remote home directory deliberately rather than
 assuming interactive-shell environment variables. Ordinary Repository, Worktree,
-Session, Agent, and synchronization operations do not require elevation.
+Session, Agent, and workspace-transfer operations do not require elevation.
 Explicit Box setup may use `sudo` after capability inspection and user consent.
 Schooner does not create a dedicated Unix user or install broad sudo rules.
 
@@ -279,30 +279,35 @@ fetch while the first supplied credential-free URL remains
 managed identity before one retry. JSON and non-interactive clone or start
 operations never authorize or register source access.
 
-## Local Links and synchronization
+## Local Links and workspace transfer
 
-A Local Link relates one local checkout to one remote Worktree. The link and
-its Sync Point are local inventory; deleting them does not delete or rewrite
-either checkout. The remote Worktree remains usable without the link.
+A Local Link relates one canonical local checkout, one stable Box record, and
+one exact canonical remote Worktree. It is lightweight local routing state;
+deleting it does not delete or rewrite either checkout. The remote Worktree
+remains usable without the link.
 
-Synchronization is explicit and attached to the invoking CLI:
+Workspace transfer is explicit and attached to the invoking CLI. The current
+slice implements `push`; `pull` is planned against the same directional
+contract:
 
 ```text
-push: local checkout    -> remote Worktree
+push: local checkout  -> remote Worktree
 pull: remote Worktree -> local checkout
-sync: both sides + Sync Point -> verified safe reconciliation or conflict
 ```
 
-Each operation is one-shot and Git-aware. It observes repository identity,
-refs, object state, checkout state, and the last Sync Point before mutation. It
-updates the Sync Point only after verifying the resulting shared state. A
-divergence that cannot be reconciled safely returns a conflict without silently
-choosing a side. Continuous watchers and implicit background synchronization
-are outside the initial release.
+Each directional operation observes current repository, ref, index, and
+working-tree state without consulting historical synchronization state. The
+source named by the verb is authoritative. Ahead or divergent destination
+commits, destination working-tree changes, ignored-path collisions, and
+concurrent destination changes return a conflict before application. No
+automatic merge or force mode exists.
 
-The detailed transport and treatment of staged, unstaged, untracked, and
-ignored files belong to the synchronization module's design. They must preserve
-the directional meanings and conflict invariant above.
+Git objects and portable stage-zero index entries travel with a deterministic
+archive of tracked and untracked non-ignored files. Indexed paths absent from
+the working tree are represented explicitly. Fixed typed control operations
+and fixed streaming commands run through system OpenSSH. Ignored files remain
+destination-local. Continuous watchers, implicit background transfer, and
+bidirectional reconciliation are outside the product.
 
 ## Commands and interaction
 
@@ -388,7 +393,7 @@ and `host_key_changed`.
 
 SQLite stores Box inventory and its single optional default, Credential Profile
 and Source Account references, Box Source Identity fingerprints and GitHub key
-correlation metadata, Local Links, Sync Points, cached observations, schema
+correlation metadata, Local Links, cached observations, schema
 version, and operation recovery metadata.
 It does not become authority for live remote or provider state.
 
@@ -471,5 +476,5 @@ The repository enforces:
 - integration tests using the actual `ssh` process adapter against controlled
   fixtures before cloud tests;
 - narrowly scoped live-provider tests that are opt-in and resource-cleaning;
-- terminology checks that keep Repository, Worktree, Local Link, Session, Agent,
-  and Sync Point aligned with [`domain.md`](domain.md).
+- terminology checks that keep Repository, Worktree, Local Link, Session, and
+  Agent aligned with [`domain.md`](domain.md).

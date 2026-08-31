@@ -3,6 +3,7 @@ package boxtarget
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"github.com/thewelshrich/schooner/internal/runtime/ssh"
 	"github.com/thewelshrich/schooner/internal/session"
 	"github.com/thewelshrich/schooner/internal/source"
+	"github.com/thewelshrich/schooner/internal/workspacetransfer"
 )
 
 const testIdentity = "11111111-1111-4111-8111-111111111111"
@@ -60,6 +62,88 @@ func TestResolverExplicitBoxBindsSSHAndClosesInventory(t *testing.T) {
 	adapter, ok := target.state.run.(sshAdapter)
 	if !ok || target.state.direct || adapter.connection.Destination != "work-host" || !adapter.connection.BatchMode || adapter.interactiveBatchMode || !inventory.closed {
 		t.Fatalf("target = %+v, adapter = %+v, closed = %t", target.state, adapter, inventory.closed)
+	}
+}
+
+func TestResolverLinkedBoxPrecedesAvailableDirectBox(t *testing.T) {
+	home := t.TempDir()
+	writeIdentity(t, home, testIdentity)
+	linkedIdentity := "22222222-2222-4222-8222-222222222222"
+	record := box.Record{ID: "box-linked", Name: "linked", SSHDestination: "linked-host", RemoteIdentity: linkedIdentity, RuntimePath: "/home/alice/.local/bin/schooner", WorktreeRoot: "/home/alice/schooner"}
+	inventory := &memoryInventory{records: []box.Record{record}}
+	resolver := NewResolver(Options{
+		Direct:                func() *host.Runtime { return host.NewAtHome(hostruntime.BuildInfo{}, home) },
+		Remote:                ssh.NewHost("ssh", nil, "dev", nil),
+		OpenInventory:         func(context.Context) (Inventory, error) { return inventory, nil },
+		OpenExistingInventory: func(context.Context) (Inventory, bool, error) { return nil, false, nil },
+		ReadHostConfig:        func() (config.Host, error) { return config.Host{}, errors.New("direct resolution must not run") },
+	})
+	target, err := resolver.Resolve(t.Context(), ResolveRequest{LinkedBoxID: record.ID, NonInteractive: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter, ok := target.state.run.(sshAdapter)
+	if !ok || target.state.direct || target.BoxID() != record.ID || target.BoxIdentity() != linkedIdentity || adapter.connection.Destination != "linked-host" {
+		t.Fatalf("target = %+v, adapter = %+v", target.state, adapter)
+	}
+}
+
+func TestResolverLinkedBoxMatchingDirectHostAvoidsSelfSSH(t *testing.T) {
+	home := t.TempDir()
+	writeIdentity(t, home, testIdentity)
+	root := filepath.Join(home, "worktrees")
+	record := box.Record{ID: "box-local", Name: "local", SSHDestination: "self-host", RemoteIdentity: testIdentity, RuntimePath: "/home/alice/.local/bin/schooner", WorktreeRoot: root}
+	inventory := &memoryInventory{records: []box.Record{record}}
+	writableOpenCalls := 0
+	resolver := NewResolver(Options{
+		Direct: func() *host.Runtime { return host.NewAtHome(hostruntime.BuildInfo{}, home) },
+		Remote: ssh.NewHost("ssh", nil, "dev", nil),
+		OpenInventory: func(context.Context) (Inventory, error) {
+			writableOpenCalls++
+			return nil, errors.New("linked direct Box must not resolve through SSH")
+		},
+		OpenExistingInventory: func(context.Context) (Inventory, bool, error) { return inventory, true, nil },
+		ReadHostConfig:        func() (config.Host, error) { return config.Host{WorktreeRoot: root}, nil },
+	})
+	target, err := resolver.Resolve(t.Context(), ResolveRequest{LinkedBoxID: record.ID, NonInteractive: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, direct := target.state.run.(directAdapter)
+	if !direct || !target.state.direct || target.BoxID() != record.ID || target.BoxIdentity() != testIdentity || writableOpenCalls != 0 || !inventory.closed {
+		t.Fatalf("target = %+v, direct adapter = %t, writable opens = %d, inventory closed = %t", target.state, direct, writableOpenCalls, inventory.closed)
+	}
+}
+
+func TestResolverReadOnlyUsesReadOnlyInventoryOnly(t *testing.T) {
+	record := box.Record{ID: "box-work", Name: "work", SSHDestination: "work-host", RemoteIdentity: testIdentity, RuntimePath: "/home/alice/.local/bin/schooner", WorktreeRoot: "/home/alice/schooner"}
+	inventory := &memoryInventory{records: []box.Record{record}}
+	writableOpenCalls := 0
+	existingOpenCalls := 0
+	readOnlyOpenCalls := 0
+	resolver := NewResolver(Options{
+		Direct: func() *host.Runtime { return nil },
+		Remote: ssh.NewHost("ssh", nil, "dev", nil),
+		OpenInventory: func(context.Context) (Inventory, error) {
+			writableOpenCalls++
+			return nil, errors.New("read-only resolution must not open writable inventory")
+		},
+		OpenExistingInventory: func(context.Context) (Inventory, bool, error) {
+			existingOpenCalls++
+			return nil, false, errors.New("read-only resolution must not open existing inventory as writable")
+		},
+		OpenReadOnlyInventory: func(context.Context) (Inventory, bool, error) {
+			readOnlyOpenCalls++
+			return inventory, true, nil
+		},
+	})
+	target, err := resolver.Resolve(t.Context(), ResolveRequest{ExplicitBox: record.Name, NonInteractive: true, ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter, remote := target.state.run.(sshAdapter)
+	if !remote || target.state.direct || adapter.connection.Destination != record.SSHDestination || writableOpenCalls != 0 || existingOpenCalls != 0 || readOnlyOpenCalls != 1 || !inventory.closed {
+		t.Fatalf("target = %+v, adapter = %+v, opens = writable:%d existing:%d read-only:%d, closed = %t", target.state, adapter, writableOpenCalls, existingOpenCalls, readOnlyOpenCalls, inventory.closed)
 	}
 }
 
@@ -208,4 +292,13 @@ func (*fakeExecutionAdapter) removeSourceIdentity(context.Context, source.Remove
 }
 func (*fakeExecutionAdapter) verifySourceRepository(context.Context, source.VerifyRequest) (source.VerifyResult, error) {
 	return source.VerifyResult{}, nil
+}
+func (*fakeExecutionAdapter) observePushDestination(context.Context, string) (*repository.CheckoutState, error) {
+	return nil, nil
+}
+func (*fakeExecutionAdapter) preflightPushDestination(context.Context, string, repository.CheckoutState, bool) (workspacetransfer.PreflightResult, error) {
+	return workspacetransfer.PreflightResult{}, nil
+}
+func (*fakeExecutionAdapter) applyPush(context.Context, workspacetransfer.ApplyRequest, io.Reader) (workspacetransfer.ApplyResult, error) {
+	return workspacetransfer.ApplyResult{}, nil
 }

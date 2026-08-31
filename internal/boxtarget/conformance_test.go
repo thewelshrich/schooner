@@ -18,9 +18,127 @@ import (
 	"github.com/thewelshrich/schooner/internal/runtime/host"
 	"github.com/thewelshrich/schooner/internal/runtime/ssh"
 	"github.com/thewelshrich/schooner/internal/source"
+	"github.com/thewelshrich/schooner/internal/workspacetransfer"
 )
 
 const conformanceSourceKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4f"
+
+func TestDirectAdapterWorkspacePushRoundTrip(t *testing.T) {
+	target := directConformanceTarget(t)
+	sourcePath := filepath.Join(t.TempDir(), "source")
+	if output, err := exec.Command("git", "init", sourcePath).CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, output)
+	}
+	for _, arguments := range [][]string{{"-C", sourcePath, "config", "user.name", "Test"}, {"-C", sourcePath, "config", "user.email", "test@example.com"}} {
+		if output, err := exec.Command("git", arguments...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", arguments, err, output)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(sourcePath, "file.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, arguments := range [][]string{{"-C", sourcePath, "add", "file.txt"}, {"-C", sourcePath, "commit", "-m", "base"}} {
+		if output, err := exec.Command("git", arguments...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", arguments, err, output)
+		}
+	}
+	canonical, err := filepath.EvalSymlinks(sourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(target.WorktreeRoot(), "pushed")
+	result, err := workspacetransfer.Push(t.Context(), workspacetransfer.PushRequest{LocalWorktree: canonical, RemoteWorktree: destination, Staging: t.TempDir(), Remote: target})
+	if err != nil || result.Action != workspacetransfer.ActionPushed {
+		t.Fatalf("push = %+v, %v", result, err)
+	}
+	observed, err := repository.ObserveCheckout(t.Context(), destination)
+	if err != nil || observed.Digest != result.Source.Digest {
+		t.Fatalf("destination = %+v, %v", observed, err)
+	}
+	if err = os.WriteFile(filepath.Join(canonical, "file.txt"), []byte("updated\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	result, err = workspacetransfer.Push(t.Context(), workspacetransfer.PushRequest{LocalWorktree: canonical, RemoteWorktree: destination, Staging: t.TempDir(), Remote: target})
+	if err != nil || result.Action != workspacetransfer.ActionPushed || result.FilesChanged != 1 {
+		t.Fatalf("subsequent push = %+v, %v", result, err)
+	}
+	result, err = workspacetransfer.Push(t.Context(), workspacetransfer.PushRequest{LocalWorktree: canonical, RemoteWorktree: destination, Staging: t.TempDir(), Remote: target})
+	if err != nil || result.Action != workspacetransfer.ActionNoChange {
+		t.Fatalf("no-op push = %+v, %v", result, err)
+	}
+}
+
+func TestDirectAdapterOperationCreatedCloneCanOverlayBehindSource(t *testing.T) {
+	target := directConformanceTarget(t)
+	sourcePath := filepath.Join(t.TempDir(), "source")
+	if output, err := exec.Command("git", "init", sourcePath).CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, output)
+	}
+	for _, arguments := range [][]string{{"-C", sourcePath, "config", "user.name", "Test"}, {"-C", sourcePath, "config", "user.email", "test@example.com"}} {
+		if output, err := exec.Command("git", arguments...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", arguments, err, output)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(sourcePath, "file.txt"), []byte("local base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, arguments := range [][]string{{"-C", sourcePath, "add", "file.txt"}, {"-C", sourcePath, "commit", "-m", "local base"}} {
+		if output, err := exec.Command("git", arguments...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", arguments, err, output)
+		}
+	}
+	sourcePath, err := filepath.EvalSymlinks(sourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(target.WorktreeRoot(), "operation-created")
+	if output, err := exec.Command("git", "clone", sourcePath, destination).CombinedOutput(); err != nil {
+		t.Fatalf("git clone: %v\n%s", err, output)
+	}
+	for _, arguments := range [][]string{{"-C", destination, "config", "user.name", "Test"}, {"-C", destination, "config", "user.email", "test@example.com"}} {
+		if output, err := exec.Command("git", arguments...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", arguments, err, output)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(destination, "published.txt"), []byte("newer clone seed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, arguments := range [][]string{{"-C", destination, "add", "published.txt"}, {"-C", destination, "commit", "-m", "newer clone seed"}} {
+		if output, err := exec.Command("git", arguments...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", arguments, err, output)
+		}
+	}
+	seed, err := repository.ObserveCheckout(t.Context(), destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := workspacetransfer.Push(t.Context(), workspacetransfer.PushRequest{
+		LocalWorktree: sourcePath, RemoteWorktree: destination, Staging: t.TempDir(), Remote: target, CreatedDestination: &seed,
+	})
+	if err != nil || result.Action != workspacetransfer.ActionPushed || !result.Created {
+		t.Fatalf("operation-created clone push = %+v, %v", result, err)
+	}
+	observed, err := repository.ObserveCheckout(t.Context(), destination)
+	if err != nil || observed.Digest != result.Source.Digest {
+		t.Fatalf("destination = %+v, %v", observed, err)
+	}
+}
+
+func TestDirectAndSSHAdaptersConformForUnsupportedCheckout(t *testing.T) {
+	direct := directConformanceTarget(t)
+	remote := sshConformanceTarget(t)
+	for _, harness := range []struct {
+		name   string
+		target Target
+	}{{name: "direct", target: direct}, {name: "ssh", target: remote}} {
+		t.Run(harness.name, func(t *testing.T) {
+			_, err := harness.target.ObservePushDestination(t.Context(), filepath.Join(harness.target.WorktreeRoot(), "repo"))
+			if code := box.ErrorCode(err); code != string(repository.CodeUnsupported) {
+				t.Fatalf("error = %v, code = %q", err, code)
+			}
+		})
+	}
+}
 
 func TestDirectAndSSHAdaptersConformForWorktreeObservation(t *testing.T) {
 	direct := directConformanceTarget(t)
@@ -137,8 +255,9 @@ func TestDirectAndSSHAdaptersConformForRepositoryCloneV2(t *testing.T) {
 		target Target
 	}{{name: "direct", target: direct}, {name: "ssh", target: remote}} {
 		t.Run(harness.name, func(t *testing.T) {
-			result, err := harness.target.CloneRepository(t.Context(), repository.CloneRequest{Source: supplied})
-			if err != nil || result.Action != "clone" || result.Path != filepath.Join(harness.target.state.worktreeRoot, "clone") {
+			destination := filepath.Join(harness.target.state.worktreeRoot, "chosen-destination")
+			result, err := harness.target.CloneRepository(t.Context(), repository.CloneRequest{Source: supplied, Destination: destination})
+			if err != nil || result.Action != "clone" || result.Path != destination {
 				t.Fatalf("clone = %+v, error = %v", result, err)
 			}
 			if harness.name == "direct" {
@@ -192,30 +311,33 @@ func sshConformanceTarget(t *testing.T) Target {
 	}
 	repositoryValue := fmt.Sprintf(`{"common_directory":%q,"primary":{"path":%q,"relative_path":"repo","git_directory":%q,"kind":"primary","branch":"main","detached":false,"status":{"staged":0,"unstaged":0,"untracked":0,"conflicted":0}},"linked":[]}`, root+"/repo/.git", root+"/repo", root+"/repo/.git")
 	worktreeValue := fmt.Sprintf(`{"path":%q,"relative_path":"repo","git_directory":%q,"kind":"primary","branch":"main","detached":false,"status":{"staged":0,"unstaged":0,"untracked":0,"conflicted":0}}`, root+"/repo", root+"/repo/.git")
-	hello := fmt.Sprintf(`{"schema_version":"1","protocol_version":"1","schooner_version":"dev","commit":"test","box_identity":%q,"os":"linux","architecture":"amd64","capabilities":["repository.clone.v2","session.list.v1","source.identity.ensure.v1","source.identity.inspect.v1","source.identity.remove.v1","source.repository.verify.v1","worktree.inspect.v1","worktree.list.v1"]}`, testIdentity)
+	hello := fmt.Sprintf(`{"schema_version":"1","protocol_version":"1","schooner_version":"dev","commit":"test","box_identity":%q,"os":"linux","architecture":"amd64","capabilities":["repository.clone.v2","session.list.v1","source.identity.ensure.v1","source.identity.inspect.v1","source.identity.remove.v1","source.repository.verify.v1","workspace.push.inspect.v1","worktree.inspect.v1","worktree.list.v1"]}`, testIdentity)
 	catalog := fmt.Sprintf(`{"schema_version":"1","protocol_version":"1","box_identity":%q,"worktree_root":%q,"repositories":[%s],"warnings":[]}`, testIdentity, root, repositoryValue)
 	inspection := fmt.Sprintf(`{"schema_version":"1","protocol_version":"1","box_identity":%q,"worktree_root":%q,"repository":%s,"worktree":%s,"warnings":[]}`, testIdentity, root, repositoryValue, worktreeValue)
 	invalid := fmt.Sprintf(`{"schema_version":"1","protocol_version":"1","box_identity":%q,"error":{"code":"invalid_input","message":"worktree selector is invalid"}}`, testIdentity)
 	sessions := fmt.Sprintf(`{"schema_version":"1","protocol_version":"1","box_identity":%q,"worktree_root":%q,"sessions":[]}`, testIdentity, root)
-	cloneResult := fmt.Sprintf(`{"schema_version":"1","protocol_version":"1","box_identity":%q,"action":"clone","recovered":false,"worktree_root":%q,"path":%q}`, testIdentity, root, root+"/clone")
+	cloneDestination := root + "/chosen-destination"
+	cloneResult := fmt.Sprintf(`{"schema_version":"1","protocol_version":"1","box_identity":%q,"action":"clone","recovered":false,"worktree_root":%q,"path":%q}`, testIdentity, root, cloneDestination)
 	sourcePresent := fmt.Sprintf(`{"schema_version":"1","protocol_version":"1","box_identity":%q,"provider":"github","exists":true,"public_key":%q,"fingerprint":%q,"trust_configured":true,"host_fingerprints":[%q]}`, testIdentity, conformanceSourceKey, sourceFingerprint, sourceFingerprint)
 	sourceAbsent := fmt.Sprintf(`{"schema_version":"1","protocol_version":"1","box_identity":%q,"provider":"github","exists":false,"trust_configured":false}`, testIdentity)
 	sourceRemoved := fmt.Sprintf(`{"schema_version":"1","protocol_version":"1","box_identity":%q,"provider":"github","removed":true}`, testIdentity)
 	sourceVerified := fmt.Sprintf(`{"schema_version":"1","protocol_version":"1","box_identity":%q,"provider":"github","authenticated":true}`, testIdentity)
+	checkoutUnsupported := fmt.Sprintf(`{"schema_version":"1","protocol_version":"1","box_identity":%q,"error":{"code":"capability_unavailable","message":"workspace transfer does not support this checkout"}}`, testIdentity)
 	script := fmt.Sprintf(`#!/bin/sh
 case " $* " in
   *"host hello"*) printf '%%s\n' '%s' ;;
+  *"host workspace push-inspect"*) cat >/dev/null; printf '%%s\n' '%s' ;;
   *"host worktree list"*) cat >/dev/null; printf '%%s\n' '%s' ;;
   *"host worktree inspect"*) payload=$(cat); case "$payload" in *"../outside"*) printf '%%s\n' '%s' ;; *) printf '%%s\n' '%s' ;; esac ;;
   *"host session list"*) cat >/dev/null; printf '%%s\n' '%s' ;;
-  *"host repository clone-v2"*) cat >/dev/null; printf '%%s\n' '%s' ;;
+  *"host repository clone-v2"*) payload=$(cat); case "$payload" in *'"destination":"%s"'*) printf '%%s\n' '%s' ;; *) exit 65 ;; esac ;;
   *"host source identity ensure"*) cat >/dev/null; : > '%s'; printf '%%s\n' '%s' ;;
   *"host source identity inspect"*) cat >/dev/null; if test -f '%s'; then printf '%%s\n' '%s'; else printf '%%s\n' '%s'; fi ;;
   *"host source identity remove"*) cat >/dev/null; rm -f '%s'; printf '%%s\n' '%s' ;;
   *"host source repository verify"*) cat >/dev/null; printf '%%s\n' '%s' ;;
   *) exit 64 ;;
 esac
-`, hello, catalog, invalid, inspection, sessions, cloneResult, sourceState, sourcePresent, sourceState, sourcePresent, sourceAbsent, sourceState, sourceRemoved, sourceVerified)
+`, hello, checkoutUnsupported, catalog, invalid, inspection, sessions, cloneDestination, cloneResult, sourceState, sourcePresent, sourceState, sourcePresent, sourceAbsent, sourceState, sourceRemoved, sourceVerified)
 	path := filepath.Join(t.TempDir(), "ssh")
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatal(err)

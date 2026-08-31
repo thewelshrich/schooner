@@ -427,7 +427,7 @@ func TestGitDisablesOptionalLocksAndFSMonitor(t *testing.T) {
 	if _, err := git(t.Context(), commands, "/root/repo", "status", "--porcelain=v2"); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"--no-optional-locks", "-c", "core.fsmonitor=false", "-C", "/root/repo", "status", "--porcelain=v2"}
+	want := []string{"--no-optional-locks", "--no-replace-objects", "-c", "core.fsmonitor=false", "-C", "/root/repo", "status", "--porcelain=v2"}
 	if strings.Join(commands.arguments, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("arguments = %q", commands.arguments)
 	}

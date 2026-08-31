@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"github.com/thewelshrich/schooner/internal/acquisition"
 	"github.com/thewelshrich/schooner/internal/box"
 	"github.com/thewelshrich/schooner/internal/credentials"
+	"github.com/thewelshrich/schooner/internal/link"
 	"github.com/thewelshrich/schooner/internal/provider"
 	"github.com/thewelshrich/schooner/internal/source"
 )
@@ -62,9 +64,78 @@ func TestStoreLifecycleAndMigrationHistory(t *testing.T) {
 	}
 	defer store.Close()
 	var count int
-	if err = store.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil || count != 7 {
+	if err = store.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil || count != 8 {
 		t.Fatalf("migration count = %d, err = %v", count, err)
 	}
+}
+
+func TestOpenReadOnlyMissingInventoryCreatesNothing(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "nested", "state.db")
+	store, exists, err := OpenReadOnly(t.Context(), path)
+	if err != nil || exists || store != nil {
+		t.Fatalf("OpenReadOnly() = %+v, %t, %v; want nil, false, nil", store, exists, err)
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("OpenReadOnly() created entries: %+v", entries)
+	}
+	if _, err = os.Stat(filepath.Dir(path)); !os.IsNotExist(err) {
+		t.Fatalf("missing inventory directory stat error = %v; want not exist", err)
+	}
+}
+
+func TestOpenReadOnlyReadsBoxesAndLocalLinksWithoutChangingInventory(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "state.db")
+	store, err := Open(t.Context(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := box.Record{ID: "box-1", Name: "work", Acquisition: "adopted", SSHDestination: "work-host", RemoteIdentity: "remote-1", RuntimePath: "/home/alice/.local/bin/schooner", WorktreeRoot: "/home/alice/schooner"}
+	saveStoreBox(t, store, record)
+	now := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
+	localLink := link.LocalLink{LocalWorktree: "/local/repo", BoxID: record.ID, ExpectedBoxIdentity: record.RemoteIdentity, RemoteWorktree: "/home/alice/schooner/repo", RepositoryIdentity: "github.com/owner/repo", CreatedAt: now, UpdatedAt: now}
+	if err = store.SaveLocalLink(t.Context(), localLink); err != nil {
+		t.Fatal(err)
+	}
+	result, err := store.db.ExecContext(t.Context(), `DELETE FROM schema_migrations WHERE version=8`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if affected, affectedErr := result.RowsAffected(); affectedErr != nil || affected != 1 {
+		t.Fatalf("removed migration rows = %d, %v; want 1, nil", affected, affectedErr)
+	}
+	if err = store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	before := inventoryTreeSnapshot(t, root)
+	readOnly, exists, err := OpenReadOnly(t.Context(), path)
+	if err != nil || !exists || readOnly == nil {
+		t.Fatalf("OpenReadOnly() = %+v, %t, %v", readOnly, exists, err)
+	}
+	assertInventoryTreeUnchanged(t, root, before)
+	var migrationCount int
+	if err = readOnly.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM schema_migrations`).Scan(&migrationCount); err != nil || migrationCount != 7 {
+		t.Fatalf("migration count = %d, %v; want 7, nil", migrationCount, err)
+	}
+	gotRecord, err := readOnly.FindByID(t.Context(), record.ID)
+	if err != nil || gotRecord.Name != record.Name || gotRecord.RemoteIdentity != record.RemoteIdentity {
+		t.Fatalf("FindByID() = %+v, %v", gotRecord, err)
+	}
+	gotLink, err := readOnly.FindLocalLink(t.Context(), localLink.LocalWorktree)
+	if err != nil || gotLink != localLink {
+		t.Fatalf("FindLocalLink() = %+v, %v; want %+v, nil", gotLink, err, localLink)
+	}
+	assertInventoryTreeUnchanged(t, root, before)
+	if err = readOnly.Close(); err != nil {
+		t.Fatal(err)
+	}
+	assertInventoryTreeUnchanged(t, root, before)
 }
 
 func TestDefaultBoxSwitchingAndRemoval(t *testing.T) {
@@ -107,6 +178,43 @@ func TestDefaultBoxSwitchingAndRemoval(t *testing.T) {
 	alpha, _ = store.FindByName(t.Context(), "alpha")
 	if alpha.Default {
 		t.Fatalf("default was promoted after removal: %+v", alpha)
+	}
+}
+
+func TestLocalLinkPersistsStableBoxRoutingAcrossRenameAndRemoval(t *testing.T) {
+	store, err := Open(t.Context(), filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
+	saveStoreBox(t, store, box.Record{ID: "box-1", Name: "before-rename", Acquisition: "adopted", SSHDestination: "box-host", RemoteIdentity: "remote-1", WorktreeRoot: "/home/alice/schooner"})
+	value := link.LocalLink{LocalWorktree: "/local/repo", BoxID: "box-1", ExpectedBoxIdentity: "remote-1", RemoteWorktree: "/home/alice/schooner/repo", RepositoryIdentity: "github.com/owner/repo", CreatedAt: now, UpdatedAt: now}
+	if err = store.SaveLocalLink(t.Context(), value); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.db.ExecContext(t.Context(), `UPDATE boxes SET name='after-rename' WHERE id=?`, value.BoxID); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.FindLocalLink(t.Context(), value.LocalWorktree)
+	if err != nil || got != value {
+		t.Fatalf("link after Box rename = %+v, %v", got, err)
+	}
+	if _, err = store.Remove(t.Context(), "after-rename"); err != nil {
+		t.Fatal(err)
+	}
+	got, err = store.FindLocalLink(t.Context(), value.LocalWorktree)
+	if err != nil || got != value {
+		t.Fatalf("link after Box removal = %+v, %v", got, err)
+	}
+	value.RemoteWorktree = "/home/alice/schooner/repo-2"
+	value.UpdatedAt = now.Add(time.Hour)
+	if err = store.SaveLocalLink(t.Context(), value); err != nil {
+		t.Fatal(err)
+	}
+	got, err = store.FindLocalLink(t.Context(), value.LocalWorktree)
+	if err != nil || got != value {
+		t.Fatalf("updated link = %+v, %v", got, err)
 	}
 }
 
@@ -334,5 +442,40 @@ func saveStoreBox(t *testing.T, store *Store, record box.Record) {
 	observation := box.Observation{BoxID: record.ID, ObservedAt: now, Capabilities: box.Capabilities{OSID: "ubuntu", OSVersion: "24.04", Architecture: "amd64"}}
 	if err := store.CompleteAdd(t.Context(), op, record, observation); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func inventoryTreeSnapshot(t *testing.T, root string) map[string]string {
+	t.Helper()
+	snapshot := make(map[string]string)
+	if err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		relative, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			snapshot[relative] = "directory:" + info.Mode().String()
+			return nil
+		}
+		contents, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		snapshot[relative] = fmt.Sprintf("file:%s:%x", info.Mode(), sha256.Sum256(contents))
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return snapshot
+}
+
+func assertInventoryTreeUnchanged(t *testing.T, root string, before map[string]string) {
+	t.Helper()
+	after := inventoryTreeSnapshot(t, root)
+	if !maps.Equal(before, after) {
+		t.Fatalf("read-only inventory changed filesystem tree\nbefore: %+v\nafter:  %+v", before, after)
 	}
 }

@@ -2,12 +2,14 @@ package boxtarget
 
 import (
 	"context"
+	"io"
 
 	"github.com/thewelshrich/schooner/internal/repository"
 	hostruntime "github.com/thewelshrich/schooner/internal/runtime"
 	"github.com/thewelshrich/schooner/internal/runtime/host"
 	"github.com/thewelshrich/schooner/internal/session"
 	"github.com/thewelshrich/schooner/internal/source"
+	"github.com/thewelshrich/schooner/internal/workspacetransfer"
 )
 
 type directAdapter struct {
@@ -30,8 +32,32 @@ func (a directAdapter) inspectWorktree(ctx context.Context, selector string) (re
 	return result.Inspection, err
 }
 
+func (a directAdapter) observePushDestination(ctx context.Context, worktree string) (*repository.CheckoutState, error) {
+	result, err := a.runtime.InspectWorkspacePush(ctx, hostruntime.NewWorkspacePushInspectRequest(worktree, a.state.boxIdentity))
+	return result.State, err
+}
+
+func (a directAdapter) preflightPushDestination(ctx context.Context, worktree string, source repository.CheckoutState, branch bool) (workspacetransfer.PreflightResult, error) {
+	request := hostruntime.NewWorkspacePushInspectRequest(worktree, a.state.boxIdentity)
+	request.IncomingFiles = source.Files
+	request.IncomingBranch = source.Branch
+	request.IncomingDetached = source.Detached
+	request.IncomingStateDigest = source.Digest
+	request.PreflightBranch = branch
+	result, err := a.runtime.InspectWorkspacePush(ctx, request)
+	return workspacetransfer.PreflightResult{ExistingFiles: result.ExistingFiles, MatchingFiles: result.MatchingFiles}, err
+}
+
+func (a directAdapter) applyPush(ctx context.Context, request workspacetransfer.ApplyRequest, payload io.Reader) (workspacetransfer.ApplyResult, error) {
+	remote := hostruntime.NewWorkspacePushApplyRequest(request.OperationID, request.RemoteWorktree, request.ExpectedStateDigest, request.PayloadSHA256, request.PayloadSize, request.SourceState.Digest, a.state.boxIdentity)
+	remote.OperationCreatedDestination = request.OperationCreatedDestination
+	result, err := a.runtime.ApplyWorkspacePush(ctx, remote, payload)
+	return workspacetransfer.ApplyResult{State: result.State, BytesTransferred: result.BytesTransferred}, err
+}
+
 func (a directAdapter) cloneRepository(ctx context.Context, request repository.CloneRequest) (repository.MutationResult, error) {
 	remote := hostruntime.NewCloneRequest(request.Source, request.Branch, a.state.worktreeRoot, a.state.boxIdentity)
+	remote.Destination = request.Destination
 	remote.NonInteractive = a.nonInteractive
 	result, err := a.runtime.CloneRepositoryV2(ctx, remote)
 	return result.MutationResult, err

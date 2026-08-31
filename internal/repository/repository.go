@@ -55,6 +55,17 @@ var gitRepositoryEnvironment = []string{
 	"GIT_WORK_TREE",
 }
 
+var gitSafeEnvironment = []string{
+	"GIT_GRAFT_FILE=" + os.DevNull,
+	"GIT_NO_REPLACE_OBJECTS=1",
+	"GIT_NO_LAZY_FETCH=1",
+	"GIT_TERMINAL_PROMPT=0",
+	"GCM_INTERACTIVE=never",
+	"SSH_ASKPASS_REQUIRE=never",
+	"GIT_SSH_COMMAND=ssh -o BatchMode=yes",
+	"GIT_SSH_VARIANT=ssh",
+}
+
 var errNotWorktree = errors.New("not a live Git worktree")
 
 type WorktreeKind string
@@ -154,7 +165,7 @@ type runner interface {
 type commandRunner struct{}
 
 func (commandRunner) Run(ctx context.Context, name string, arguments ...string) ([]byte, error) {
-	return process.RunWithoutEnvironment(ctx, maxOutputBytes, gitRepositoryEnvironment, name, arguments...)
+	return process.RunWithoutEnvironmentAndExtra(ctx, maxOutputBytes, gitRepositoryEnvironment, gitSafeEnvironment, name, arguments...)
 }
 
 type observation struct {
@@ -698,8 +709,8 @@ func git(ctx context.Context, commands runner, worktree string, arguments ...str
 func gitWithTimeout(ctx context.Context, commands runner, worktree string, timeout time.Duration, arguments ...string) ([]byte, error) {
 	commandContext, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	fixed := make([]string, 0, len(arguments)+5)
-	fixed = append(fixed, "--no-optional-locks", "-c", "core.fsmonitor=false", "-C", worktree)
+	fixed := make([]string, 0, len(arguments)+6)
+	fixed = append(fixed, "--no-optional-locks", "--no-replace-objects", "-c", "core.fsmonitor=false", "-C", worktree)
 	fixed = append(fixed, arguments...)
 	output, err := commands.Run(commandContext, "git", fixed...)
 	if errors.Is(commandContext.Err(), context.DeadlineExceeded) && ctx.Err() == nil {

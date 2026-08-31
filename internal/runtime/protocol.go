@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/thewelshrich/schooner/internal/repository"
 	"github.com/thewelshrich/schooner/internal/source"
@@ -43,12 +44,16 @@ const (
 	CapabilitySessionLogsV1            = "session.logs.v1"
 	CapabilitySessionStopV1            = "session.stop.v1"
 	CapabilityWorktreeShellV1          = "worktree.shell.v1"
+	CapabilityWorkspacePushInspectV1   = "workspace.push.inspect.v1"
+	CapabilityWorkspacePushApplyV1     = "workspace.push.apply.v1"
 )
 
 var (
-	identityPattern   = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
-	capabilityPattern = regexp.MustCompile(`^[a-z][a-z0-9]*(?:\.[a-z0-9]+)*\.v[1-9][0-9]*$`)
-	platformPattern   = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
+	identityPattern    = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+	capabilityPattern  = regexp.MustCompile(`^[a-z][a-z0-9]*(?:\.[a-z0-9]+)*\.v[1-9][0-9]*$`)
+	platformPattern    = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
+	sha256Pattern      = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	operationIDPattern = regexp.MustCompile(`^[0-9a-f]{32}$`)
 )
 
 type Code string
@@ -132,6 +137,7 @@ type CloneRequest struct {
 	WorktreeRoot    string `json:"worktree_root"`
 	Source          string `json:"source"`
 	Branch          string `json:"branch,omitempty"`
+	Destination     string `json:"destination,omitempty"`
 	NonInteractive  bool   `json:"-"`
 }
 
@@ -144,6 +150,31 @@ type WorktreeMutationRequest struct {
 	Path            string `json:"path,omitempty"`
 	Branch          string `json:"branch,omitempty"`
 	NonInteractive  bool   `json:"-"`
+}
+
+type WorkspacePushInspectRequest struct {
+	SchemaVersion       string                    `json:"schema_version"`
+	ProtocolVersion     string                    `json:"protocol_version"`
+	BoxIdentity         string                    `json:"box_identity"`
+	Worktree            string                    `json:"worktree"`
+	IncomingFiles       []repository.CheckoutFile `json:"incoming_files,omitempty"`
+	IncomingBranch      string                    `json:"incoming_branch,omitempty"`
+	IncomingDetached    bool                      `json:"incoming_detached,omitempty"`
+	IncomingStateDigest string                    `json:"incoming_state_digest,omitempty"`
+	PreflightBranch     bool                      `json:"preflight_branch,omitempty"`
+}
+
+type WorkspacePushApplyRequest struct {
+	SchemaVersion               string `json:"schema_version"`
+	ProtocolVersion             string `json:"protocol_version"`
+	BoxIdentity                 string `json:"box_identity"`
+	OperationID                 string `json:"operation_id"`
+	Worktree                    string `json:"worktree"`
+	ExpectedStateDigest         string `json:"expected_state_digest,omitempty"`
+	PayloadSize                 int64  `json:"payload_size"`
+	PayloadSHA256               string `json:"payload_sha256"`
+	SourceStateDigest           string `json:"source_state_digest"`
+	OperationCreatedDestination bool   `json:"operation_created_destination,omitempty"`
 }
 
 type SourceIdentityRequest struct {
@@ -203,6 +234,24 @@ type LifecycleResult struct {
 	ProtocolVersion string `json:"protocol_version"`
 	BoxIdentity     string `json:"box_identity"`
 	repository.MutationResult
+}
+
+type WorkspacePushInspection struct {
+	SchemaVersion   string                    `json:"schema_version"`
+	ProtocolVersion string                    `json:"protocol_version"`
+	BoxIdentity     string                    `json:"box_identity"`
+	Present         bool                      `json:"present"`
+	State           *repository.CheckoutState `json:"state,omitempty"`
+	ExistingFiles   int                       `json:"existing_files,omitempty"`
+	MatchingFiles   int                       `json:"matching_files,omitempty"`
+}
+
+type WorkspacePushApplyResult struct {
+	SchemaVersion    string                   `json:"schema_version"`
+	ProtocolVersion  string                   `json:"protocol_version"`
+	BoxIdentity      string                   `json:"box_identity"`
+	State            repository.CheckoutState `json:"state"`
+	BytesTransferred int64                    `json:"bytes_transferred"`
 }
 
 type SourceIdentityResult struct {
@@ -295,6 +344,58 @@ func NewCloneRequest(source, branch, worktreeRoot, boxIdentity string) CloneRequ
 
 func NewWorktreeMutationRequest(repositoryPath, pathValue, branch, worktreeRoot, boxIdentity string) WorktreeMutationRequest {
 	return WorktreeMutationRequest{SchemaVersion: SchemaVersion, ProtocolVersion: ProtocolVersion, BoxIdentity: boxIdentity, WorktreeRoot: worktreeRoot, RepositoryPath: repositoryPath, Path: pathValue, Branch: branch}
+}
+
+func NewWorkspacePushInspectRequest(worktree, boxIdentity string) WorkspacePushInspectRequest {
+	return WorkspacePushInspectRequest{SchemaVersion: SchemaVersion, ProtocolVersion: ProtocolVersion, BoxIdentity: boxIdentity, Worktree: worktree}
+}
+
+func NewWorkspacePushApplyRequest(operationID, worktree, expectedDigest, payloadDigest string, payloadSize int64, sourceStateDigest, boxIdentity string) WorkspacePushApplyRequest {
+	return WorkspacePushApplyRequest{SchemaVersion: SchemaVersion, ProtocolVersion: ProtocolVersion, BoxIdentity: boxIdentity, OperationID: operationID, Worktree: worktree, ExpectedStateDigest: expectedDigest, PayloadSize: payloadSize, PayloadSHA256: payloadDigest, SourceStateDigest: sourceStateDigest}
+}
+
+func ValidateWorkspacePushInspectRequest(request WorkspacePushInspectRequest) error {
+	if request.SchemaVersion != SchemaVersion || request.ProtocolVersion != ProtocolVersion {
+		return &Error{Code: CodeUnsupportedProtocol, Message: "workspace push request is incompatible"}
+	}
+	if !identityPattern.MatchString(request.BoxIdentity) || !validPath(request.Worktree) {
+		return &Error{Code: CodeInvalidInput, Message: "workspace push request is invalid"}
+	}
+	if request.IncomingStateDigest == "" {
+		if len(request.IncomingFiles) != 0 || request.IncomingBranch != "" || request.IncomingDetached || request.PreflightBranch {
+			return &Error{Code: CodeInvalidInput, Message: "workspace push inspection cannot include preflight metadata"}
+		}
+		return nil
+	}
+	if !sha256Pattern.MatchString(request.IncomingStateDigest) || (!request.IncomingDetached && request.IncomingBranch == "") || (request.IncomingDetached && request.IncomingBranch != "") {
+		return &Error{Code: CodeInvalidInput, Message: "workspace push preflight checkout metadata is invalid"}
+	}
+	seen := make(map[string]struct{}, len(request.IncomingFiles))
+	for _, entry := range request.IncomingFiles {
+		_, duplicate := seen[entry.Path]
+		validEntry := entry.Kind == "absent" && entry.Tracked && entry.Size == 0 && entry.SHA256 == "" && !entry.Executable
+		if entry.Kind == "file" || entry.Kind == "symlink" {
+			validEntry = entry.Size >= 0 && sha256Pattern.MatchString(entry.SHA256) && (entry.Kind != "symlink" || !entry.Executable)
+		}
+		if !validCheckoutPath(entry.Path) || !validEntry || duplicate {
+			return &Error{Code: CodeInvalidInput, Message: "workspace push preflight manifest is invalid"}
+		}
+		seen[entry.Path] = struct{}{}
+	}
+	return nil
+}
+
+func ValidateWorkspacePushApplyRequest(request WorkspacePushApplyRequest) error {
+	if err := ValidateWorkspacePushInspectRequest(WorkspacePushInspectRequest{SchemaVersion: request.SchemaVersion, ProtocolVersion: request.ProtocolVersion, BoxIdentity: request.BoxIdentity, Worktree: request.Worktree}); err != nil {
+		return err
+	}
+	if !operationIDPattern.MatchString(request.OperationID) || request.PayloadSize <= 0 || request.PayloadSize > 1<<40 || !sha256Pattern.MatchString(request.PayloadSHA256) || (request.ExpectedStateDigest != "" && !sha256Pattern.MatchString(request.ExpectedStateDigest)) || !sha256Pattern.MatchString(request.SourceStateDigest) {
+		return &Error{Code: CodeInvalidInput, Message: "workspace push payload declaration is invalid"}
+	}
+	if request.OperationCreatedDestination && request.ExpectedStateDigest == "" {
+		return &Error{Code: CodeInvalidInput, Message: "operation-created workspace push requires an expected destination state"}
+	}
+	return nil
 }
 
 func NewSourceIdentityRequest(provider, boxIdentity string) SourceIdentityRequest {
@@ -428,6 +529,12 @@ func ValidateCloneRequest(request CloneRequest) error {
 	}
 	if !validPath(request.WorktreeRoot) || request.Source == "" || len(request.Source) > 4096 || hasControl(request.Source) || len(request.Branch) > 1024 || hasControl(request.Branch) {
 		return &Error{Code: CodeInvalidInput, Message: "clone request is invalid"}
+	}
+	if request.Destination != "" {
+		prefix := strings.TrimSuffix(request.WorktreeRoot, "/") + "/"
+		if !validPath(request.Destination) || request.Destination == request.WorktreeRoot || !strings.HasPrefix(request.Destination, prefix) {
+			return &Error{Code: CodeInvalidInput, Message: "clone destination is outside the Worktree Root"}
+		}
 	}
 	return nil
 }
@@ -597,6 +704,18 @@ func validateCapabilities(capabilities []string) error {
 
 func validPath(value string) bool {
 	return value != "" && len(value) <= 4096 && path.IsAbs(value) && path.Clean(value) == value && !hasControl(value)
+}
+
+func validCheckoutPath(value string) bool {
+	if value == "" || len(value) > 4096 || !utf8.ValidString(value) || strings.ContainsRune(value, '\\') || path.IsAbs(value) || path.Clean(value) != value || value == "." || value == ".." || strings.HasPrefix(value, "../") || hasControl(value) {
+		return false
+	}
+	for _, component := range strings.Split(value, "/") {
+		if strings.EqualFold(component, ".git") {
+			return false
+		}
+	}
+	return true
 }
 
 func validText(value string, maximum int) bool {

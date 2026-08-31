@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -20,6 +21,7 @@ import (
 	"github.com/thewelshrich/schooner/internal/acquisition"
 	"github.com/thewelshrich/schooner/internal/box"
 	"github.com/thewelshrich/schooner/internal/credentials"
+	"github.com/thewelshrich/schooner/internal/link"
 	"github.com/thewelshrich/schooner/internal/provider"
 	"github.com/thewelshrich/schooner/internal/source"
 )
@@ -28,8 +30,9 @@ import (
 var migrations embed.FS
 
 type Store struct {
-	db   *sql.DB
-	path string
+	db                  *sql.DB
+	path                string
+	localLinksAvailable bool
 }
 
 func Open(ctx context.Context, path string) (*Store, error) {
@@ -46,7 +49,37 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	store.localLinksAvailable = true
 	return store, nil
+}
+
+// OpenReadOnly opens an existing inventory snapshot without creating state,
+// changing journal files, or applying migrations. It is used by dry-run
+// routing, where even local bookkeeping writes are forbidden.
+func OpenReadOnly(ctx context.Context, path string) (*Store, bool, error) {
+	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+		return nil, false, nil
+	} else if err != nil {
+		return nil, false, fmt.Errorf("inspect inventory: %w", err)
+	}
+	uri := (&url.URL{Scheme: "file", Path: path, RawQuery: "mode=ro&immutable=1"}).String()
+	db, err := sql.Open("sqlite3", uri)
+	if err != nil {
+		return nil, false, fmt.Errorf("open read-only inventory: %w", err)
+	}
+	db.SetMaxOpenConns(1)
+	if err = db.PingContext(ctx); err != nil {
+		_ = db.Close()
+		return nil, false, fmt.Errorf("open read-only inventory: %w", err)
+	}
+	store := &Store{db: db, path: path}
+	var count int
+	if err = db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='local_links'`).Scan(&count); err != nil {
+		_ = db.Close()
+		return nil, false, fmt.Errorf("inspect read-only inventory schema: %w", err)
+	}
+	store.localLinksAvailable = count == 1
+	return store, true, nil
 }
 
 func (s *Store) Close() error { return s.db.Close() }
@@ -191,6 +224,46 @@ func (s *Store) SetDefault(ctx context.Context, name string) (box.Record, error)
 	}
 	record.Default = true
 	return record, nil
+}
+
+func (s *Store) FindLocalLink(ctx context.Context, localWorktree string) (link.LocalLink, error) {
+	if !s.localLinksAvailable {
+		return link.LocalLink{}, &link.Error{Code: link.CodeNotFound, Message: "no Local Link exists for this Worktree"}
+	}
+	var value link.LocalLink
+	var created, updated string
+	err := s.db.QueryRowContext(ctx, `SELECT local_worktree,box_id,expected_box_identity,remote_worktree,repository_identity,created_at,updated_at FROM local_links WHERE local_worktree=?`, localWorktree).Scan(
+		&value.LocalWorktree, &value.BoxID, &value.ExpectedBoxIdentity, &value.RemoteWorktree, &value.RepositoryIdentity, &created, &updated,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return link.LocalLink{}, &link.Error{Code: link.CodeNotFound, Message: "no Local Link exists for this Worktree"}
+	}
+	if err != nil {
+		return link.LocalLink{}, fmt.Errorf("find Local Link: %w", err)
+	}
+	value.CreatedAt, err = time.Parse(time.RFC3339Nano, created)
+	if err == nil {
+		value.UpdatedAt, err = time.Parse(time.RFC3339Nano, updated)
+	}
+	if err != nil {
+		return link.LocalLink{}, fmt.Errorf("decode Local Link timestamps: %w", err)
+	}
+	return value, nil
+}
+
+func (s *Store) SaveLocalLink(ctx context.Context, value link.LocalLink) error {
+	if err := value.Validate(); err != nil {
+		return err
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO local_links(local_worktree,box_id,expected_box_identity,remote_worktree,repository_identity,created_at,updated_at)
+		VALUES(?,?,?,?,?,?,?)
+		ON CONFLICT(local_worktree) DO UPDATE SET box_id=excluded.box_id,expected_box_identity=excluded.expected_box_identity,remote_worktree=excluded.remote_worktree,repository_identity=excluded.repository_identity,updated_at=excluded.updated_at`,
+		value.LocalWorktree, value.BoxID, value.ExpectedBoxIdentity, value.RemoteWorktree, value.RepositoryIdentity, formatTime(value.CreatedAt), formatTime(value.UpdatedAt),
+	)
+	if err != nil {
+		return fmt.Errorf("save Local Link: %w", err)
+	}
+	return nil
 }
 
 func (s *Store) BeginAdd(ctx context.Context, op box.AddOperation) error {

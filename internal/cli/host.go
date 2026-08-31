@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bufio"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -343,6 +344,45 @@ func newHostCommand(streams Streams, options *globalOptions) *cobra.Command {
 			},
 		},
 	)
+	workspace := &cobra.Command{Use: "workspace", Hidden: true, Args: cobra.NoArgs, RunE: helpRun}
+	workspace.AddCommand(
+		&cobra.Command{Use: "push-inspect", Args: cobra.NoArgs, SilenceUsage: true, RunE: func(cmd *cobra.Command, _ []string) error {
+			operation := hostruntime.WorkspacePushInspectOperation()
+			request, err := readHostOperationRequest(streams, operation)
+			if err != nil {
+				return executionError{cause: err}
+			}
+			result, err := runtime.InspectWorkspacePush(cmd.Context(), request)
+			if err != nil {
+				return encodeLifecycleError(cmd.OutOrStdout(), request.BoxIdentity, err)
+			}
+			return encodeHostOperationResult(cmd.OutOrStdout(), operation, request, result)
+		}},
+		&cobra.Command{Use: "push-apply", Args: cobra.NoArgs, SilenceUsage: true, RunE: func(cmd *cobra.Command, _ []string) error {
+			operation := hostruntime.WorkspacePushApplyOperation()
+			reader := bufio.NewReaderSize(streams.In, hostruntime.MaxMessageBytes+1)
+			header, err := reader.ReadSlice('\n')
+			if err != nil {
+				return executionError{cause: fmt.Errorf("workspace push header is invalid: %w", err)}
+			}
+			if len(header) > hostruntime.MaxMessageBytes {
+				return executionError{cause: fmt.Errorf("workspace push header exceeds %d bytes", hostruntime.MaxMessageBytes)}
+			}
+			request, err := operation.DecodeRequest([]byte(strings.TrimSuffix(string(header), "\n")))
+			if err == nil {
+				err = operation.ValidateRequest(request)
+			}
+			if err != nil {
+				return executionError{cause: fmt.Errorf("workspace push header is invalid: %w", err)}
+			}
+			result, err := runtime.ApplyWorkspacePush(cmd.Context(), request, reader)
+			if err != nil {
+				return encodeLifecycleError(cmd.OutOrStdout(), request.BoxIdentity, err)
+			}
+			return encodeHostOperationResult(cmd.OutOrStdout(), operation, request, result)
+		}},
+	)
+	cmd.AddCommand(workspace)
 	return cmd
 }
 
@@ -370,6 +410,8 @@ func encodeLifecycleError(writer io.Writer, identity string, err error) error {
 			contextValues = domain.Context
 		}
 		return encodeHostResult(writer, hostruntime.NewOperationErrorWithContext(identity, hostruntime.Code(code), err.Error(), contextValues))
+	case repository.CodeUnsupported:
+		return encodeHostResult(writer, hostruntime.NewOperationError(identity, hostruntime.CodeCapabilityUnavailable, err.Error()))
 	default:
 		hostCode := hostruntime.ErrorCode(err)
 		if slices.Contains([]hostruntime.Code{hostruntime.CodeInvalidInput, hostruntime.CodeConflict, hostruntime.CodeAuthentication, hostruntime.CodePermissionDenied, hostruntime.CodeOperationInProgress, hostruntime.CodeOutcomeUnknown}, hostCode) {

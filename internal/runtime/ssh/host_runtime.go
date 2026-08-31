@@ -1,6 +1,7 @@
 package ssh
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
@@ -23,6 +24,7 @@ import (
 	"github.com/thewelshrich/schooner/internal/semver"
 	"github.com/thewelshrich/schooner/internal/session"
 	"github.com/thewelshrich/schooner/internal/source"
+	"github.com/thewelshrich/schooner/internal/workspacetransfer"
 )
 
 const (
@@ -290,8 +292,69 @@ func (r *Runtime) InspectWorktree(ctx context.Context, connection box.Connection
 	return result.Inspection, nil
 }
 
-func (r *Runtime) CloneRepository(ctx context.Context, connection box.Connection, installed box.HostRuntime, expectedIdentity, worktreeRoot, repositorySource, branch string) (repository.MutationResult, error) {
+func (r *Runtime) InspectWorkspacePush(ctx context.Context, connection box.Connection, installed box.HostRuntime, expectedIdentity, worktree string) (*repository.CheckoutState, error) {
+	request := hostruntime.NewWorkspacePushInspectRequest(worktree, expectedIdentity)
+	result, err := invokeHostOperation(ctx, r, connection, installed, hostruntime.WorkspacePushInspectOperation(), request)
+	if err != nil {
+		return nil, err
+	}
+	return result.State, nil
+}
+
+func (r *Runtime) PreflightWorkspacePush(ctx context.Context, connection box.Connection, installed box.HostRuntime, expectedIdentity, worktree string, source repository.CheckoutState, branch bool) (workspacetransfer.PreflightResult, error) {
+	request := hostruntime.NewWorkspacePushInspectRequest(worktree, expectedIdentity)
+	request.IncomingFiles = source.Files
+	request.IncomingBranch = source.Branch
+	request.IncomingDetached = source.Detached
+	request.IncomingStateDigest = source.Digest
+	request.PreflightBranch = branch
+	result, err := invokeHostOperation(ctx, r, connection, installed, hostruntime.WorkspacePushInspectOperation(), request)
+	return workspacetransfer.PreflightResult{ExistingFiles: result.ExistingFiles, MatchingFiles: result.MatchingFiles}, err
+}
+
+func (r *Runtime) ApplyWorkspacePush(ctx context.Context, connection box.Connection, installed box.HostRuntime, expectedIdentity string, request workspacetransfer.ApplyRequest, payload io.Reader) (workspacetransfer.ApplyResult, error) {
+	remote := hostruntime.NewWorkspacePushApplyRequest(request.OperationID, request.RemoteWorktree, request.ExpectedStateDigest, request.PayloadSHA256, request.PayloadSize, request.SourceState.Digest, expectedIdentity)
+	remote.OperationCreatedDestination = request.OperationCreatedDestination
+	operation := hostruntime.WorkspacePushApplyOperation()
+	hello, err := operationHello(ctx, r, connection, installed)
+	if err != nil {
+		return workspacetransfer.ApplyResult{}, err
+	}
+	if err = operation.ValidateHello(remote, hello); err != nil {
+		if hostruntime.ErrorCode(err) == hostruntime.CodeCapabilityUnavailable {
+			return workspacetransfer.ApplyResult{}, box.NewError("host_runtime_incompatible", "the host runtime lacks workspace push support; run box update", err)
+		}
+		return workspacetransfer.ApplyResult{}, protocolError(err)
+	}
+	if err = operation.ValidateRequest(remote); err != nil {
+		return workspacetransfer.ApplyResult{}, protocolError(err)
+	}
+	header, err := operation.EncodeRequest(remote)
+	if err != nil {
+		return workspacetransfer.ApplyResult{}, box.NewError("internal", "encode workspace push request", err)
+	}
+	header = append(header, '\n')
+	command := fixedShellCommand(`runtime_path=$(printf %s "$1" | base64 -d) || exit 64; exec "$runtime_path" host workspace push-apply`, installed.Path)
+	result, err := r.runRemote(ctx, connection, command, io.MultiReader(bytes.NewReader(header), payload))
+	if err != nil {
+		return workspacetransfer.ApplyResult{}, err
+	}
+	if result.ExitCode != 0 {
+		return workspacetransfer.ApplyResult{}, remoteFailure(operation.Command(), result)
+	}
+	decoded, operationError, err := operation.DecodeResult(result.Stdout, remote)
+	if err != nil {
+		return workspacetransfer.ApplyResult{}, protocolError(err)
+	}
+	if operationError != nil {
+		return workspacetransfer.ApplyResult{}, publicOperationError(operationError)
+	}
+	return workspacetransfer.ApplyResult{State: decoded.State, BytesTransferred: decoded.BytesTransferred}, nil
+}
+
+func (r *Runtime) CloneRepository(ctx context.Context, connection box.Connection, installed box.HostRuntime, expectedIdentity, worktreeRoot, repositorySource, branch, destination string) (repository.MutationResult, error) {
 	request := hostruntime.NewCloneRequest(repositorySource, branch, worktreeRoot, expectedIdentity)
+	request.Destination = destination
 	hello, err := operationHello(ctx, r, connection, installed)
 	if err != nil {
 		return repository.MutationResult{}, err
@@ -475,9 +538,17 @@ func invokeHostOperationWithHello[Request, Result any](ctx context.Context, r *R
 		return zero, protocolError(err)
 	}
 	if operationError != nil {
-		return zero, &box.Error{Code: string(operationError.Error.Code), Message: operationError.Error.Message, Context: operationError.Error.Context}
+		return zero, publicOperationError(operationError)
 	}
 	return decoded, nil
+}
+
+func publicOperationError(operationError *hostruntime.OperationError) error {
+	code := string(operationError.Error.Code)
+	if operationError.Error.Code == hostruntime.CodeCapabilityUnavailable {
+		code = string(repository.CodeUnsupported)
+	}
+	return &box.Error{Code: code, Message: operationError.Error.Message, Context: operationError.Error.Context}
 }
 
 func (r *Runtime) openHostInteractive(ctx context.Context, connection box.Connection, installed box.HostRuntime, expectedIdentity, capability, operation string, request any, terminal TerminalIO) (ShellResult, error) {

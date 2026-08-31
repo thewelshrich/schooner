@@ -45,6 +45,8 @@ func boundedOperationContracts() []operationDescriptor {
 		WorktreeListOperation(),
 		WorktreePruneOperation(),
 		WorktreeRemoveOperation(),
+		WorkspacePushInspectOperation(),
+		WorkspacePushApplyOperation(),
 	}
 }
 
@@ -119,6 +121,8 @@ func (request SourceIdentityRequest) operationIdentity() string         { return
 func (request SourceIdentityEnsureRequest) operationIdentity() string   { return request.BoxIdentity }
 func (request SourceIdentityRemoveRequest) operationIdentity() string   { return request.BoxIdentity }
 func (request SourceRepositoryVerifyRequest) operationIdentity() string { return request.BoxIdentity }
+func (request WorkspacePushInspectRequest) operationIdentity() string   { return request.BoxIdentity }
+func (request WorkspacePushApplyRequest) operationIdentity() string     { return request.BoxIdentity }
 
 func ConfigureOperation() Operation[ConfigureRequest, ConfigureResult] {
 	return newOperation(
@@ -165,6 +169,40 @@ func WorktreeInspectOperation() Operation[WorktreeRequest, WorktreeInspection] {
 		func(request WorktreeRequest) error { return ValidateWorktreeRequest(request, true) },
 		func(request WorktreeRequest, result WorktreeInspection) error {
 			return validateOperationEnvelope(result.SchemaVersion, result.ProtocolVersion, result.BoxIdentity, request.BoxIdentity, "worktree inspection returned an incompatible result")
+		},
+	)
+}
+
+func WorkspacePushInspectOperation() Operation[WorkspacePushInspectRequest, WorkspacePushInspection] {
+	return newOperation(
+		"host workspace push-inspect", CapabilityWorkspacePushInspectV1, ValidateWorkspacePushInspectRequest,
+		func(request WorkspacePushInspectRequest, result WorkspacePushInspection) error {
+			if err := validateOperationEnvelope(result.SchemaVersion, result.ProtocolVersion, result.BoxIdentity, request.BoxIdentity, "workspace push inspection returned an incompatible result"); err != nil {
+				return err
+			}
+			if request.IncomingStateDigest == "" {
+				if result.Present != (result.State != nil) {
+					return invalidOperationResult("workspace push inspection returned an invalid result")
+				}
+			} else if !result.Present || result.State != nil || result.ExistingFiles < 0 || result.MatchingFiles < 0 || result.MatchingFiles > result.ExistingFiles || result.ExistingFiles > len(request.IncomingFiles) {
+				return invalidOperationResult("workspace push preflight returned an invalid result")
+			}
+			return nil
+		},
+	)
+}
+
+func WorkspacePushApplyOperation() Operation[WorkspacePushApplyRequest, WorkspacePushApplyResult] {
+	return newOperation(
+		"host workspace push-apply", CapabilityWorkspacePushApplyV1, ValidateWorkspacePushApplyRequest,
+		func(request WorkspacePushApplyRequest, result WorkspacePushApplyResult) error {
+			if err := validateOperationEnvelope(result.SchemaVersion, result.ProtocolVersion, result.BoxIdentity, request.BoxIdentity, "workspace push apply returned an incompatible result"); err != nil {
+				return err
+			}
+			if result.State.Digest != request.SourceStateDigest || result.BytesTransferred != request.PayloadSize {
+				return invalidOperationResult("workspace push apply returned an invalid result")
+			}
+			return nil
 		},
 	)
 }

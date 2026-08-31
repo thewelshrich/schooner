@@ -92,6 +92,17 @@ func TestRunWithoutEnvironmentRemovesOnlySelectedVariables(t *testing.T) {
 	}
 }
 
+func TestRunWithoutEnvironmentAndExtraOverridesInheritedValue(t *testing.T) {
+	t.Setenv("SCHOONER_PROCESS_OVERRIDE", "inherited")
+	output, err := RunWithoutEnvironmentAndExtra(t.Context(), 64, nil, []string{"SCHOONER_PROCESS_OVERRIDE=fixed"}, "/bin/sh", "-c", `printf %s "$SCHOONER_PROCESS_OVERRIDE"`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(output) != "fixed" {
+		t.Fatalf("output = %q", output)
+	}
+}
+
 func TestRunCapturedBoundsWithoutCancellingCommand(t *testing.T) {
 	t.Setenv("SCHOONER_PROCESS_OVERRIDE", "old")
 	result, err := RunCapturedWithoutEnvironment(t.Context(), 4, nil, nil, "/bin/sh", "-c", "printf 123456; printf abcdef >&2; exit 7")

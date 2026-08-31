@@ -5,6 +5,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -255,6 +257,217 @@ func (r *Runtime) InspectWorktree(ctx context.Context, request hostruntime.Workt
 	return hostruntime.WorktreeInspection{SchemaVersion: hostruntime.SchemaVersion, ProtocolVersion: hostruntime.ProtocolVersion, BoxIdentity: identity, Inspection: inspection}, nil
 }
 
+func (r *Runtime) InspectWorkspacePush(ctx context.Context, request hostruntime.WorkspacePushInspectRequest) (hostruntime.WorkspacePushInspection, error) {
+	if err := hostruntime.WorkspacePushInspectOperation().ValidateRequest(request); err != nil {
+		return hostruntime.WorkspacePushInspection{}, err
+	}
+	identity, err := r.operationIdentity(request.BoxIdentity)
+	if err != nil {
+		return hostruntime.WorkspacePushInspection{}, err
+	}
+	_, target, present, err := r.workspacePushTarget(request.Worktree)
+	if err != nil {
+		return hostruntime.WorkspacePushInspection{}, err
+	}
+	result := hostruntime.WorkspacePushInspection{SchemaVersion: hostruntime.SchemaVersion, ProtocolVersion: hostruntime.ProtocolVersion, BoxIdentity: identity, Present: present}
+	if !present {
+		if request.IncomingStateDigest != "" {
+			return hostruntime.WorkspacePushInspection{}, &repository.Error{Code: repository.CodeConflict, Message: "the destination Worktree disappeared after push preflight"}
+		}
+		return result, nil
+	}
+	if request.IncomingStateDigest != "" {
+		comparison, compareErr := repository.PreflightCheckoutFiles(ctx, target, request.IncomingFiles)
+		if compareErr != nil {
+			return hostruntime.WorkspacePushInspection{}, compareErr
+		}
+		if request.PreflightBranch {
+			if err = repository.PreflightCheckoutBranch(ctx, target, repository.CheckoutState{Branch: request.IncomingBranch, Detached: request.IncomingDetached}); err != nil {
+				return hostruntime.WorkspacePushInspection{}, err
+			}
+		}
+		result.ExistingFiles = comparison.ExistingFiles
+		result.MatchingFiles = comparison.MatchingFiles
+		return result, nil
+	}
+	state, err := repository.ObserveCheckout(ctx, target)
+	if err != nil {
+		return hostruntime.WorkspacePushInspection{}, err
+	}
+	summary := repository.CheckoutSummary(state)
+	result.State = &summary
+	return result, nil
+}
+
+func (r *Runtime) ApplyWorkspacePush(ctx context.Context, request hostruntime.WorkspacePushApplyRequest, payload io.Reader) (hostruntime.WorkspacePushApplyResult, error) {
+	if err := hostruntime.WorkspacePushApplyOperation().ValidateRequest(request); err != nil {
+		return hostruntime.WorkspacePushApplyResult{}, err
+	}
+	identity, err := r.operationIdentity(request.BoxIdentity)
+	if err != nil {
+		return hostruntime.WorkspacePushApplyResult{}, err
+	}
+	worktreeRoot, target, _, err := r.workspacePushTarget(request.Worktree)
+	if err != nil {
+		return hostruntime.WorkspacePushApplyResult{}, err
+	}
+	home, err := r.home()
+	if err != nil {
+		return hostruntime.WorkspacePushApplyResult{}, err
+	}
+	stateDirectory, err := repository.WorktreeLockStateDirectory(home)
+	if err != nil {
+		return hostruntime.WorkspacePushApplyResult{}, err
+	}
+	workspaceState := filepath.Join(filepath.Dir(stateDirectory), "workspace")
+	if err = os.MkdirAll(workspaceState, 0o700); err != nil {
+		return hostruntime.WorkspacePushApplyResult{}, err
+	}
+	temporary, err := os.CreateTemp(workspaceState, ".upload-"+request.OperationID+"-*.tar")
+	if err != nil {
+		return hostruntime.WorkspacePushApplyResult{}, err
+	}
+	temporaryPath := temporary.Name()
+	defer os.Remove(temporaryPath)
+	hash := sha256.New()
+	written, copyErr := io.CopyN(io.MultiWriter(temporary, hash), payload, request.PayloadSize)
+	if copyErr == nil {
+		var trailing [1]byte
+		trailingBytes, trailingErr := io.ReadFull(payload, trailing[:])
+		if trailingBytes != 0 || !errors.Is(trailingErr, io.EOF) {
+			copyErr = &repository.Error{Code: repository.CodeConflict, Message: "workspace payload contains data beyond its declared size", Cause: trailingErr}
+		}
+	}
+	if closeErr := temporary.Close(); copyErr == nil {
+		copyErr = closeErr
+	}
+	if copyErr != nil || written != request.PayloadSize || hex.EncodeToString(hash.Sum(nil)) != request.PayloadSHA256 {
+		return hostruntime.WorkspacePushApplyResult{}, &repository.Error{Code: repository.CodeConflict, Message: "workspace payload is truncated or failed integrity verification", Cause: copyErr}
+	}
+	lock, err := repository.AcquireWorktreeMutationLock(stateDirectory, target)
+	if err != nil {
+		return hostruntime.WorkspacePushApplyResult{}, err
+	}
+	defer lock.Close()
+	_, _, present, err := r.workspacePushTarget(request.Worktree)
+	if err != nil {
+		return hostruntime.WorkspacePushApplyResult{}, err
+	}
+	if present {
+		current, observeErr := repository.ObserveCheckout(ctx, target)
+		if observeErr != nil {
+			return hostruntime.WorkspacePushApplyResult{}, observeErr
+		}
+		if request.ExpectedStateDigest == "" || current.Digest != request.ExpectedStateDigest {
+			return hostruntime.WorkspacePushApplyResult{}, &repository.Error{Code: repository.CodeConflict, Message: "the destination Worktree changed after push preflight"}
+		}
+	} else if request.ExpectedStateDigest != "" {
+		return hostruntime.WorkspacePushApplyResult{}, &repository.Error{Code: repository.CodeConflict, Message: "the destination Worktree disappeared after push preflight"}
+	}
+	extracted, err := repository.ExtractCheckoutPayload(temporaryPath, workspaceState)
+	if err != nil {
+		return hostruntime.WorkspacePushApplyResult{}, err
+	}
+	defer extracted.Release()
+	if extracted.State.Digest != request.SourceStateDigest {
+		return hostruntime.WorkspacePushApplyResult{}, &repository.Error{Code: repository.CodeConflict, Message: "workspace payload does not match its declared source state"}
+	}
+	var backup repository.CheckoutCapture
+	if present {
+		backup, err = repository.CaptureCheckout(ctx, target, workspaceState)
+		if err != nil {
+			return hostruntime.WorkspacePushApplyResult{}, err
+		}
+		defer backup.Release()
+		current, observeErr := repository.ObserveCheckout(ctx, target)
+		if observeErr != nil {
+			return hostruntime.WorkspacePushApplyResult{}, observeErr
+		}
+		if current.Digest != request.ExpectedStateDigest {
+			return hostruntime.WorkspacePushApplyResult{}, &repository.Error{Code: repository.CodeConflict, Message: "the destination Worktree changed while push was preparing its rollback state"}
+		}
+	}
+	var applied repository.CheckoutState
+	if present {
+		if request.OperationCreatedDestination {
+			applied, err = repository.ApplyCheckoutIfOperationCreatedAndUnchanged(ctx, target, extracted, request.ExpectedStateDigest)
+		} else {
+			applied, err = repository.ApplyCheckoutIfUnchanged(ctx, target, extracted, request.ExpectedStateDigest)
+		}
+	} else {
+		applied, err = repository.ApplyCheckoutWithinRoot(ctx, worktreeRoot, target, extracted)
+	}
+	if err != nil {
+		if backup.PayloadPath != "" && repository.CheckoutMutationStarted(err) {
+			restore, restoreErr := repository.ExtractCheckoutPayload(backup.PayloadPath, workspaceState)
+			if restoreErr == nil {
+				_, restoreErr = repository.RestoreCheckoutAfterFailedApply(context.WithoutCancel(ctx), target, restore, extracted)
+				restore.Release()
+			}
+			if restoreErr != nil {
+				return hostruntime.WorkspacePushApplyResult{}, &repository.Error{Code: repository.CodeOutcomeUnknown, Message: "workspace push failed and the previous destination state could not be restored", Cause: errors.Join(err, restoreErr)}
+			}
+		}
+		return hostruntime.WorkspacePushApplyResult{}, err
+	}
+	return hostruntime.WorkspacePushApplyResult{SchemaVersion: hostruntime.SchemaVersion, ProtocolVersion: hostruntime.ProtocolVersion, BoxIdentity: identity, State: repository.CheckoutSummary(applied), BytesTransferred: request.PayloadSize}, nil
+}
+
+func (r *Runtime) workspacePushTarget(requested string) (string, string, bool, error) {
+	configured, err := config.ReadDefault()
+	if err != nil {
+		return "", "", false, err
+	}
+	root := filepath.Clean(configured.WorktreeRoot)
+	target := filepath.Clean(requested)
+	relative, err := filepath.Rel(root, target)
+	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return "", "", false, &repository.Error{Code: repository.CodeInvalidInput, Message: "workspace push destination is outside the Worktree Root", Cause: err}
+	}
+	canonicalRoot, err := filepath.EvalSymlinks(root)
+	if err != nil || canonicalRoot != root {
+		return "", "", false, &repository.Error{Code: repository.CodeConflict, Message: "workspace push Worktree Root is not a canonical directory", Cause: err}
+	}
+	info, err := os.Lstat(target)
+	if errors.Is(err, os.ErrNotExist) {
+		rootHandle, rootErr := os.OpenRoot(root)
+		if rootErr != nil {
+			return "", "", false, &repository.Error{Code: repository.CodeConflict, Message: "workspace push Worktree Root could not be opened safely", Cause: rootErr}
+		}
+		defer rootHandle.Close()
+		parent := filepath.Dir(relative)
+		current := ""
+		if parent != "." {
+			for _, component := range strings.Split(parent, string(filepath.Separator)) {
+				if current == "" {
+					current = component
+				} else {
+					current = filepath.Join(current, component)
+				}
+				parentInfo, parentErr := rootHandle.Lstat(current)
+				if errors.Is(parentErr, os.ErrNotExist) {
+					break
+				}
+				if parentErr != nil || parentInfo.Mode()&os.ModeSymlink != 0 || !parentInfo.IsDir() {
+					return "", "", false, &repository.Error{Code: repository.CodeConflict, Message: "workspace push destination ancestors are not real directories", Cause: parentErr}
+				}
+			}
+		}
+		return root, target, false, nil
+	}
+	if err != nil {
+		return "", "", false, err
+	}
+	if !info.IsDir() {
+		return "", "", false, &repository.Error{Code: repository.CodeConflict, Message: "workspace push destination is not a directory"}
+	}
+	canonical, err := filepath.EvalSymlinks(target)
+	if err != nil || canonical != target {
+		return "", "", false, &repository.Error{Code: repository.CodeConflict, Message: "workspace push destination is not a canonical directory", Cause: err}
+	}
+	return root, target, true, nil
+}
+
 func (r *Runtime) CloneRepository(ctx context.Context, request hostruntime.CloneRequest) (hostruntime.LifecycleResult, error) {
 	if err := hostruntime.RepositoryCloneOperation().ValidateRequest(request); err != nil {
 		return hostruntime.LifecycleResult{}, err
@@ -263,7 +476,7 @@ func (r *Runtime) CloneRepository(ctx context.Context, request hostruntime.Clone
 	if err != nil {
 		return hostruntime.LifecycleResult{}, err
 	}
-	result, err := lifecycle.Clone(ctx, repository.CloneRequest{Source: request.Source, Branch: request.Branch})
+	result, err := lifecycle.Clone(ctx, repository.CloneRequest{Source: request.Source, Branch: request.Branch, Destination: request.Destination})
 	if err != nil {
 		return hostruntime.LifecycleResult{}, err
 	}
@@ -286,7 +499,7 @@ func (r *Runtime) CloneRepositoryV2(ctx context.Context, request hostruntime.Clo
 	if err != nil {
 		return hostruntime.LifecycleResult{}, err
 	}
-	result, err := lifecycle.CloneV2(ctx, repository.CloneRequest{Source: request.Source, Branch: request.Branch})
+	result, err := lifecycle.CloneV2(ctx, repository.CloneRequest{Source: request.Source, Branch: request.Branch, Destination: request.Destination})
 	if err != nil {
 		return hostruntime.LifecycleResult{}, err
 	}
