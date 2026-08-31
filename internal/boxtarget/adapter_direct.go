@@ -2,7 +2,11 @@ package boxtarget
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
 	"io"
+	"os"
 
 	"github.com/thewelshrich/schooner/internal/repository"
 	hostruntime "github.com/thewelshrich/schooner/internal/runtime"
@@ -54,6 +58,76 @@ func (a directAdapter) applyPush(ctx context.Context, request workspacetransfer.
 	remote.OperationCreatedBranch = request.OperationCreatedBranch
 	result, err := a.runtime.ApplyWorkspacePush(ctx, remote, payload)
 	return workspacetransfer.ApplyResult{State: result.State, BytesTransferred: result.BytesTransferred}, err
+}
+
+func (a directAdapter) inspectPullSource(ctx context.Context, request workspacetransfer.PullInspectRequest) (workspacetransfer.PullInspection, error) {
+	remote := hostruntime.NewWorkspacePullInspectRequest(request.RemoteWorktree, request.DestinationHEAD, a.state.boxIdentity, request.IncludeManifest)
+	var state repository.CheckoutState
+	ancestor := false
+	for {
+		result, err := a.runtime.InspectWorkspacePull(ctx, remote)
+		if err != nil {
+			return workspacetransfer.PullInspection{}, err
+		}
+		if state.Digest == "" {
+			state = result.State
+			ancestor = result.DestinationAncestor
+		}
+		for _, entry := range result.Manifest {
+			if entry.Kind == "absent" {
+				state.AbsentPaths = append(state.AbsentPaths, entry.Path)
+			} else {
+				state.Files = append(state.Files, entry)
+			}
+		}
+		if !request.IncludeManifest || result.ManifestComplete {
+			return workspacetransfer.PullInspection{State: state, DestinationAncestor: ancestor}, nil
+		}
+		remote.ManifestOffset = result.NextManifestOffset
+		remote.ExpectedSourceRevalidationDigest = state.RevalidationDigest
+	}
+}
+
+func (a directAdapter) capturePullSource(ctx context.Context, request workspacetransfer.PullCaptureRequest) (workspacetransfer.PullCapture, error) {
+	remote := hostruntime.NewWorkspacePullCaptureRequest(request.OperationID, request.RemoteWorktree, request.DestinationHEAD, request.ExpectedSourceRevalidationDigest, a.state.boxIdentity)
+	result, captured, err := a.runtime.CaptureWorkspacePull(ctx, remote)
+	if err != nil {
+		return workspacetransfer.PullCapture{}, err
+	}
+	defer captured.Release()
+	if err = os.MkdirAll(request.Staging, 0o700); err != nil {
+		return workspacetransfer.PullCapture{}, err
+	}
+	source, err := os.Open(captured.PayloadPath)
+	if err != nil {
+		return workspacetransfer.PullCapture{}, err
+	}
+	defer source.Close()
+	destination, err := os.CreateTemp(request.Staging, ".pull-download-*.tar")
+	if err != nil {
+		return workspacetransfer.PullCapture{}, err
+	}
+	path := destination.Name()
+	failed := true
+	defer func() {
+		_ = destination.Close()
+		if failed {
+			_ = os.Remove(path)
+		}
+	}()
+	hash := sha256.New()
+	written, copyErr := io.Copy(io.MultiWriter(destination, hash), source)
+	if closeErr := destination.Close(); copyErr == nil {
+		copyErr = closeErr
+	}
+	if copyErr != nil {
+		return workspacetransfer.PullCapture{}, fmt.Errorf("copy workspace pull payload: %w", copyErr)
+	}
+	if written != result.PayloadSize || hex.EncodeToString(hash.Sum(nil)) != result.PayloadSHA256 {
+		return workspacetransfer.PullCapture{}, &repository.Error{Code: repository.CodeConflict, Message: "workspace pull payload failed integrity verification"}
+	}
+	failed = false
+	return workspacetransfer.PullCapture{Capture: repository.CheckoutCapture{State: result.State, PayloadPath: path, PayloadSize: written, PayloadSHA256: result.PayloadSHA256}, DestinationAncestor: result.DestinationAncestor}, nil
 }
 
 func (a directAdapter) cloneRepository(ctx context.Context, request repository.CloneRequest) (repository.MutationResult, error) {

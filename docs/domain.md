@@ -76,8 +76,9 @@ remote Worktree.
 A local checkout may link to one Worktree, while a Worktree may be linked
 from more than one local machine. The relationship lives in Schooner state,
 not in a required repository configuration file. A successful, non-dry-run
-`push` establishes or updates it. The planned `pull` command will use the same
-routing contract.
+`push` or `pull` establishes or updates it. Both commands use the same routing
+contract, and a stale exact link fails instead of falling back to another
+same-origin checkout.
 
 ### Session
 

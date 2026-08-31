@@ -4,11 +4,15 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"os/user"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/thewelshrich/schooner/internal/config"
+	"github.com/thewelshrich/schooner/internal/repository"
 	hostruntime "github.com/thewelshrich/schooner/internal/runtime"
 )
 
@@ -122,6 +126,157 @@ func TestRuntimeHelloInspectAndDoctor(t *testing.T) {
 	}
 	if _, err = runtime.Doctor(ctx, hostruntime.NewInspectRequest("~/schooner")); !errors.Is(err, context.Canceled) {
 		t.Fatalf("Doctor cancellation returned %v", err)
+	}
+}
+
+func TestWorkspacePullManifestContinuationRejectsSourceDrift(t *testing.T) {
+	home := t.TempDir()
+	configurationPath := filepath.Join(home, "config.toml")
+	t.Setenv("SCHOONER_CONFIG", configurationPath)
+	identity := "11111111-1111-4111-8111-111111111111"
+	identityDirectory := filepath.Join(home, ".local", "state", "schooner")
+	if err := os.MkdirAll(identityDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(identityDirectory, "identity"), []byte(identity+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(home, "worktrees")
+	repo := filepath.Join(root, "repo")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, arguments := range [][]string{{"init", repo}, {"-C", repo, "config", "user.name", "Test"}, {"-C", repo, "config", "user.email", "test@example.com"}} {
+		if output, err := exec.Command("git", arguments...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", arguments, err, output)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(repo, "file.txt"), []byte("before\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, arguments := range [][]string{{"-C", repo, "add", "file.txt"}, {"-C", repo, "commit", "-m", "base"}} {
+		if output, err := exec.Command("git", arguments...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", arguments, err, output)
+		}
+	}
+	canonicalRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonicalRepo, err := filepath.EvalSymlinks(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = config.Write(configurationPath, config.Host{WorktreeRoot: canonicalRoot}); err != nil {
+		t.Fatal(err)
+	}
+	runtime := New(hostruntime.BuildInfo{Version: "dev"})
+	runtime.home = func() (string, error) { return home, nil }
+	localHead := strings.Repeat("a", 40)
+	first, err := runtime.InspectWorkspacePull(t.Context(), hostruntime.NewWorkspacePullInspectRequest(canonicalRepo, localHead, identity, true))
+	if err != nil || len(first.Manifest) == 0 {
+		t.Fatalf("first inspection = %+v, err=%v", first, err)
+	}
+	if err = os.WriteFile(filepath.Join(repo, "file.txt"), []byte("after\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	continuation := hostruntime.NewWorkspacePullInspectRequest(canonicalRepo, localHead, identity, true)
+	continuation.ManifestOffset = 1
+	continuation.ExpectedSourceRevalidationDigest = first.State.RevalidationDigest
+	if _, err = runtime.InspectWorkspacePull(t.Context(), continuation); repository.ErrorCode(err) != repository.CodeConflict {
+		t.Fatalf("source drift error = %v", err)
+	}
+}
+
+func TestCleanupPullStagingRemovesOnlyOldOwnedPayloads(t *testing.T) {
+	directory := t.TempDir()
+	old := filepath.Join(directory, ".pull-"+strings.Repeat("a", 32)+".tar")
+	recent := filepath.Join(directory, ".pull-"+strings.Repeat("b", 32)+".tar")
+	unrelated := filepath.Join(directory, "keep.tar")
+	for _, path := range []string{old, recent, unrelated} {
+		if err := os.WriteFile(path, []byte("payload"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	now := time.Now()
+	if err := os.Chtimes(old, now.Add(-48*time.Hour), now.Add(-48*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	cleanupPullStaging(directory, now.Add(-24*time.Hour))
+	if _, err := os.Stat(old); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("old payload remains: %v", err)
+	}
+	for _, path := range []string{recent, unrelated} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("preserved file %q: %v", path, err)
+		}
+	}
+}
+
+func TestWorkspacePushRejectsDestinationThatAppearedAfterPreflight(t *testing.T) {
+	home := t.TempDir()
+	identity := "11111111-1111-4111-8111-111111111111"
+	identityDirectory := filepath.Join(home, ".local", "state", "schooner")
+	if err := os.MkdirAll(identityDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(identityDirectory, "identity"), []byte(identity+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(home, "worktrees")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(home, "source")
+	for _, arguments := range [][]string{{"init", source}, {"-C", source, "config", "user.name", "Test"}, {"-C", source, "config", "user.email", "test@example.com"}} {
+		if output, err := exec.Command("git", arguments...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", arguments, err, output)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(source, "file.txt"), []byte("source\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, arguments := range [][]string{{"-C", source, "add", "file.txt"}, {"-C", source, "commit", "-m", "base"}} {
+		if output, err := exec.Command("git", arguments...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", arguments, err, output)
+		}
+	}
+	canonicalSource, err := filepath.EvalSymlinks(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capture, err := repository.CaptureCheckout(t.Context(), canonicalSource, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer capture.Release()
+	target := filepath.Join(root, "repo")
+	if output, cloneErr := exec.Command("git", "clone", canonicalSource, target).CombinedOutput(); cloneErr != nil {
+		t.Fatalf("git clone: %v\n%s", cloneErr, output)
+	}
+	canonicalRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonicalTarget, err := filepath.EvalSymlinks(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	configurationPath := filepath.Join(home, "config.toml")
+	t.Setenv("SCHOONER_CONFIG", configurationPath)
+	if err = config.Write(configurationPath, config.Host{WorktreeRoot: canonicalRoot}); err != nil {
+		t.Fatal(err)
+	}
+	runtime := New(hostruntime.BuildInfo{Version: "dev"})
+	runtime.home = func() (string, error) { return home, nil }
+	payload, err := os.Open(capture.PayloadPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer payload.Close()
+	request := hostruntime.NewWorkspacePushApplyRequest(strings.Repeat("c", 32), canonicalTarget, "", capture.PayloadSHA256, capture.PayloadSize, capture.State.Digest, identity)
+	if _, err = runtime.ApplyWorkspacePush(t.Context(), request, payload); repository.ErrorCode(err) != repository.CodeConflict {
+		t.Fatalf("appeared destination error = %v", err)
 	}
 }
 

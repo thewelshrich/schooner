@@ -1,9 +1,11 @@
 package ssh
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -351,6 +353,121 @@ func (r *Runtime) ApplyWorkspacePush(ctx context.Context, connection box.Connect
 		return workspacetransfer.ApplyResult{}, publicOperationError(operationError)
 	}
 	return workspacetransfer.ApplyResult{State: decoded.State, BytesTransferred: decoded.BytesTransferred}, nil
+}
+
+func (r *Runtime) InspectWorkspacePull(ctx context.Context, connection box.Connection, installed box.HostRuntime, expectedIdentity string, request workspacetransfer.PullInspectRequest) (workspacetransfer.PullInspection, error) {
+	remote := hostruntime.NewWorkspacePullInspectRequest(request.RemoteWorktree, request.DestinationHEAD, expectedIdentity, request.IncludeManifest)
+	operation := hostruntime.WorkspacePullInspectOperation()
+	var state repository.CheckoutState
+	ancestor := false
+	for {
+		result, err := invokeHostOperation(ctx, r, connection, installed, operation, remote)
+		if err != nil {
+			if hostruntime.ErrorCode(err) == hostruntime.CodeCapabilityUnavailable {
+				return workspacetransfer.PullInspection{}, box.NewError("host_runtime_incompatible", "the host runtime lacks workspace pull support; run box update", err)
+			}
+			return workspacetransfer.PullInspection{}, err
+		}
+		if state.Digest == "" {
+			state = result.State
+			ancestor = result.DestinationAncestor
+		}
+		for _, entry := range result.Manifest {
+			if entry.Kind == "absent" {
+				state.AbsentPaths = append(state.AbsentPaths, entry.Path)
+			} else {
+				state.Files = append(state.Files, entry)
+			}
+		}
+		if !request.IncludeManifest || result.ManifestComplete {
+			return workspacetransfer.PullInspection{State: state, DestinationAncestor: ancestor}, nil
+		}
+		remote.ManifestOffset = result.NextManifestOffset
+		remote.ExpectedSourceRevalidationDigest = state.RevalidationDigest
+	}
+}
+
+func (r *Runtime) CaptureWorkspacePull(ctx context.Context, connection box.Connection, installed box.HostRuntime, expectedIdentity string, request workspacetransfer.PullCaptureRequest) (workspacetransfer.PullCapture, error) {
+	remote := hostruntime.NewWorkspacePullCaptureRequest(request.OperationID, request.RemoteWorktree, request.DestinationHEAD, request.ExpectedSourceRevalidationDigest, expectedIdentity)
+	operation := hostruntime.WorkspacePullCaptureOperation()
+	hello, err := operationHello(ctx, r, connection, installed)
+	if err != nil {
+		return workspacetransfer.PullCapture{}, err
+	}
+	if err = operation.ValidateHello(remote, hello); err != nil {
+		if hostruntime.ErrorCode(err) == hostruntime.CodeCapabilityUnavailable {
+			return workspacetransfer.PullCapture{}, box.NewError("host_runtime_incompatible", "the host runtime lacks workspace pull support; run box update", err)
+		}
+		return workspacetransfer.PullCapture{}, protocolError(err)
+	}
+	if err = operation.ValidateRequest(remote); err != nil {
+		return workspacetransfer.PullCapture{}, protocolError(err)
+	}
+	encoded, err := operation.EncodeRequest(remote)
+	if err != nil {
+		return workspacetransfer.PullCapture{}, box.NewError("internal", "encode workspace pull request", err)
+	}
+	encoded = append(encoded, '\n')
+	if err = os.MkdirAll(request.Staging, 0o700); err != nil {
+		return workspacetransfer.PullCapture{}, err
+	}
+	payload, err := os.CreateTemp(request.Staging, ".pull-download-*.tar")
+	if err != nil {
+		return workspacetransfer.PullCapture{}, err
+	}
+	payloadPath := payload.Name()
+	failed := true
+	defer func() {
+		_ = payload.Close()
+		if failed {
+			_ = os.Remove(payloadPath)
+		}
+	}()
+	var header hostruntime.WorkspacePullCaptureResult
+	command := fixedShellCommand(`runtime_path=$(printf %s "$1" | base64 -d) || exit 64; exec "$runtime_path" host workspace pull-capture`, installed.Path)
+	remoteResult, err := r.runRemoteStream(ctx, connection, command, bytes.NewReader(encoded), func(stream io.Reader) error {
+		reader := bufio.NewReaderSize(stream, hostruntime.MaxMessageBytes+1)
+		line, readErr := reader.ReadSlice('\n')
+		if readErr != nil || len(line) > hostruntime.MaxMessageBytes {
+			return box.NewError("remote_protocol_invalid", "workspace pull capture header is invalid", readErr)
+		}
+		decoded, operationError, decodeErr := operation.DecodeResult(bytes.TrimSuffix(line, []byte{'\n'}), remote)
+		if decodeErr != nil {
+			return protocolError(decodeErr)
+		}
+		if operationError != nil {
+			return publicOperationError(operationError)
+		}
+		header = decoded
+		hash := sha256.New()
+		written, copyErr := io.CopyN(io.MultiWriter(payload, hash), reader, header.PayloadSize)
+		if copyErr == nil {
+			var trailing [1]byte
+			trailingBytes, trailingErr := io.ReadFull(reader, trailing[:])
+			if trailingBytes != 0 || !errors.Is(trailingErr, io.EOF) {
+				copyErr = fmt.Errorf("workspace pull payload contains trailing data")
+			}
+		}
+		if written != header.PayloadSize || hex.EncodeToString(hash.Sum(nil)) != header.PayloadSHA256 {
+			return box.NewError("conflict", "workspace pull payload is truncated or failed integrity verification", copyErr)
+		}
+		return copyErr
+	})
+	if err != nil {
+		return workspacetransfer.PullCapture{}, err
+	}
+	if remoteResult.ExitCode != 0 {
+		return workspacetransfer.PullCapture{}, remoteFailure(operation.Command(), remoteResult)
+	}
+	if err = payload.Sync(); err != nil {
+		return workspacetransfer.PullCapture{}, err
+	}
+	if err = payload.Close(); err != nil {
+		return workspacetransfer.PullCapture{}, err
+	}
+	failed = false
+	capture := repository.CheckoutCapture{State: header.State, PayloadPath: payloadPath, PayloadSize: header.PayloadSize, PayloadSHA256: header.PayloadSHA256}
+	return workspacetransfer.PullCapture{Capture: capture, DestinationAncestor: header.DestinationAncestor}, nil
 }
 
 func (r *Runtime) CloneRepository(ctx context.Context, connection box.Connection, installed box.HostRuntime, expectedIdentity, worktreeRoot, repositorySource, branch, destination string) (repository.MutationResult, error) {

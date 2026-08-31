@@ -357,6 +357,59 @@ func (r *Runtime) runRemote(ctx context.Context, connection box.Connection, comm
 	return result, nil
 }
 
+// runRemoteStream executes one fixed remote operation while allowing its
+// stdout to be consumed incrementally. The command remains compiled in by the
+// caller; this method does not expose remote command selection.
+func (r *Runtime) runRemoteStream(ctx context.Context, connection box.Connection, command string, stdin io.Reader, consume func(io.Reader) error) (remoteResult, error) {
+	path, err := r.executable()
+	if err != nil {
+		return remoteResult{}, err
+	}
+	args := r.options(connection)
+	args = append(args, connection.Destination, command)
+	cmd := exec.CommandContext(ctx, path, args...)
+	cmd.Stdin = stdin
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return remoteResult{}, err
+	}
+	var stderr limitedBuffer
+	cmd.Stderr = &stderr
+	if err = cmd.Start(); err != nil {
+		return remoteResult{}, err
+	}
+	consumeErr := consume(stdout)
+	if consumeErr != nil && cmd.Process != nil {
+		_ = cmd.Process.Kill()
+	}
+	waitErr := cmd.Wait()
+	result := remoteResult{Stderr: append([]byte(nil), stderr.Bytes()...)}
+	if stderr.overflow {
+		return remoteResult{}, box.NewError("internal", "remote operation diagnostics exceeded 1 MiB", nil)
+	}
+	if ctx.Err() != nil {
+		return remoteResult{}, ctx.Err()
+	}
+	if consumeErr != nil {
+		return result, consumeErr
+	}
+	if waitErr == nil {
+		return result, nil
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(waitErr, &exitErr) {
+		return remoteResult{}, waitErr
+	}
+	result.ExitCode = exitErr.ExitCode()
+	if result.ExitCode < 0 {
+		return remoteResult{}, box.NewError("connection_failed", "SSH connection terminated without an exit status", waitErr)
+	}
+	if result.ExitCode == 255 {
+		return remoteResult{}, classify(waitErr, stderr.String())
+	}
+	return result, nil
+}
+
 func remoteFailure(action string, result remoteResult) error {
 	diagnostic := safeDiagnostic(string(result.Stderr))
 	message := action + " failed on the remote machine"

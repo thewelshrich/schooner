@@ -302,3 +302,9 @@ func (*fakeExecutionAdapter) preflightPushDestination(context.Context, string, r
 func (*fakeExecutionAdapter) applyPush(context.Context, workspacetransfer.ApplyRequest, io.Reader) (workspacetransfer.ApplyResult, error) {
 	return workspacetransfer.ApplyResult{}, nil
 }
+func (*fakeExecutionAdapter) inspectPullSource(context.Context, workspacetransfer.PullInspectRequest) (workspacetransfer.PullInspection, error) {
+	return workspacetransfer.PullInspection{}, nil
+}
+func (*fakeExecutionAdapter) capturePullSource(context.Context, workspacetransfer.PullCaptureRequest) (workspacetransfer.PullCapture, error) {
+	return workspacetransfer.PullCapture{}, nil
+}

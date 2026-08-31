@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -58,6 +59,149 @@ esac
 	result, err := runtime.ApplyWorkspacePush(t.Context(), connection, installed, hostTestIdentity, workspacetransfer.ApplyRequest{OperationID: strings.Repeat("b", 32), RemoteWorktree: "/remote/repo", ExpectedStateDigest: digest, PayloadSize: 3, PayloadSHA256: payloadDigest, SourceState: repository.CheckoutState{Digest: digest}, OperationCreatedDestination: true}, bytes.NewBufferString("abc"))
 	if err != nil || result.State.Digest != digest || result.BytesTransferred != 3 {
 		t.Fatalf("apply = %+v, %v", result, err)
+	}
+}
+
+func TestWorkspacePullUsesFixedStreamingHostOperation(t *testing.T) {
+	testRemoteShell(t)
+	repositoryPath := filepath.Join(t.TempDir(), "repo")
+	for _, arguments := range [][]string{{"init", repositoryPath}, {"-C", repositoryPath, "config", "user.name", "Test"}, {"-C", repositoryPath, "config", "user.email", "test@example.com"}} {
+		if output, err := exec.Command("git", arguments...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", arguments, err, output)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(repositoryPath, "file.txt"), []byte("payload\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, arguments := range [][]string{{"-C", repositoryPath, "add", "file.txt"}, {"-C", repositoryPath, "commit", "-m", "base"}} {
+		if output, err := exec.Command("git", arguments...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", arguments, err, output)
+		}
+	}
+	repositoryPath, err := filepath.EvalSymlinks(repositoryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	captured, err := repository.CaptureCheckout(t.Context(), repositoryPath, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer captured.Release()
+	remoteWorktree := "/remote/worktrees/repo"
+	state := repository.CheckoutSummary(captured.State)
+	state.Worktree = remoteWorktree
+	operationID := strings.Repeat("c", 32)
+	header, err := json.Marshal(hostruntime.WorkspacePullCaptureResult{
+		SchemaVersion: hostruntime.SchemaVersion, ProtocolVersion: hostruntime.ProtocolVersion, BoxIdentity: hostTestIdentity,
+		OperationID: operationID, State: state, DestinationAncestor: true, PayloadSize: captured.PayloadSize, PayloadSHA256: captured.PayloadSHA256,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	headerPath := filepath.Join(t.TempDir(), "header")
+	if err = os.WriteFile(headerPath, append(header, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	hello := fmt.Sprintf(`{"schema_version":"1","protocol_version":"1","schooner_version":"v1.2.3","commit":"abc123","box_identity":%q,"os":"linux","architecture":"amd64","capabilities":["workspace.pull.capture.v1"]}`, hostTestIdentity)
+	ssh := writeExecutable(t, "#!/bin/sh\ncase \"$*\" in\n  *\"host hello\"*) printf '%s\\n' "+shellQuote(hello)+" ;;\n  *\"host workspace pull-capture\"*) cat >/dev/null; cat "+shellQuote(headerPath)+"; cat "+shellQuote(captured.PayloadPath)+" ;;\n  *) exit 64 ;;\nesac\n")
+	runtime := New(ssh, nil)
+	request := workspacetransfer.PullCaptureRequest{
+		OperationID: operationID, RemoteWorktree: remoteWorktree, DestinationHEAD: captured.State.HEAD,
+		ExpectedSourceRevalidationDigest: captured.State.RevalidationDigest, Staging: t.TempDir(),
+	}
+	result, err := runtime.CaptureWorkspacePull(t.Context(), box.Connection{Destination: "work"}, box.HostRuntime{Path: "/runtime/schooner"}, hostTestIdentity, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer result.Capture.Release()
+	got, err := os.ReadFile(result.Capture.PayloadPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := os.ReadFile(captured.PayloadPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) || !result.DestinationAncestor || result.Capture.PayloadSHA256 != captured.PayloadSHA256 {
+		t.Fatalf("capture = %+v, bytes equal = %t", result, bytes.Equal(got, want))
+	}
+}
+
+func TestWorkspacePullRejectsInvalidCaptureStreams(t *testing.T) {
+	testRemoteShell(t)
+	remoteWorktree := "/remote/worktrees/repo"
+	head := strings.Repeat("b", 40)
+	stateDigest := strings.Repeat("a", 64)
+	payload := []byte("abc")
+	payloadDigest := fmt.Sprintf("%x", sha256.Sum256(payload))
+	request := workspacetransfer.PullCaptureRequest{
+		OperationID: strings.Repeat("c", 32), RemoteWorktree: remoteWorktree, DestinationHEAD: head,
+		ExpectedSourceRevalidationDigest: stateDigest,
+	}
+	header := hostruntime.WorkspacePullCaptureResult{
+		SchemaVersion: hostruntime.SchemaVersion, ProtocolVersion: hostruntime.ProtocolVersion, BoxIdentity: hostTestIdentity,
+		OperationID: request.OperationID, DestinationAncestor: true, PayloadSize: int64(len(payload)), PayloadSHA256: payloadDigest,
+		State: repository.CheckoutState{SchemaVersion: repository.CheckoutSchemaVersion, Worktree: remoteWorktree, HEAD: head, Branch: "main", Digest: stateDigest, RevalidationDigest: stateDigest},
+	}
+	validHeader, err := json.Marshal(header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongIdentity := header
+	wrongIdentity.BoxIdentity = "22222222-2222-4222-8222-222222222222"
+	wrongIdentityHeader, err := json.Marshal(wrongIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	badDigest := header
+	badDigest.PayloadSHA256 = strings.Repeat("d", 64)
+	badDigestHeader, err := json.Marshal(badDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oversizedHeader := append(bytes.Repeat([]byte("x"), hostruntime.MaxMessageBytes+1), '\n')
+	for _, test := range []struct {
+		name   string
+		stream []byte
+	}{
+		{name: "malformed header", stream: []byte("{\nabc")},
+		{name: "oversized header", stream: append(oversizedHeader, payload...)},
+		{name: "wrong identity", stream: append(append(wrongIdentityHeader, '\n'), payload...)},
+		{name: "truncated payload", stream: append(append(validHeader, '\n'), payload[:2]...)},
+		{name: "invalid digest", stream: append(append(badDigestHeader, '\n'), payload...)},
+		{name: "trailing payload", stream: append(append(append(validHeader, '\n'), payload...), 'x')},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			streamPath := filepath.Join(t.TempDir(), "stream")
+			if writeErr := os.WriteFile(streamPath, test.stream, 0o600); writeErr != nil {
+				t.Fatal(writeErr)
+			}
+			hello := fmt.Sprintf(`{"schema_version":"1","protocol_version":"1","schooner_version":"v1.2.3","commit":"abc123","box_identity":%q,"os":"linux","architecture":"amd64","capabilities":["workspace.pull.capture.v1"]}`, hostTestIdentity)
+			ssh := writeExecutable(t, "#!/bin/sh\ncase \"$*\" in\n  *\"host hello\"*) printf '%s\\n' "+shellQuote(hello)+" ;;\n  *\"host workspace pull-capture\"*) cat >/dev/null; cat "+shellQuote(streamPath)+" ;;\n  *) exit 64 ;;\nesac\n")
+			staging := t.TempDir()
+			request.Staging = staging
+			runtime := New(ssh, nil)
+			if _, captureErr := runtime.CaptureWorkspacePull(t.Context(), box.Connection{Destination: "work"}, box.HostRuntime{Path: "/runtime/schooner"}, hostTestIdentity, request); captureErr == nil {
+				t.Fatal("invalid capture stream was accepted")
+			}
+			matches, globErr := filepath.Glob(filepath.Join(staging, ".pull-download-*.tar"))
+			if globErr != nil || len(matches) != 0 {
+				t.Fatalf("staged downloads = %v, err=%v", matches, globErr)
+			}
+		})
+	}
+}
+
+func TestWorkspacePullRequiresCaptureCapabilityBeforeStreaming(t *testing.T) {
+	testRemoteShell(t)
+	hello := fmt.Sprintf(`{"schema_version":"1","protocol_version":"1","schooner_version":"v1.2.3","commit":"abc123","box_identity":%q,"os":"linux","architecture":"amd64","capabilities":[]}`, hostTestIdentity)
+	ssh := writeExecutable(t, "#!/bin/sh\ncase \"$*\" in\n  *\"host hello\"*) printf '%s\\n' "+shellQuote(hello)+" ;;\n  *) exit 91 ;;\nesac\n")
+	runtime := New(ssh, nil)
+	_, err := runtime.CaptureWorkspacePull(t.Context(), box.Connection{Destination: "work"}, box.HostRuntime{Path: "/runtime/schooner"}, hostTestIdentity, workspacetransfer.PullCaptureRequest{
+		OperationID: strings.Repeat("c", 32), RemoteWorktree: "/remote/worktrees/repo", DestinationHEAD: strings.Repeat("b", 40), ExpectedSourceRevalidationDigest: strings.Repeat("a", 64), Staging: t.TempDir(),
+	})
+	if box.ErrorCode(err) != "host_runtime_incompatible" {
+		t.Fatalf("missing capability error = %v, code=%s", err, box.ErrorCode(err))
 	}
 }
 

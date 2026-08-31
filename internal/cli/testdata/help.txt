@@ -13,6 +13,7 @@ Available Commands:
   help        Help about any command
   logs        Capture bounded history from a managed Session
   provider    Manage cloud provider credential profiles
+  pull        Bring a Box workspace into the current local checkout
   push        Put the current local workspace onto a Box
   resume      Return to an existing live Session
   sessions    List live managed and unmanaged tmux Sessions

@@ -20,6 +20,8 @@ type Action string
 const (
 	ActionWouldPush Action = "would_push"
 	ActionPushed    Action = "pushed"
+	ActionWouldPull Action = "would_pull"
+	ActionPulled    Action = "pulled"
 	ActionNoChange  Action = "no_change"
 	ActionConflict  Action = "conflict"
 )
@@ -27,14 +29,16 @@ const (
 type Code string
 
 const (
-	CodeConflict Code = "conflict"
+	CodeConflict          Code = "conflict"
+	CodeInsufficientSpace Code = "insufficient_space"
 )
 
 type Error struct {
-	Code    Code
-	Message string
-	Context map[string]string
-	Cause   error
+	Code      Code
+	Operation string
+	Message   string
+	Context   map[string]string
+	Cause     error
 }
 
 func (e *Error) Error() string { return e.Message }

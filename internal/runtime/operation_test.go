@@ -192,6 +192,52 @@ func TestWorkspacePushApplyOperationCarriesCreatedDestinationProof(t *testing.T)
 	}
 }
 
+func TestWorkspacePullOperationsValidatePagingAndCaptureHeaders(t *testing.T) {
+	digest := strings.Repeat("a", 64)
+	head := strings.Repeat("b", 40)
+	inspect := NewWorkspacePullInspectRequest("/worktrees/repo", head, testIdentity, true)
+	inspection := WorkspacePullInspection{
+		SchemaVersion: SchemaVersion, ProtocolVersion: ProtocolVersion, BoxIdentity: testIdentity,
+		State:               repository.CheckoutState{SchemaVersion: repository.CheckoutSchemaVersion, Worktree: inspect.Worktree, HEAD: head, Branch: "main", FileCount: 1, Digest: digest, RevalidationDigest: digest},
+		DestinationAncestor: true,
+		Manifest:            []repository.CheckoutFile{{Path: "file.txt", Kind: "file", Size: 4, SHA256: digest, Tracked: true}},
+		NextManifestOffset:  1, ManifestComplete: true,
+	}
+	if err := WorkspacePullInspectOperation().ValidateRequest(inspect); err != nil {
+		t.Fatal(err)
+	}
+	if err := WorkspacePullInspectOperation().ValidateResult(inspect, inspection); err != nil {
+		t.Fatal(err)
+	}
+	continuation := inspect
+	continuation.ManifestOffset = 1
+	continuation.ExpectedSourceRevalidationDigest = digest
+	if err := WorkspacePullInspectOperation().ValidateRequest(continuation); err != nil {
+		t.Fatal(err)
+	}
+	invalid := continuation
+	invalid.ExpectedSourceRevalidationDigest = "bad"
+	if err := WorkspacePullInspectOperation().ValidateRequest(invalid); ErrorCode(err) != CodeInvalidInput {
+		t.Fatalf("invalid continuation error = %v", err)
+	}
+
+	capture := NewWorkspacePullCaptureRequest(strings.Repeat("c", 32), inspect.Worktree, head, digest, testIdentity)
+	header := WorkspacePullCaptureResult{
+		SchemaVersion: SchemaVersion, ProtocolVersion: ProtocolVersion, BoxIdentity: testIdentity, OperationID: capture.OperationID,
+		State: inspection.State, DestinationAncestor: true, PayloadSize: 1024, PayloadSHA256: digest,
+	}
+	if err := WorkspacePullCaptureOperation().ValidateRequest(capture); err != nil {
+		t.Fatal(err)
+	}
+	if err := WorkspacePullCaptureOperation().ValidateResult(capture, header); err != nil {
+		t.Fatal(err)
+	}
+	header.OperationID = strings.Repeat("d", 32)
+	if err := WorkspacePullCaptureOperation().ValidateResult(capture, header); ErrorCode(err) != CodeInvalidMessage {
+		t.Fatalf("invalid capture header error = %v", err)
+	}
+}
+
 func TestOperationDecodeResultAppliesEnvelopeAndResultInvariant(t *testing.T) {
 	operation := RepositoryCloneOperation()
 	request := NewCloneRequest("git@example.com:owner/repo.git", "main", "/worktrees", testIdentity)

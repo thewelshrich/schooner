@@ -163,6 +163,7 @@ func newRootCommand(build BuildInfo, streams Streams, options *globalOptions) *c
 	root.AddCommand(newBoxCommand(streams, options))
 	root.AddCommand(newCloneCommand(streams, options, targets))
 	root.AddCommand(newPushCommand(streams, options, targets))
+	root.AddCommand(newPullCommand(streams, options, targets))
 	root.AddCommand(newWorktreeCommand(streams, options, targets))
 	root.AddCommand(newSessionCommands(streams, options, targets)...)
 	root.AddCommand(newSourceCommand(streams, options, targets))
@@ -355,7 +356,9 @@ func printError(w io.Writer, err error, output string, theme *uitheme.Theme) {
 				_ = writeMutedNotice(w, theme, "  "+count+" "+value.label)
 			}
 		}
-		if workspaceConflict.Context["remote_created"] == "true" {
+		if workspaceConflict.Operation == "pull" {
+			_ = writeMutedNotice(w, theme, "No local files were changed.")
+		} else if workspaceConflict.Context["remote_created"] == "true" {
 			_ = writeMutedNotice(w, theme, "The remote clone was created, but no local workspace files were applied.")
 		} else {
 			_ = writeMutedNotice(w, theme, "No remote files were changed.")

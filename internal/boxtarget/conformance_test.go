@@ -68,6 +68,63 @@ func TestDirectAdapterWorkspacePushRoundTrip(t *testing.T) {
 	}
 }
 
+func TestDirectAdapterWorkspacePullRoundTrip(t *testing.T) {
+	target := directConformanceTarget(t)
+	remote := filepath.Join(target.WorktreeRoot(), "repo")
+	for _, arguments := range [][]string{{"-C", remote, "config", "user.name", "Test"}, {"-C", remote, "config", "user.email", "test@example.com"}} {
+		if output, err := exec.Command("git", arguments...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", arguments, err, output)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(remote, "file.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, arguments := range [][]string{{"-C", remote, "add", "file.txt"}, {"-C", remote, "commit", "-m", "base"}} {
+		if output, err := exec.Command("git", arguments...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", arguments, err, output)
+		}
+	}
+	local := filepath.Join(t.TempDir(), "local")
+	if output, err := exec.Command("git", "clone", remote, local).CombinedOutput(); err != nil {
+		t.Fatalf("git clone: %v\n%s", err, output)
+	}
+	local, err := filepath.EvalSymlinks(local)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(filepath.Join(remote, "file.txt"), []byte("remote committed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(filepath.Join(remote, "untracked.txt"), []byte("remote dirty\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, arguments := range [][]string{{"-C", remote, "add", "file.txt"}, {"-C", remote, "commit", "-m", "remote"}} {
+		if output, err := exec.Command("git", arguments...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", arguments, err, output)
+		}
+	}
+	result, err := workspacetransfer.Pull(t.Context(), workspacetransfer.PullRequest{
+		LocalWorktree: local, RemoteWorktree: remote, Staging: t.TempDir(), LockStateDirectory: t.TempDir(), Source: target,
+	})
+	if err != nil || result.Action != workspacetransfer.ActionPulled || result.BytesTransferred == 0 {
+		t.Fatalf("pull = %+v, %v", result, err)
+	}
+	remoteState, err := repository.ObserveCheckout(t.Context(), remote)
+	if err != nil {
+		t.Fatal(err)
+	}
+	localState, err := repository.ObserveCheckout(t.Context(), local)
+	if err != nil || localState.Digest != remoteState.Digest {
+		t.Fatalf("local = %+v, remote = %+v, err = %v", localState, remoteState, err)
+	}
+	dryRun, err := workspacetransfer.Pull(t.Context(), workspacetransfer.PullRequest{
+		LocalWorktree: local, RemoteWorktree: remote, Staging: filepath.Join(t.TempDir(), "unused"), DryRun: true, Source: target,
+	})
+	if err != nil || dryRun.Action != workspacetransfer.ActionNoChange {
+		t.Fatalf("no-op pull = %+v, %v", dryRun, err)
+	}
+}
+
 func TestDirectAdapterOperationCreatedCloneCanOverlayBehindSource(t *testing.T) {
 	target := directConformanceTarget(t)
 	sourcePath := filepath.Join(t.TempDir(), "source")

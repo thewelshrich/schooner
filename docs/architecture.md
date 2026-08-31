@@ -82,7 +82,7 @@ internal/source/              source identity, authorization, and reconciliation
 internal/source/github/       bounded GitHub device-flow and SSH-key API adapter
 internal/source/boxgit/       Box-owned key files and strict managed SSH adapter
 internal/link/                lightweight local-to-remote Worktree routing
-internal/workspacetransfer/   implemented push and directional-transfer contracts
+internal/workspacetransfer/   one-shot push/pull planning, safety, and orchestration
 internal/session/             tmux-backed Sessions and optional Agents
 internal/runtime/             typed remote-operation contracts
 internal/runtime/ssh/         system-OpenSSH transport adapter
@@ -286,9 +286,8 @@ one exact canonical remote Worktree. It is lightweight local routing state;
 deleting it does not delete or rewrite either checkout. The remote Worktree
 remains usable without the link.
 
-Workspace transfer is explicit and attached to the invoking CLI. The current
-slice implements `push`; `pull` is planned against the same directional
-contract:
+Workspace transfer is explicit and attached to the invoking CLI. Both
+directions use the same safety contract:
 
 ```text
 push: local checkout  -> remote Worktree
@@ -305,7 +304,11 @@ automatic merge or force mode exists.
 Git objects and portable stage-zero index entries travel with a deterministic
 archive of tracked and untracked non-ignored files. Indexed paths absent from
 the working tree are represented explicitly. Fixed typed control operations
-and fixed streaming commands run through system OpenSSH. Ignored files remain
+and fixed streaming commands run through system OpenSSH. Push streams a local
+capture to a remote apply; pull pages a digest-pinned remote manifest and then
+streams one capture header plus the declared payload to local staging. Both
+directions apply existing destinations through the repository-owned locked,
+revalidated, rollback-backed transaction. Ignored files remain
 destination-local. Continuous watchers, implicit background transfer, and
 bidirectional reconciliation are outside the product.
 

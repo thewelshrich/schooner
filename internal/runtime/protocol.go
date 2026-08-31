@@ -46,6 +46,8 @@ const (
 	CapabilityWorktreeShellV1          = "worktree.shell.v1"
 	CapabilityWorkspacePushInspectV1   = "workspace.push.inspect.v1"
 	CapabilityWorkspacePushApplyV1     = "workspace.push.apply.v1"
+	CapabilityWorkspacePullInspectV1   = "workspace.pull.inspect.v1"
+	CapabilityWorkspacePullCaptureV1   = "workspace.pull.capture.v1"
 )
 
 var (
@@ -53,6 +55,7 @@ var (
 	capabilityPattern  = regexp.MustCompile(`^[a-z][a-z0-9]*(?:\.[a-z0-9]+)*\.v[1-9][0-9]*$`)
 	platformPattern    = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
 	sha256Pattern      = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	sha1Pattern        = regexp.MustCompile(`^[0-9a-f]{40}$`)
 	operationIDPattern = regexp.MustCompile(`^[0-9a-f]{32}$`)
 )
 
@@ -69,6 +72,7 @@ const (
 	CodeAuthentication        Code = "authentication_required"
 	CodePermissionDenied      Code = "permission_denied"
 	CodeOperationInProgress   Code = "operation_in_progress"
+	CodeInsufficientSpace     Code = "insufficient_space"
 	CodeOutcomeUnknown        Code = "outcome_unknown"
 )
 
@@ -178,6 +182,27 @@ type WorkspacePushApplyRequest struct {
 	OperationCreatedBranch      string `json:"operation_created_branch,omitempty"`
 }
 
+type WorkspacePullInspectRequest struct {
+	SchemaVersion                    string `json:"schema_version"`
+	ProtocolVersion                  string `json:"protocol_version"`
+	BoxIdentity                      string `json:"box_identity"`
+	Worktree                         string `json:"worktree"`
+	DestinationHEAD                  string `json:"destination_head"`
+	IncludeManifest                  bool   `json:"include_manifest,omitempty"`
+	ManifestOffset                   int    `json:"manifest_offset,omitempty"`
+	ExpectedSourceRevalidationDigest string `json:"expected_source_revalidation_digest,omitempty"`
+}
+
+type WorkspacePullCaptureRequest struct {
+	SchemaVersion                    string `json:"schema_version"`
+	ProtocolVersion                  string `json:"protocol_version"`
+	BoxIdentity                      string `json:"box_identity"`
+	OperationID                      string `json:"operation_id"`
+	Worktree                         string `json:"worktree"`
+	DestinationHEAD                  string `json:"destination_head"`
+	ExpectedSourceRevalidationDigest string `json:"expected_source_revalidation_digest"`
+}
+
 type SourceIdentityRequest struct {
 	SchemaVersion   string `json:"schema_version"`
 	ProtocolVersion string `json:"protocol_version"`
@@ -253,6 +278,28 @@ type WorkspacePushApplyResult struct {
 	BoxIdentity      string                   `json:"box_identity"`
 	State            repository.CheckoutState `json:"state"`
 	BytesTransferred int64                    `json:"bytes_transferred"`
+}
+
+type WorkspacePullInspection struct {
+	SchemaVersion       string                    `json:"schema_version"`
+	ProtocolVersion     string                    `json:"protocol_version"`
+	BoxIdentity         string                    `json:"box_identity"`
+	State               repository.CheckoutState  `json:"state"`
+	DestinationAncestor bool                      `json:"destination_ancestor"`
+	Manifest            []repository.CheckoutFile `json:"manifest,omitempty"`
+	NextManifestOffset  int                       `json:"next_manifest_offset,omitempty"`
+	ManifestComplete    bool                      `json:"manifest_complete"`
+}
+
+type WorkspacePullCaptureResult struct {
+	SchemaVersion       string                   `json:"schema_version"`
+	ProtocolVersion     string                   `json:"protocol_version"`
+	BoxIdentity         string                   `json:"box_identity"`
+	OperationID         string                   `json:"operation_id"`
+	State               repository.CheckoutState `json:"state"`
+	DestinationAncestor bool                     `json:"destination_ancestor"`
+	PayloadSize         int64                    `json:"payload_size"`
+	PayloadSHA256       string                   `json:"payload_sha256"`
 }
 
 type SourceIdentityResult struct {
@@ -355,6 +402,14 @@ func NewWorkspacePushApplyRequest(operationID, worktree, expectedDigest, payload
 	return WorkspacePushApplyRequest{SchemaVersion: SchemaVersion, ProtocolVersion: ProtocolVersion, BoxIdentity: boxIdentity, OperationID: operationID, Worktree: worktree, ExpectedStateDigest: expectedDigest, PayloadSize: payloadSize, PayloadSHA256: payloadDigest, SourceStateDigest: sourceStateDigest}
 }
 
+func NewWorkspacePullInspectRequest(worktree, destinationHEAD, boxIdentity string, includeManifest bool) WorkspacePullInspectRequest {
+	return WorkspacePullInspectRequest{SchemaVersion: SchemaVersion, ProtocolVersion: ProtocolVersion, BoxIdentity: boxIdentity, Worktree: worktree, DestinationHEAD: destinationHEAD, IncludeManifest: includeManifest}
+}
+
+func NewWorkspacePullCaptureRequest(operationID, worktree, destinationHEAD, expectedSourceDigest, boxIdentity string) WorkspacePullCaptureRequest {
+	return WorkspacePullCaptureRequest{SchemaVersion: SchemaVersion, ProtocolVersion: ProtocolVersion, BoxIdentity: boxIdentity, OperationID: operationID, Worktree: worktree, DestinationHEAD: destinationHEAD, ExpectedSourceRevalidationDigest: expectedSourceDigest}
+}
+
 func ValidateWorkspacePushInspectRequest(request WorkspacePushInspectRequest) error {
 	if request.SchemaVersion != SchemaVersion || request.ProtocolVersion != ProtocolVersion {
 		return &Error{Code: CodeUnsupportedProtocol, Message: "workspace push request is incompatible"}
@@ -398,6 +453,36 @@ func ValidateWorkspacePushApplyRequest(request WorkspacePushApplyRequest) error 
 	}
 	if !request.OperationCreatedDestination && request.OperationCreatedBranch != "" {
 		return &Error{Code: CodeInvalidInput, Message: "workspace push branch rewind declaration is invalid"}
+	}
+	return nil
+}
+
+func ValidateWorkspacePullInspectRequest(request WorkspacePullInspectRequest) error {
+	if request.SchemaVersion != SchemaVersion || request.ProtocolVersion != ProtocolVersion {
+		return &Error{Code: CodeUnsupportedProtocol, Message: "workspace pull request is incompatible"}
+	}
+	if !identityPattern.MatchString(request.BoxIdentity) || !validPath(request.Worktree) || !sha1Pattern.MatchString(request.DestinationHEAD) || request.ManifestOffset < 0 {
+		return &Error{Code: CodeInvalidInput, Message: "workspace pull request is invalid"}
+	}
+	if !request.IncludeManifest && (request.ManifestOffset != 0 || request.ExpectedSourceRevalidationDigest != "") {
+		return &Error{Code: CodeInvalidInput, Message: "workspace pull summary request cannot include manifest continuation metadata"}
+	}
+	if request.ManifestOffset > 0 && !sha256Pattern.MatchString(request.ExpectedSourceRevalidationDigest) {
+		return &Error{Code: CodeInvalidInput, Message: "workspace pull manifest continuation is invalid"}
+	}
+	if request.ExpectedSourceRevalidationDigest != "" && !sha256Pattern.MatchString(request.ExpectedSourceRevalidationDigest) {
+		return &Error{Code: CodeInvalidInput, Message: "workspace pull expected source state is invalid"}
+	}
+	return nil
+}
+
+func ValidateWorkspacePullCaptureRequest(request WorkspacePullCaptureRequest) error {
+	base := NewWorkspacePullInspectRequest(request.Worktree, request.DestinationHEAD, request.BoxIdentity, false)
+	if err := ValidateWorkspacePullInspectRequest(base); err != nil {
+		return err
+	}
+	if !operationIDPattern.MatchString(request.OperationID) || !sha256Pattern.MatchString(request.ExpectedSourceRevalidationDigest) {
+		return &Error{Code: CodeInvalidInput, Message: "workspace pull capture request is invalid"}
 	}
 	return nil
 }
@@ -446,7 +531,7 @@ func DecodeOperationError(data []byte, expectedIdentity string) (OperationError,
 	if result.BoxIdentity != expectedIdentity || !identityPattern.MatchString(result.BoxIdentity) {
 		return OperationError{}, true, &Error{Code: CodeInvalidIdentity, Message: "host operation error Box identity is invalid"}
 	}
-	if !slices.Contains([]Code{CodeNotFound, CodeInvalidInput, CodeConflict, CodeAuthentication, CodePermissionDenied, CodeOperationInProgress, CodeOutcomeUnknown, CodeCapabilityUnavailable}, result.Error.Code) || result.Error.Message == "" || len(result.Error.Message) > 4096 || strings.ContainsAny(result.Error.Message, "\x00\r\n") {
+	if !slices.Contains([]Code{CodeNotFound, CodeInvalidInput, CodeConflict, CodeAuthentication, CodePermissionDenied, CodeOperationInProgress, CodeInsufficientSpace, CodeOutcomeUnknown, CodeCapabilityUnavailable}, result.Error.Code) || result.Error.Message == "" || len(result.Error.Message) > 4096 || strings.ContainsAny(result.Error.Message, "\x00\r\n") {
 		return OperationError{}, true, &Error{Code: CodeInvalidMessage, Message: "host operation error is invalid"}
 	}
 	if len(result.Error.Context) > 8 {
