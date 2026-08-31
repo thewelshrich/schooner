@@ -1,5 +1,10 @@
 # Schooner Architecture
 
+This is the contributor map of modules, dependency rules, and operational
+contracts. Accepted product constraints live in
+[architecture decisions](adr/). User-facing guides live in the
+[documentation index](README.md).
+
 ## Architectural style
 
 Schooner is one Go application that runs locally and is installed on supported
@@ -90,7 +95,6 @@ internal/artifact/            verified remote-application artifacts and cache
 internal/selfupdate/          verified local update ownership and promotion
 internal/provider/            provider contracts and catalogue
 internal/provider/digitalocean/
-internal/provider/hetzner/
 internal/inventory/           local persistence interface and behavior
 internal/inventory/sqlite/    SQLite adapter and migrations
 internal/credentials/         resolution, profiles, redaction, and storage
@@ -101,7 +105,8 @@ internal/config/              typed configuration and precedence
 ```
 
 This is a map, not a requirement to create empty packages. A package is added
-only when it owns behavior. A future implementation may combine closely
+only when it owns behavior. Hetzner is a planned second built-in provider; do
+not add an empty package for it. A future implementation may combine closely
 coupled concepts behind a deeper module while preserving the domain language
 and dependency rules.
 

@@ -5,7 +5,7 @@ does not include a guaranteed response time.
 
 ## Before asking for help
 
-1. Read the [README](README.md) and relevant material in [docs](docs/).
+1. Read the [README](README.md) and the [documentation index](docs/README.md).
 2. Run `schooner version` and `schooner doctor`.
 3. Search existing issues for the behavior or question.
 4. Remove secrets and identifying infrastructure details from any output you
