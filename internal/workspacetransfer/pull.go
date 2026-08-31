@@ -91,6 +91,9 @@ func Pull(ctx context.Context, request PullRequest) (PullResult, error) {
 		if err = repository.PreflightCheckoutApplication(ctx, request.LocalWorktree, destination, inspection.State.Files, inspection.State.AbsentPaths); err != nil {
 			return pullRepositoryConflict(result, err)
 		}
+		if err = repository.PreflightCheckoutBranch(ctx, request.LocalWorktree, inspection.State); err != nil {
+			return pullRepositoryConflict(result, err)
+		}
 		result.FilesChanged = checkoutFilesChanged(inspection.State, destination)
 		result.Action = ActionWouldPull
 		return result, nil

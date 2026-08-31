@@ -135,6 +135,28 @@ func TestPullDryRunUsesManifestWithoutCreatingStaging(t *testing.T) {
 	}
 }
 
+func TestPullDryRunRejectsBranchOwnedByAnotherLocalWorktree(t *testing.T) {
+	local, remote := pullRepositories(t)
+	gitRun(t, remote, "checkout", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(remote, "feature.txt"), []byte("feature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, remote, "add", "feature.txt")
+	gitRun(t, remote, "commit", "-m", "feature")
+	gitRun(t, local, "fetch", remote, "feature:feature")
+	other := filepath.Join(t.TempDir(), "other")
+	gitRun(t, local, "worktree", "add", other, "feature")
+	state, err := repository.ObserveCheckout(t.Context(), remote)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := &fakePullSource{inspection: PullInspection{State: state, DestinationAncestor: true}}
+	result, err := Pull(t.Context(), PullRequest{LocalWorktree: local, RemoteWorktree: remote, Staging: filepath.Join(t.TempDir(), "unused"), DryRun: true, Source: source})
+	if err == nil || result.Action != ActionConflict || source.captured {
+		t.Fatalf("branch-owned dry run = %+v, captured=%t, err=%v", result, source.captured, err)
+	}
+}
+
 func TestPullIdenticalDirtyStateIsNoChange(t *testing.T) {
 	local, _ := pullRepositories(t)
 	if err := os.WriteFile(filepath.Join(local, "dirty.txt"), []byte("same\n"), 0o644); err != nil {

@@ -497,6 +497,9 @@ func (r *Runtime) ApplyWorkspacePush(ctx context.Context, request hostruntime.Wo
 	}
 	var applied repository.CheckoutState
 	if present {
+		if request.ExpectedStateDigest == "" {
+			return hostruntime.WorkspacePushApplyResult{}, &repository.Error{Code: repository.CodeConflict, Message: "the destination Worktree appeared after workspace preflight"}
+		}
 		createdBranch := ""
 		if request.OperationCreatedDestination {
 			createdBranch = request.OperationCreatedBranch

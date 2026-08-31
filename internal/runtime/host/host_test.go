@@ -213,6 +213,73 @@ func TestCleanupPullStagingRemovesOnlyOldOwnedPayloads(t *testing.T) {
 	}
 }
 
+func TestWorkspacePushRejectsDestinationThatAppearedAfterPreflight(t *testing.T) {
+	home := t.TempDir()
+	identity := "11111111-1111-4111-8111-111111111111"
+	identityDirectory := filepath.Join(home, ".local", "state", "schooner")
+	if err := os.MkdirAll(identityDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(identityDirectory, "identity"), []byte(identity+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(home, "worktrees")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(home, "source")
+	for _, arguments := range [][]string{{"init", source}, {"-C", source, "config", "user.name", "Test"}, {"-C", source, "config", "user.email", "test@example.com"}} {
+		if output, err := exec.Command("git", arguments...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", arguments, err, output)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(source, "file.txt"), []byte("source\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, arguments := range [][]string{{"-C", source, "add", "file.txt"}, {"-C", source, "commit", "-m", "base"}} {
+		if output, err := exec.Command("git", arguments...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", arguments, err, output)
+		}
+	}
+	canonicalSource, err := filepath.EvalSymlinks(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capture, err := repository.CaptureCheckout(t.Context(), canonicalSource, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer capture.Release()
+	target := filepath.Join(root, "repo")
+	if output, cloneErr := exec.Command("git", "clone", canonicalSource, target).CombinedOutput(); cloneErr != nil {
+		t.Fatalf("git clone: %v\n%s", cloneErr, output)
+	}
+	canonicalRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonicalTarget, err := filepath.EvalSymlinks(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	configurationPath := filepath.Join(home, "config.toml")
+	t.Setenv("SCHOONER_CONFIG", configurationPath)
+	if err = config.Write(configurationPath, config.Host{WorktreeRoot: canonicalRoot}); err != nil {
+		t.Fatal(err)
+	}
+	runtime := New(hostruntime.BuildInfo{Version: "dev"})
+	runtime.home = func() (string, error) { return home, nil }
+	payload, err := os.Open(capture.PayloadPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer payload.Close()
+	request := hostruntime.NewWorkspacePushApplyRequest(strings.Repeat("c", 32), canonicalTarget, "", capture.PayloadSHA256, capture.PayloadSize, capture.State.Digest, identity)
+	if _, err = runtime.ApplyWorkspacePush(t.Context(), request, payload); repository.ErrorCode(err) != repository.CodeConflict {
+		t.Fatalf("appeared destination error = %v", err)
+	}
+}
+
 func TestCurrentHomeIgnoresOverriddenHOME(t *testing.T) {
 	current, err := user.Current()
 	if err != nil {
