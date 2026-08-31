@@ -47,6 +47,7 @@ func newStartSessionCommand(streams Streams, global *globalOptions, targets *box
 			if err == nil {
 				linkedValue, hasLink, err = currentLocalLink(cmd.Context(), local)
 			}
+			linkedValue, hasLink, err = contextualLinkForBox(explicitBox, linkedValue, hasLink, err)
 			if err != nil {
 				return executionError{cause: normalizePushError(err)}
 			}
@@ -117,6 +118,7 @@ func newResumeSessionCommand(streams Streams, global *globalOptions, targets *bo
 			if err == nil {
 				linkedValue, hasLink, err = currentLocalLink(cmd.Context(), local)
 			}
+			linkedValue, hasLink, err = contextualLinkForBox(explicitBox, linkedValue, hasLink, err)
 			if err != nil {
 				return executionError{cause: normalizePushError(err)}
 			}
@@ -157,6 +159,13 @@ func newResumeSessionCommand(streams Streams, global *globalOptions, targets *bo
 	}}
 	command.Flags().StringVar(&explicitBox, "box", "", "box name (always uses OpenSSH)")
 	return command
+}
+
+func contextualLinkForBox(explicitBox string, value link.LocalLink, found bool, err error) (link.LocalLink, bool, error) {
+	if explicitBox != "" && link.ErrorCode(err) == link.CodeStale {
+		return link.LocalLink{}, false, nil
+	}
+	return value, found, err
 }
 
 func validateLinkedContext(ctx context.Context, target boxtarget.Target, value link.LocalLink) (string, error) {

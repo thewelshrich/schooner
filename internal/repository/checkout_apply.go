@@ -601,12 +601,15 @@ func validateCheckoutDestinationParents(root *os.Root, relative string) error {
 }
 
 type preparedCheckoutFile struct {
-	path           string
-	incoming       *CheckoutFile
-	previous       *CheckoutFile
-	incomingTemp   string
-	backupTemp     string
-	preserveBackup bool
+	path                string
+	incoming            *CheckoutFile
+	previous            *CheckoutFile
+	incomingTemp        string
+	backupTemp          string
+	displacedTemp       string
+	preserveBackup      bool
+	preserveDisplaced   bool
+	preserveDestination bool
 }
 
 type preparedCheckoutFiles struct {
@@ -733,27 +736,93 @@ func (prepared *preparedCheckoutFiles) Apply() error {
 		} else if !present || !checkoutFileContentEqual(current, *record.previous) {
 			return &Error{Code: CodeConflict, Message: fmt.Sprintf("destination path %q changed while workspace files were staged", record.path)}
 		}
+		if record.previous != nil {
+			if err = prepared.displaceAndVerify(record); err != nil {
+				return err
+			}
+		}
 		if record.incoming == nil {
-			prepared.mutated = true
-			if err = prepared.root.Remove(filepath.FromSlash(record.path)); err != nil {
+			if err = prepared.removeDisplaced(record); err != nil {
 				return err
 			}
 			continue
 		}
-		prepared.mutated = true
 		if record.previous == nil {
+			prepared.mutated = true
 			if err = prepared.root.Link(record.incomingTemp, filepath.FromSlash(record.path)); err == nil {
 				err = prepared.root.Remove(record.incomingTemp)
 			}
 		} else {
-			err = prepared.root.Rename(record.incomingTemp, filepath.FromSlash(record.path))
+			err = renameCheckoutNoReplace(prepared.root, record.incomingTemp, filepath.FromSlash(record.path))
 		}
 		if err != nil {
+			if record.previous != nil {
+				record.preserveDestination = true
+				_ = prepared.removeDisplaced(record)
+				return &Error{Code: CodeConflict, Message: fmt.Sprintf("destination path %q appeared while workspace push was applying", record.path), Cause: err}
+			}
 			return err
 		}
 		record.incomingTemp = ""
+		if err = prepared.removeDisplaced(record); err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+func (prepared *preparedCheckoutFiles) displaceAndVerify(record *preparedCheckoutFile) error {
+	displaced, err := checkoutTemporaryPath(record.path)
+	if err != nil {
+		return err
+	}
+	if err = prepared.root.Rename(filepath.FromSlash(record.path), displaced); err != nil {
+		return &Error{Code: CodeConflict, Message: fmt.Sprintf("destination path %q changed immediately before replacement", record.path), Cause: err}
+	}
+	prepared.mutated = true
+	record.displacedTemp = displaced
+	current, present, inspectErr := checkoutFileOnRoot(prepared.root, displaced)
+	if inspectErr == nil && present && checkoutFileContentEqual(current, *record.previous) {
+		return nil
+	}
+	record.preserveDestination = true
+	restoreErr := renameCheckoutNoReplace(prepared.root, displaced, filepath.FromSlash(record.path))
+	if restoreErr == nil {
+		record.displacedTemp = ""
+		return &Error{Code: CodeConflict, Message: fmt.Sprintf("destination path %q changed during workspace application", record.path), Cause: inspectErr}
+	}
+	record.preserveDisplaced = true
+	return &Error{Code: CodeOutcomeUnknown, Message: fmt.Sprintf("destination path %q changed during workspace application; preserved displaced content at %q", record.path, filepath.ToSlash(displaced)), Cause: errors.Join(inspectErr, restoreErr)}
+}
+
+func (prepared *preparedCheckoutFiles) removeDisplaced(record *preparedCheckoutFile) error {
+	if record.displacedTemp == "" {
+		return nil
+	}
+	if err := prepared.root.Remove(record.displacedTemp); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	record.displacedTemp = ""
+	return nil
+}
+
+func renameCheckoutNoReplace(root *os.Root, source, destination string) error {
+	sourceParent := filepath.Dir(source)
+	destinationParent := filepath.Dir(destination)
+	sourceDirectory, err := root.Open(sourceParent)
+	if err != nil {
+		return err
+	}
+	defer sourceDirectory.Close()
+	destinationDirectory := sourceDirectory
+	if destinationParent != sourceParent {
+		destinationDirectory, err = root.Open(destinationParent)
+		if err != nil {
+			return err
+		}
+		defer destinationDirectory.Close()
+	}
+	return renameNoReplaceAt(sourceDirectory, filepath.Base(source), destinationDirectory, filepath.Base(destination))
 }
 
 func (prepared *preparedCheckoutFiles) Rollback() error {
@@ -762,6 +831,9 @@ func (prepared *preparedCheckoutFiles) Rollback() error {
 	}
 	for index := range prepared.entries {
 		record := &prepared.entries[index]
+		if record.preserveDestination {
+			continue
+		}
 		if record.backupTemp != "" && record.previous != nil {
 			backup, present, err := checkoutFileOnRoot(prepared.root, record.backupTemp)
 			if err != nil {
@@ -790,6 +862,9 @@ func (prepared *preparedCheckoutFiles) Rollback() error {
 	}
 	for index := range prepared.entries {
 		record := &prepared.entries[index]
+		if record.preserveDestination {
+			continue
+		}
 		current, present, err := checkoutFileOnRoot(prepared.root, record.path)
 		if err != nil {
 			return err
@@ -878,6 +953,9 @@ func (prepared *preparedCheckoutFiles) Release() {
 				}
 			}
 			_ = prepared.root.Remove(record.backupTemp)
+		}
+		if record.displacedTemp != "" && !record.preserveDisplaced {
+			_ = prepared.root.Remove(record.displacedTemp)
 		}
 	}
 	sort.Slice(prepared.createdDirs, func(i, j int) bool { return len(prepared.createdDirs[i]) > len(prepared.createdDirs[j]) })
@@ -974,6 +1052,7 @@ func createCheckout(ctx context.Context, root, target string, payload ExtractedC
 	if moveErr == nil {
 		moveErr = renameNoReplaceAt(sourceParent, filepath.Base(stage), destinationParent, filepath.Base(target))
 	}
+	published := moveErr == nil
 	if moveErr == nil {
 		moveErr = sourceParent.Sync()
 	}
@@ -992,9 +1071,28 @@ func createCheckout(ctx context.Context, root, target string, payload ExtractedC
 		return CheckoutState{}, &Error{Code: CodeUnsupported, Message: "workspace creation requires Schooner state and the Worktree Root to use the same filesystem", Cause: moveErr}
 	}
 	if moveErr != nil {
+		if published {
+			return reconcileCreatedCheckout(ctx, target, payload.State, moveErr)
+		}
 		return CheckoutState{}, &Error{Code: CodeConflict, Message: "destination Worktree appeared or changed while the workspace was being created", Cause: moveErr}
 	}
-	return ObserveCheckout(ctx, target)
+	return reconcileCreatedCheckout(ctx, target, payload.State, nil)
+}
+
+func reconcileCreatedCheckout(ctx context.Context, target string, expected CheckoutState, publicationErr error) (CheckoutState, error) {
+	observed, observeErr := ObserveCheckout(context.WithoutCancel(ctx), target)
+	if observeErr == nil && observed.Digest == expected.Digest {
+		return observed, nil
+	}
+	if observeErr == nil {
+		observeErr = &Error{Code: CodeOutcomeUnknown, Message: "created destination Worktree does not match the captured source"}
+	}
+	return CheckoutState{}, afterCheckoutMutation(&Error{
+		Code:    CodeOutcomeUnknown,
+		Message: "destination Worktree was created but its final state could not be verified",
+		Cause:   errors.Join(publicationErr, observeErr),
+		Context: map[string]string{"remote_created": "true", "remote_worktree": target},
+	})
 }
 
 // initializeCheckoutHEAD runs only inside createCheckout's private, randomly

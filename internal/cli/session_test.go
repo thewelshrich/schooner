@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/thewelshrich/schooner/internal/link"
 	"github.com/thewelshrich/schooner/internal/repository"
 	hostruntime "github.com/thewelshrich/schooner/internal/runtime"
 	"github.com/thewelshrich/schooner/internal/runtime/host"
@@ -82,6 +83,19 @@ func TestSessionCommandsExposeConsistentBoxSelection(t *testing.T) {
 	logs, _, _ := root.Find([]string{"logs"})
 	if logs.Flags().Lookup("follow") != nil || logs.Flags().Lookup("lines") == nil {
 		t.Fatal("logs flags do not match the bounded capture contract")
+	}
+}
+
+func TestExplicitBoxIgnoresStaleContextualLink(t *testing.T) {
+	stale := &link.Error{Code: link.CodeStale, Message: "stale"}
+	value := link.LocalLink{BoxID: "old-box", RemoteWorktree: "/old/repo"}
+	got, found, err := contextualLinkForBox("new-box", value, true, stale)
+	if err != nil || found || got != (link.LocalLink{}) {
+		t.Fatalf("explicit Box link = %+v, %t, %v; want empty, false, nil", got, found, err)
+	}
+	got, found, err = contextualLinkForBox("", value, true, stale)
+	if !errors.Is(err, stale) || !found || got != value {
+		t.Fatalf("implicit Box link = %+v, %t, %v; want original stale result", got, found, err)
 	}
 }
 

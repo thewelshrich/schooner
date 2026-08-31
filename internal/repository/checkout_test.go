@@ -525,6 +525,75 @@ func TestRestoreCheckoutAfterFailedApplyProtectsConcurrentEdit(t *testing.T) {
 	}
 }
 
+func TestDisplaceAndVerifyRestoresConcurrentAtomicEdit(t *testing.T) {
+	target := t.TempDir()
+	path := filepath.Join(target, "file.txt")
+	writeCheckoutFile(t, path, "editor save\n", 0o644)
+	originalDigest := sha256.Sum256([]byte("original\n"))
+	previous := CheckoutFile{Path: "file.txt", Kind: "file", Size: int64(len("original\n")), SHA256: hex.EncodeToString(originalDigest[:]), Tracked: true}
+	root, err := os.OpenRoot(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	prepared := &preparedCheckoutFiles{root: root}
+	record := &preparedCheckoutFile{path: "file.txt", previous: &previous}
+	if err = prepared.displaceAndVerify(record); ErrorCode(err) != CodeConflict {
+		t.Fatalf("concurrent displacement error = %v", err)
+	}
+	contents, err := os.ReadFile(path)
+	if err != nil || string(contents) != "editor save\n" {
+		t.Fatalf("concurrent edit = %q, err=%v", contents, err)
+	}
+	if record.displacedTemp != "" || record.preserveDisplaced {
+		t.Fatalf("displaced recovery state = %+v", record)
+	}
+}
+
+func TestRenameCheckoutNoReplacePreservesAppearingDestination(t *testing.T) {
+	target := t.TempDir()
+	writeCheckoutFile(t, filepath.Join(target, "incoming"), "incoming\n", 0o644)
+	writeCheckoutFile(t, filepath.Join(target, "file.txt"), "editor save\n", 0o644)
+	root, err := os.OpenRoot(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	if err = renameCheckoutNoReplace(root, "incoming", "file.txt"); err == nil {
+		t.Fatal("no-replace publication overwrote an appearing destination")
+	}
+	contents, err := os.ReadFile(filepath.Join(target, "file.txt"))
+	if err != nil || string(contents) != "editor save\n" {
+		t.Fatalf("appearing destination = %q, err=%v", contents, err)
+	}
+}
+
+func TestReconcileCreatedCheckoutIgnoresCancellationAfterPublication(t *testing.T) {
+	target := checkoutTestRepository(t)
+	expected, err := ObserveCheckout(t.Context(), target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	observed, err := reconcileCreatedCheckout(ctx, target, expected, errors.New("sync failed"))
+	if err != nil || observed.Digest != expected.Digest {
+		t.Fatalf("reconciled destination = %+v, %v; want digest %s", observed, err, expected.Digest)
+	}
+}
+
+func TestReconcileCreatedCheckoutReportsPublishedUnknownOutcome(t *testing.T) {
+	expected := CheckoutState{Digest: strings.Repeat("a", 64)}
+	_, err := reconcileCreatedCheckout(t.Context(), filepath.Join(t.TempDir(), "missing"), expected, errors.New("sync failed"))
+	if ErrorCode(err) != CodeOutcomeUnknown || !CheckoutMutationStarted(err) {
+		t.Fatalf("published destination error = %v", err)
+	}
+	var domain *Error
+	if !errors.As(err, &domain) || domain.Context["remote_created"] != "true" {
+		t.Fatalf("published destination context = %+v", domain)
+	}
+}
+
 func TestRestoreCheckoutAfterFailedApplyProtectsConcurrentIndexChange(t *testing.T) {
 	source := checkoutTestRepository(t)
 	initial, err := CaptureCheckout(t.Context(), source, t.TempDir())
