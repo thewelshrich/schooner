@@ -346,7 +346,8 @@ Schooner currently includes:
 - provisioning and destroying DigitalOcean Droplets;
 - remote runtime setup, status, repair, and updates;
 - remote repository and Git worktree lifecycle;
-- one-shot local-to-remote workspace push with lightweight Local Links;
+- one-shot local-to-remote workspace push and remote-to-local workspace pull
+  with lightweight Local Links;
 - explicit Box-owned access to private GitHub repositories;
 - persistent tmux session lifecycle; and
 - human-readable and versioned JSON output.
