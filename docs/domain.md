@@ -119,14 +119,13 @@ an Agent.
 ## Workspace transfer language
 
 - **Push** transfers the current local checkout to its remote Worktree.
-- **Pull** will transfer the current remote Worktree to its local checkout.
+- **Pull** transfers the current remote Worktree to its local checkout.
 
-Push is implemented; Pull is planned as an explicit, one-shot, Git-aware
-operation under the same contract. The side named as the source is
-authoritative, but the destination is changed only when Schooner can prove that
-it contains no work unique to that destination. A conflict is reported for
-explicit resolution; Schooner never silently chooses a side, merges, or runs a
-continuous synchronizer.
+Both are explicit, one-shot, Git-aware operations under the same contract. The
+side named as the source is authoritative, but the destination is changed only
+when Schooner can prove that it contains no work unique to that destination. A
+conflict is reported for explicit resolution; Schooner never silently chooses a
+side, merges, or runs a continuous synchronizer.
 
 ## Supporting language
 

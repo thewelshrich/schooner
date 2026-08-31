@@ -39,37 +39,29 @@ Host work-api
 Then adopt the machine and start persistent work:
 
 ```bash
-# Verify the local machine, then prepare the remote machine.
 schooner doctor
 schooner box add work-api --ssh work-api
 
-# From a local Git checkout, push its complete current state and remember the
-# exact remote Worktree, then start persistent work there.
 cd repository
 schooner push --box work-api
 schooner start
 
-# Disconnect whenever you like, then return to the same tmux session.
 schooner resume --box work-api
 ```
 
-`box add` verifies the remote system, installs or checks Git and tmux, and
-installs the matching Schooner runtime for that SSH user. It does not install a
-daemon or prevent you from continuing to use `ssh work-api` directly.
+`box add` prepares Git, tmux, and the Schooner runtime for that SSH user. It
+does not install a daemon. `ssh work-api` continues to work.
 
-`push` is an explicit one-shot workspace transfer, not Git push and not a
-background synchronizer. It moves the current HEAD, index, tracked changes,
-and untracked non-ignored files to a safe remote Worktree, then remembers that
-exact Box and Worktree for later `push`, `start`, and `resume` commands.
+`push` is an explicit one-shot workspace transfer, not Git push. It copies the
+current checkout to a remote Worktree and remembers that route for later
+`push`, `pull`, `start`, and `resume` commands.
 
 ## Installation
 
 Schooner supports macOS 13 or later and contemporary Linux distributions on
 amd64 and arm64. The system OpenSSH client is required for Box connections.
 
-### Homebrew
-
-Homebrew is the recommended installation method:
+Homebrew is the recommended path:
 
 ```bash
 brew install thewelshrich/tap/schooner
@@ -77,119 +69,34 @@ schooner version
 schooner doctor
 ```
 
-Update Schooner through Homebrew so the package manager remains the owner of
-the installed executable and shell completions:
+Update with `brew upgrade thewelshrich/tap/schooner`. `schooner update` prints
+that command for a Homebrew install and never replaces the executable beneath
+it. `brew uninstall schooner` removes the package; it does not change local
+inventory or any remote machine.
 
-```bash
-brew update
-brew upgrade thewelshrich/tap/schooner
-```
-
-`schooner update` detects a Homebrew installation and prints that same command;
-it never replaces the executable beneath Homebrew.
-
-Uninstall the package with:
-
-```bash
-brew uninstall schooner
-```
-
-You can also remove the tap with `brew untap thewelshrich/tap` when you no
-longer use packages from it. Uninstalling the package does not remove Schooner's
-local inventory or change any remote machine.
-
-### Direct installation
-
-If you do not use Homebrew, the public installer selects the matching signed or
-verified release executable:
+Without Homebrew, the public installer selects the matching signed or verified
+release:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/thewelshrich/schooner/main/scripts/install.sh | bash
 ```
 
 The default target is `~/.local/bin/schooner`. The installer does not use
-`sudo` or edit shell profiles; when necessary it prints the exact `PATH` entry to
-add. Choose a different user-writable directory explicitly:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/thewelshrich/schooner/main/scripts/install.sh | \
-  bash -s -- --install-dir "$HOME/bin"
-```
-
-Pin an exact release, including an explicitly requested prerelease, with:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/thewelshrich/schooner/main/scripts/install.sh | \
-  bash -s -- --version v0.2.0
-```
-
-The installer resolves one concrete release, verifies the archive and embedded
-executable against `SHA256SUMS`, rejects unsafe archive contents, and validates
-the executable's version and platform. On macOS it verifies Schooner's Developer
-ID Application signature before running the candidate. Linux authenticity relies
-on GitHub HTTPS, the immutable release, and its checksum manifest; published
-provenance is not yet checked by the installer.
-
-Check the latest stable release without changing the executable, or update an
-installer-owned direct installation explicitly:
-
-```bash
-schooner update --check
-schooner update
-```
-
-The updater pins one exact release, verifies the raw executable against
-`SHA256SUMS`, validates its version and platform, and on macOS verifies the
-expected Developer ID signature before running or promoting it. It atomically
-replaces only an executable with a matching secure direct-install receipt.
-Homebrew and source installations receive owner-specific guidance; symlinked,
-manual, unknown, and stale-receipt installations are refused.
-
-During ordinary interactive terminal use, Schooner checks at most once every 24
-hours and writes an available-update notice to stderr after successful command
-output. The check has a one-second limit, is non-fatal, never runs for JSON or
-non-interactive commands, and keeps its validators in the operating system's
-user cache. Disable it with:
-
-```bash
-export SCHOONER_NO_UPDATE_CHECK=1
-```
-
-To uninstall a default direct installation, remove both owned files:
+`sudo` or edit shell profiles. Pass `--install-dir` or `--version` after `--`
+to choose a directory or pin a release. `schooner update` replaces only a
+direct installation it owns. To uninstall that default install:
 
 ```bash
 rm -- "$HOME/.local/bin/schooner" \
   "$HOME/.local/bin/.schooner-install-receipt.json"
 ```
 
-### Development builds from source
-
-You need:
-
-- Go 1.27 or later.
-
-Build the current development version from a source checkout and prepare its
-Linux host runtimes:
-
-```bash
-git clone https://github.com/thewelshrich/schooner.git
-cd schooner
-go install ./cmd/schooner
-schooner dev artifacts
-schooner version
-schooner doctor
-```
-
-Make sure Go's binary directory is on your `PATH`. It is normally `~/go/bin`.
-See the [development guide](docs/development.md) for the complete source-build
-workflow. Source builds are for development; use Homebrew or the direct installer
-for released versions. `schooner update` reports source-build guidance and does
-not replace them. Tagged binaries remain available through
-[GitHub Releases](https://github.com/thewelshrich/schooner/releases).
+Disable the occasional update notice with `SCHOONER_NO_UPDATE_CHECK=1`. Tagged
+binaries are also on
+[GitHub Releases](https://github.com/thewelshrich/schooner/releases). Source
+builds are for contributors; see the [development guide](docs/development.md).
 
 ## Common workflows
-
-### Adopt and inspect an existing machine
 
 ```bash
 schooner box add
@@ -199,39 +106,15 @@ schooner box status work-api
 schooner box ssh work-api
 ```
 
-The guided `box add` flow is intended for people. The complete non-interactive
-form works in scripts and CI:
-
-```bash
-schooner box add work-api --ssh work-api --yes
-```
-
-For unattended first contact, add `--accept-new-host-key` to use OpenSSH's
-`accept-new` policy. Schooner never accepts a changed host key.
-
-### Work with remote Git worktrees
+The guided `box add` flow is for people. Scripts can pass the complete
+non-interactive form, including `--yes` and `--accept-new-host-key` for
+unattended first contact. Schooner never accepts a changed host key.
 
 ```bash
 schooner clone git@github.com:owner/repository.git --box work-api
-schooner worktree add repository repository-feature \
-  --branch feature --box work-api
+schooner worktree add repository repository-feature --branch feature --box work-api
 schooner worktree list --box work-api
-schooner worktree inspect repository-feature --box work-api
-schooner worktree remove repository-feature --box work-api
-schooner worktree prune --box work-api
 ```
-
-Schooner first uses the supplied URL and the Box user's existing Git and SSH
-configuration. For GitHub it can then try canonical SSH, a connected Box Source
-Identity, and anonymous HTTPS. Every Git process is non-interactive. The
-credential-free supplied URL remains `remote.origin.url` even when another
-transport completes the clone. Schooner does not copy local Git credentials to
-a Box or require a repository configuration file.
-
-### Connect a Box to private GitHub repositories
-
-When the Box does not already have suitable GitHub credentials, connect a
-dedicated Box-owned SSH identity:
 
 ```bash
 schooner source connect github --box work-api
@@ -239,74 +122,31 @@ schooner source status --box work-api
 schooner source disconnect github --box work-api --yes
 ```
 
-Schooner authorizes one local GitHub account through a GitHub App and device
-flow. Interactive connect first explains that the App can add this Box's public
-SSH key, not read repositories, and will not copy laptop keys or store a token
-on the Box. Tokens remain in the operating-system credential store, while each
-Box generates and keeps its own Ed25519 private key. Schooner registers only the
-public key, validates GitHub host keys from HTTPS metadata, and uses strict
-managed SSH settings. JSON and non-interactive commands never launch
-authorization; they return `authentication_required` if no stored credential can
-satisfy the request. See the [source access guide](docs/source-access.md) for
-permissions, status, recovery, and cleanup behavior.
-
-An interactive `schooner clone` or contextual `schooner start` can offer a
-dedicated Box key after a GitHub authentication failure, after explaining that
-the Box's own Git and SSH configuration already failed. JSON and non-interactive
-invocations never authorize an account or register a key; use explicit
-`source connect` as the automation path.
-
-### Start and resume persistent sessions
+Each connected Box owns its own GitHub SSH key. Schooner does not copy laptop
+keys or store a GitHub token on the Box. See the
+[source access guide](docs/source-access.md) for permissions, status, and
+cleanup.
 
 ```bash
-# Contextual defaults for everyday use.
 cd /path/to/local/repository
 schooner start --box work-api
 schooner resume --box work-api
-
-# Exact selectors remain available when you need them.
-schooner start repository --box work-api
-schooner sessions --box work-api
-schooner resume repository --box work-api
-schooner logs <session-id> --lines 200 --box work-api
-schooner stop <session-id> --box work-api
-schooner shell repository --box work-api
+schooner pull --box work-api
 ```
 
-Each worktree has at most one Schooner-managed persistent shell session.
-Unmanaged tmux sessions remain visible and independently usable.
+`start` and `resume` pick up the Worktree remembered by a successful `push` or
+`pull`. Exact selectors remain available: `schooner start repository`,
+`schooner sessions`, `schooner logs`, `schooner stop`, and `schooner shell`.
 
-Without a selector, `start` first revalidates and uses the Local Link created
-or updated by a successful `push`. If no Local Link applies to the selected
-Box, it matches the current local checkout to a remote repository by its
-network origin. It uses the remote primary worktree as-is; it does not switch
-that worktree to the local branch. When no match exists, Schooner can clone the
-origin's default branch after showing local dirty, unpushed, detached-HEAD, or
-missing-upstream warnings. Local files and unpushed commits are never copied by
-this fallback flow.
-
-Without a selector, `resume` first looks for a managed live session on the
-exact Worktree recorded by an applicable Local Link. Without one, it chooses
-the most recently active managed live session for the matching repository. If
-none matches, it suggests `schooner start` instead of opening unrelated work.
-Outside a local repository, it chooses the most recent managed live session on
-the selected Box. Unmanaged or uncertain tmux sessions require an explicit
-choice. Only a successful `push` persists Local Link routing; `start` and
-`resume` revalidate and consume that routing without transferring files or
-creating a link from an inferred origin match.
-
-### Provision with DigitalOcean
-
-Schooner can also create and safely reconcile DigitalOcean Droplets:
+Provisioning a DigitalOcean Droplet creates billable infrastructure:
 
 ```bash
 schooner provider connect digitalocean personal --default
 schooner box add
 ```
 
-Provisioning creates billable infrastructure. See the
-[DigitalOcean guide](docs/digitalocean.md) for credential permissions,
-non-interactive use, recovery, and destruction semantics.
+See the [DigitalOcean guide](docs/digitalocean.md) for credentials, recovery,
+and destruction.
 
 ## How it works
 
@@ -321,58 +161,20 @@ your Linux machine
     `- Schooner runs on demand and exits
 ```
 
-Local inventory remembers how to reach a machine and records Schooner-owned
-operational metadata. The machine's filesystem, Git, tmux, and live processes
-remain authoritative.
-
-Two safety boundaries are deliberate:
-
-- `schooner box remove` forgets local inventory and never changes the machine.
-- `schooner box destroy` is a separate command available only for supported
-  provider-created infrastructure.
-
-Source access is managed separately. Disconnect it before removing or
-destroying a Box. Those Box commands never call GitHub, and retained local
-source metadata permits later revocation by the former Box name.
-
+`schooner box remove` forgets local inventory and never changes the machine.
+`schooner box destroy` is a separate command for supported provider-created
+infrastructure only. Disconnect GitHub source access before either command.
 Schooner does not expose generic remote command execution or a `schooner run`
 escape hatch.
 
-## Current scope
-
-Schooner currently includes:
-
-- adopting existing Ubuntu machines over OpenSSH;
-- provisioning and destroying DigitalOcean Droplets;
-- remote runtime setup, status, repair, and updates;
-- remote repository and Git worktree lifecycle;
-- one-shot local-to-remote workspace push and remote-to-local workspace pull
-  with lightweight Local Links;
-- explicit Box-owned access to private GitHub repositories;
-- persistent tmux session lifecycle; and
-- human-readable and versioned JSON output.
-
-The roadmap also includes Hetzner provisioning, optional coding-agent sessions,
-private SSH previews, and recovery improvements. These are not all implemented
-yet.
-
-Supported remote systems are Ubuntu 24.04 and 26.04 on amd64 and arm64.
+Supported remote systems are Ubuntu 24.04 and 26.04 on amd64 and arm64. The
+[roadmap](docs/roadmap.md) lists what is available now and what is not planned.
 
 ## Documentation
 
-- [Roadmap](docs/roadmap.md)
-- [Domain language and lifecycle rules](docs/domain.md)
-- [Architecture](docs/architecture.md)
-- [Development guide](docs/development.md)
-- [DigitalOcean guide](docs/digitalocean.md)
-- [Private GitHub source access](docs/source-access.md)
-- [Release process](docs/releasing.md)
-- [Architecture decisions](docs/adr/)
-- [Security policy](SECURITY.md)
-- [Support](SUPPORT.md)
-
-Run `schooner --help` or `schooner <command> --help` for the complete command
-reference.
+User guides and the contributor map live in the
+[documentation index](docs/README.md). Run `schooner --help` or
+`schooner <command> --help` for the command reference.
 
 ## Contributing
 

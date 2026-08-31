@@ -152,23 +152,3 @@ metadata and keyring credential. `box remove` and `box destroy` never perform
 this workflow automatically. They warn first and retain source metadata so the
 GitHub key can later be revoked using the former Box name. Private-key cleanup
 then waits until that same machine is re-adopted.
-
-## Opt-in live smoke tests
-
-Live GitHub checks are excluded from ordinary tests. Set
-`SCHOONER_LIVE_GITHUB=1`, then provide the repositories available to the cases
-you want to run:
-
-```text
-SCHOONER_LIVE_GITHUB_PUBLIC_REPOSITORY
-SCHOONER_LIVE_GITHUB_AMBIENT_REPOSITORY
-SCHOONER_LIVE_GITHUB_PRIVATE_REPOSITORY
-SCHOONER_LIVE_GITHUB_SAML_REPOSITORY
-SCHOONER_LIVE_GITHUB_TOKEN
-```
-
-Run `go test ./internal/source -run TestLiveGitHubSourceAccess -count=1`. The
-token needs the same Git SSH-key permission as the GitHub registration. The
-managed cases create a fresh temporary Box key, verify the requested private
-repository, and revoke the key during cleanup. The SAML case is optional and
-expects the organization to require explicit authorization of that new key.

@@ -43,5 +43,4 @@ roadmap describes intended direction, not a compatibility promise.
 - Windows client support or arbitrary Linux distribution support.
 
 The durable product principles and technical boundaries behind this scope are
-documented in the [domain model](domain.md), [architecture](architecture.md),
-and [architecture decisions](adr/).
+recorded for contributors in the [documentation index](README.md).

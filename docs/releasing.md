@@ -1,5 +1,9 @@
 # Releasing Schooner
 
+This is the maintainer runbook for tagging, signing, and distributing a
+release. It is not a user guide. User installation is in the
+[README](../README.md).
+
 Pushing a `v`-prefixed semantic-version tag builds four raw executables on
 native GitHub-hosted runners and packages four additional archives:
 

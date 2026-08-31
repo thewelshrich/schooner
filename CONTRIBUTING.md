@@ -27,8 +27,9 @@ go test ./...
 go vet ./...
 ```
 
-See the [development guide](docs/development.md) for remote-runtime artifacts
-and the Ubuntu SSH smoke test.
+See the [documentation index](docs/README.md) for the contributor map and the
+[development guide](docs/development.md) for remote-runtime artifacts and the
+Ubuntu SSH smoke test.
 
 ## Pull requests
 
@@ -186,3 +187,5 @@ the following require explicit compatibility and migration review:
 - credential storage and redaction behavior.
 
 Consequential changes should be recorded in `docs/adr/` before implementation.
+See the [ADR index](docs/adr/README.md). Maintainer release steps live in
+[docs/releasing.md](docs/releasing.md).
