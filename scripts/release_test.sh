@@ -107,7 +107,8 @@ expect_failure_in_fixture "working tree must be clean" "${dirty_fixture}" \
   --dry-run --notes-file "${notes_file}" v0.1.0
 
 require_workflow_invariant "publish_existing_tag:"
-require_workflow_invariant 'ref: ${{ needs.prepare.outputs.commit }}'
+require_workflow_invariant 'ref: ${{ github.sha }}'
+require_workflow_invariant 'ref: ${{ github.ref }}'
 require_workflow_invariant "existing-tag recovery must run from the matching tag ref"
 require_workflow_invariant "release tag target does not match the workflow ref"
 require_workflow_invariant "release tag must point to a commit contained in main"
@@ -120,7 +121,6 @@ require_workflow_invariant "EXPECTED_TEAM_ID: LDCWNW7T7K"
 require_workflow_invariant 'codesign --verify --strict --verbose=4 -R="${requirement}"'
 reject_workflow_invariant '--keychain "${SIGNING_KEYCHAIN}"'
 require_workflow_invariant "if: needs.prepare.outputs.publish == 'true'"
-require_workflow_invariant 'ref: ${{ needs.prepare.outputs.version }}'
 require_workflow_invariant "python3 scripts/package_release.py"
 require_workflow_invariant "install-smoke:"
 require_workflow_invariant 'scripts/release_install_smoke.sh "${{ needs.prepare.outputs.version }}" dist'
