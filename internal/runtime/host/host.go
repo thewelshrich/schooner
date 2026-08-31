@@ -358,7 +358,7 @@ func (r *Runtime) ApplyWorkspacePush(ctx context.Context, request hostruntime.Wo
 		if observeErr != nil {
 			return hostruntime.WorkspacePushApplyResult{}, observeErr
 		}
-		if request.ExpectedStateDigest == "" || current.Digest != request.ExpectedStateDigest {
+		if request.ExpectedStateDigest == "" || current.RevalidationDigest != request.ExpectedStateDigest {
 			return hostruntime.WorkspacePushApplyResult{}, &repository.Error{Code: repository.CodeConflict, Message: "the destination Worktree changed after push preflight"}
 		}
 	} else if request.ExpectedStateDigest != "" {
@@ -383,14 +383,14 @@ func (r *Runtime) ApplyWorkspacePush(ctx context.Context, request hostruntime.Wo
 		if observeErr != nil {
 			return hostruntime.WorkspacePushApplyResult{}, observeErr
 		}
-		if current.Digest != request.ExpectedStateDigest {
+		if current.RevalidationDigest != request.ExpectedStateDigest {
 			return hostruntime.WorkspacePushApplyResult{}, &repository.Error{Code: repository.CodeConflict, Message: "the destination Worktree changed while push was preparing its rollback state"}
 		}
 	}
 	var applied repository.CheckoutState
 	if present {
 		if request.OperationCreatedDestination {
-			applied, err = repository.ApplyCheckoutIfOperationCreatedAndUnchanged(ctx, target, extracted, request.ExpectedStateDigest)
+			applied, err = repository.ApplyCheckoutIfOperationCreatedAndUnchanged(ctx, target, extracted, request.ExpectedStateDigest, request.OperationCreatedBranch)
 		} else {
 			applied, err = repository.ApplyCheckoutIfUnchanged(ctx, target, extracted, request.ExpectedStateDigest)
 		}

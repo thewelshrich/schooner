@@ -145,15 +145,93 @@ func TestApplyCheckoutAllowsRewindOnlyForExactOperationCreatedSeed(t *testing.T)
 		t.Fatal(err)
 	}
 
-	if _, err = ApplyCheckoutIfUnchanged(t.Context(), destination, payload, seed.Digest); ErrorCode(err) != CodeConflict {
+	if _, err = ApplyCheckoutIfUnchanged(t.Context(), destination, payload, seed.RevalidationDigest); ErrorCode(err) != CodeConflict {
 		t.Fatalf("ordinary destination rewind error = %v, want conflict", err)
 	}
-	applied, err := ApplyCheckoutIfOperationCreatedAndUnchanged(t.Context(), destination, payload, seed.Digest)
+	applied, err := ApplyCheckoutIfOperationCreatedAndUnchanged(t.Context(), destination, payload, seed.RevalidationDigest, seed.Branch)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if applied.Digest != capture.State.Digest || applied.HEAD != capture.State.HEAD {
 		t.Fatalf("applied state = %+v, want source digest %s at %s", applied, capture.State.Digest, capture.State.HEAD)
+	}
+}
+
+func TestOperationCreatedRewindDoesNotOverwriteAnotherBranch(t *testing.T) {
+	source := checkoutTestRepository(t)
+	baseBranch := strings.TrimSpace(string(runCheckoutGit(t, "-C", source, "symbolic-ref", "--short", "HEAD")))
+	runCheckoutGit(t, "-C", source, "checkout", "-b", "feature")
+	writeCheckoutFile(t, filepath.Join(source, "file.txt"), "source feature\n", 0o644)
+	runCheckoutGit(t, "-C", source, "add", "file.txt")
+	runCheckoutGit(t, "-C", source, "commit", "-m", "source feature")
+	capture, err := CaptureCheckout(t.Context(), source, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer capture.Release()
+	payload, err := ExtractCheckoutPayload(capture.PayloadPath, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer payload.Release()
+
+	destination := filepath.Join(t.TempDir(), "destination")
+	runCheckoutGit(t, "clone", "--branch", baseBranch, source, destination)
+	destination, err = filepath.EvalSymlinks(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seed, err := ObserveCheckout(t.Context(), destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := filepath.Join(t.TempDir(), "other")
+	runCheckoutGit(t, "-C", destination, "worktree", "add", "-b", "feature", other)
+	runCheckoutGit(t, "-C", other, "config", "user.name", "Test")
+	runCheckoutGit(t, "-C", other, "config", "user.email", "test@example.com")
+	writeCheckoutFile(t, filepath.Join(other, "file.txt"), "destination feature\n", 0o644)
+	runCheckoutGit(t, "-C", other, "add", "file.txt")
+	runCheckoutGit(t, "-C", other, "commit", "-m", "destination feature")
+	unique := strings.TrimSpace(string(runCheckoutGit(t, "-C", other, "rev-parse", "HEAD")))
+	runCheckoutGit(t, "-C", destination, "worktree", "remove", other)
+
+	if _, err = ApplyCheckoutIfOperationCreatedAndUnchanged(t.Context(), destination, payload, seed.RevalidationDigest, seed.Branch); ErrorCode(err) != CodeConflict {
+		t.Fatalf("other operation-created branch error = %v, want conflict", err)
+	}
+	if got := strings.TrimSpace(string(runCheckoutGit(t, "-C", destination, "rev-parse", "refs/heads/feature"))); got != unique {
+		t.Fatalf("feature branch changed to %s, want %s", got, unique)
+	}
+}
+
+func TestApplyCheckoutRevalidatesRepositoryIdentity(t *testing.T) {
+	source := checkoutTestRepository(t)
+	runCheckoutGit(t, "-C", source, "remote", "add", "origin", "https://example.com/owner/repo.git")
+	capture, err := CaptureCheckout(t.Context(), source, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer capture.Release()
+	destination := filepath.Join(t.TempDir(), "destination")
+	destination = applyCheckoutCapture(t, destination, capture).Worktree
+	extracted, err := ExtractCheckoutPayload(capture.PayloadPath, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer extracted.Release()
+	expected, err := ObserveCheckout(t.Context(), destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runCheckoutGit(t, "-C", destination, "remote", "set-url", "origin", "https://example.com/other/repo.git")
+	if _, err = ApplyCheckoutIfUnchanged(t.Context(), destination, extracted, expected.RevalidationDigest); ErrorCode(err) != CodeConflict {
+		t.Fatalf("repository identity revalidation error = %v, want conflict", err)
+	}
+}
+
+func TestParseGitWorktreeListAcceptsBareRepositoryRecord(t *testing.T) {
+	records, err := parseGitWorktreeList([]byte("worktree /srv/repo.git\x00bare\x00\x00"))
+	if err != nil || len(records) != 1 || !records[0].Bare || records[0].Path != "/srv/repo.git" {
+		t.Fatalf("bare Worktree records = %+v, %v", records, err)
 	}
 }
 
@@ -332,7 +410,7 @@ func TestCheckoutCreateRecordsCredentialFreeNetworkOriginBeforeVerification(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	applied, err = ApplyCheckoutIfUnchanged(t.Context(), destination, extracted, expected.Digest)
+	applied, err = ApplyCheckoutIfUnchanged(t.Context(), destination, extracted, expected.RevalidationDigest)
 	if err != nil || applied.Digest != next.State.Digest || applied.RepositoryIdentity != "" {
 		t.Fatalf("one-sided identity apply = %+v, err=%v", applied, err)
 	}
@@ -367,7 +445,7 @@ func TestApplyCheckoutIfUnchangedProtectsLateDestinationEdit(t *testing.T) {
 	}
 	defer extracted.Release()
 	writeCheckoutFile(t, filepath.Join(destination, "file.txt"), "late edit\n", 0o644)
-	if _, err = ApplyCheckoutIfUnchanged(t.Context(), destination, extracted, expected.Digest); ErrorCode(err) != CodeConflict {
+	if _, err = ApplyCheckoutIfUnchanged(t.Context(), destination, extracted, expected.RevalidationDigest); ErrorCode(err) != CodeConflict {
 		t.Fatalf("late edit error = %v", err)
 	} else if CheckoutMutationStarted(err) {
 		t.Fatalf("late edit was incorrectly reported as a partially applied checkout: %v", err)
@@ -407,7 +485,7 @@ func TestApplyCheckoutRejectsIncomingUntrackedPathIgnoredOnlyByDestination(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = ApplyCheckoutIfUnchanged(t.Context(), destination, extracted, expected.Digest); ErrorCode(err) != CodeConflict {
+	if _, err = ApplyCheckoutIfUnchanged(t.Context(), destination, extracted, expected.RevalidationDigest); ErrorCode(err) != CodeConflict {
 		t.Fatalf("destination ignore conflict = %v", err)
 	} else if CheckoutMutationStarted(err) {
 		t.Fatalf("destination ignore conflict was detected after mutation: %v", err)

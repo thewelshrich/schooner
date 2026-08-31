@@ -315,6 +315,7 @@ func (r *Runtime) PreflightWorkspacePush(ctx context.Context, connection box.Con
 func (r *Runtime) ApplyWorkspacePush(ctx context.Context, connection box.Connection, installed box.HostRuntime, expectedIdentity string, request workspacetransfer.ApplyRequest, payload io.Reader) (workspacetransfer.ApplyResult, error) {
 	remote := hostruntime.NewWorkspacePushApplyRequest(request.OperationID, request.RemoteWorktree, request.ExpectedStateDigest, request.PayloadSHA256, request.PayloadSize, request.SourceState.Digest, expectedIdentity)
 	remote.OperationCreatedDestination = request.OperationCreatedDestination
+	remote.OperationCreatedBranch = request.OperationCreatedBranch
 	operation := hostruntime.WorkspacePushApplyOperation()
 	hello, err := operationHello(ctx, r, connection, installed)
 	if err != nil {
@@ -337,7 +338,7 @@ func (r *Runtime) ApplyWorkspacePush(ctx context.Context, connection box.Connect
 	command := fixedShellCommand(`runtime_path=$(printf %s "$1" | base64 -d) || exit 64; exec "$runtime_path" host workspace push-apply`, installed.Path)
 	result, err := r.runRemote(ctx, connection, command, io.MultiReader(bytes.NewReader(header), payload))
 	if err != nil {
-		return workspacetransfer.ApplyResult{}, err
+		return workspacetransfer.ApplyResult{}, &box.Error{Code: "outcome_unknown", Message: "workspace push was dispatched but its remote result could not be confirmed", Context: map[string]string{"remote_worktree": request.RemoteWorktree}, Cause: err}
 	}
 	if result.ExitCode != 0 {
 		return workspacetransfer.ApplyResult{}, remoteFailure(operation.Command(), result)

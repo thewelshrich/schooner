@@ -57,6 +57,7 @@ type ApplyRequest struct {
 	PayloadSHA256               string
 	SourceState                 repository.CheckoutState
 	OperationCreatedDestination bool
+	OperationCreatedBranch      string
 }
 
 type ApplyResult struct {
@@ -113,7 +114,7 @@ func Push(ctx context.Context, request PushRequest) (PushResult, error) {
 	result := PushResult{Source: source, Destination: destination, RemoteWorktree: request.RemoteWorktree, Created: destination == nil || request.CreatedDestination != nil}
 	if request.CreatedDestination != nil {
 		seed := request.CreatedDestination
-		if destination == nil || destination.Worktree != request.RemoteWorktree || destination.Digest != seed.Digest {
+		if destination == nil || destination.Worktree != request.RemoteWorktree || destination.RevalidationDigest != seed.RevalidationDigest {
 			result.Action = ActionConflict
 			return result, &Error{Code: CodeConflict, Message: "Push stopped: the newly cloned remote Worktree changed before the local workspace could be applied"}
 		}
@@ -185,7 +186,7 @@ func Push(ctx context.Context, request PushRequest) (PushResult, error) {
 	defer payload.Close()
 	expected := ""
 	if destination != nil {
-		expected = destination.Digest
+		expected = destination.RevalidationDigest
 	}
 	operationID, err := newOperationID()
 	if err != nil {
@@ -195,6 +196,7 @@ func Push(ctx context.Context, request PushRequest) (PushResult, error) {
 		OperationID: operationID, RemoteWorktree: request.RemoteWorktree, ExpectedStateDigest: expected,
 		PayloadSize: capture.PayloadSize, PayloadSHA256: capture.PayloadSHA256, SourceState: capture.State,
 		OperationCreatedDestination: request.CreatedDestination != nil,
+		OperationCreatedBranch:      operationCreatedBranch(request.CreatedDestination),
 	}, payload)
 	if err != nil {
 		return result, err
@@ -206,6 +208,13 @@ func Push(ctx context.Context, request PushRequest) (PushResult, error) {
 	result.Destination = &applied.State
 	result.BytesTransferred = applied.BytesTransferred
 	return result, nil
+}
+
+func operationCreatedBranch(state *repository.CheckoutState) string {
+	if state == nil || state.Detached {
+		return ""
+	}
+	return state.Branch
 }
 
 func pushPreflightError(err error) error {

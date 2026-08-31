@@ -333,7 +333,8 @@ func ExtractCheckoutPayload(payloadPath, stagingDirectory string) (ExtractedChec
 				return ExtractedCheckout{}, &Error{Code: CodeInvalidInput, Message: "workspace payload metadata is incompatible", Cause: err}
 			}
 			digest, digestErr := checkoutDigest(metadata.State)
-			if digestErr != nil || digest != metadata.State.Digest {
+			revalidation, revalidationErr := checkoutRevalidationDigest(metadata.State)
+			if digestErr != nil || digest != metadata.State.Digest || revalidationErr != nil || revalidation != metadata.State.RevalidationDigest {
 				return ExtractedCheckout{}, &Error{Code: CodeInvalidInput, Message: "workspace payload state digest is invalid", Cause: digestErr}
 			}
 			for _, entry := range metadata.State.Files {
@@ -442,13 +443,13 @@ func ExtractCheckoutPayload(payloadPath, stagingDirectory string) (ExtractedChec
 func (value ExtractedCheckout) Release() { _ = os.RemoveAll(value.Directory) }
 
 func ApplyCheckout(ctx context.Context, target string, payload ExtractedCheckout) (CheckoutState, error) {
-	return applyCheckout(ctx, filepath.Dir(target), target, payload, "", false)
+	return applyCheckout(ctx, filepath.Dir(target), target, payload, "", "")
 }
 
 // ApplyCheckoutWithinRoot applies a checkout while constraining first-create
 // promotion to a verified Worktree Root.
 func ApplyCheckoutWithinRoot(ctx context.Context, root, target string, payload ExtractedCheckout) (CheckoutState, error) {
-	return applyCheckout(ctx, root, target, payload, "", false)
+	return applyCheckout(ctx, root, target, payload, "", "")
 }
 
 // ApplyCheckoutIfUnchanged applies only when the existing destination still
@@ -457,18 +458,18 @@ func ApplyCheckoutIfUnchanged(ctx context.Context, target string, payload Extrac
 	if expectedDigest == "" {
 		return CheckoutState{}, &Error{Code: CodeInvalidInput, Message: "expected destination checkout digest is required"}
 	}
-	return applyCheckout(ctx, filepath.Dir(target), target, payload, expectedDigest, false)
+	return applyCheckout(ctx, filepath.Dir(target), target, payload, expectedDigest, "")
 }
 
 // ApplyCheckoutIfOperationCreatedAndUnchanged applies a workspace to a clean
 // clone created and exactly revalidated by the current push. Its branch may be
 // rewound to the authoritative source because the clone seed is operation
 // output, not pre-existing destination work.
-func ApplyCheckoutIfOperationCreatedAndUnchanged(ctx context.Context, target string, payload ExtractedCheckout, expectedDigest string) (CheckoutState, error) {
+func ApplyCheckoutIfOperationCreatedAndUnchanged(ctx context.Context, target string, payload ExtractedCheckout, expectedDigest, createdBranch string) (CheckoutState, error) {
 	if expectedDigest == "" {
 		return CheckoutState{}, &Error{Code: CodeInvalidInput, Message: "expected operation-created checkout digest is required"}
 	}
-	return applyCheckout(ctx, filepath.Dir(target), target, payload, expectedDigest, true)
+	return applyCheckout(ctx, filepath.Dir(target), target, payload, expectedDigest, createdBranch)
 }
 
 // RestoreCheckoutAfterFailedApply restores a captured destination after an
@@ -540,7 +541,7 @@ func RestoreCheckoutAfterFailedApply(ctx context.Context, target string, backup,
 	if err != nil {
 		return CheckoutState{}, err
 	}
-	return ApplyCheckoutIfUnchanged(ctx, target, backup, current.Digest)
+	return ApplyCheckoutIfUnchanged(ctx, target, backup, current.RevalidationDigest)
 }
 
 func checkoutHeadEqual(left, right CheckoutState) bool {
@@ -934,6 +935,9 @@ func (prepared *preparedCheckoutFiles) verificationState(observed CheckoutState)
 	observed.Status.Untracked -= removed
 	var err error
 	observed.Digest, err = checkoutDigest(observed)
+	if err == nil {
+		observed.RevalidationDigest, err = checkoutRevalidationDigest(observed)
+	}
 	return observed, err
 }
 
@@ -968,7 +972,7 @@ func checkoutFileContentEqual(left, right CheckoutFile) bool {
 	return left.Path != "" && right.Path != "" && left.Kind == right.Kind && left.Executable == right.Executable && left.Size == right.Size && left.SHA256 == right.SHA256
 }
 
-func applyCheckout(ctx context.Context, root, target string, payload ExtractedCheckout, expectedDigest string, operationCreated bool) (CheckoutState, error) {
+func applyCheckout(ctx context.Context, root, target string, payload ExtractedCheckout, expectedDigest, operationCreatedBranch string) (CheckoutState, error) {
 	if !filepath.IsAbs(target) || filepath.Clean(target) != target {
 		return CheckoutState{}, &Error{Code: CodeInvalidInput, Message: "destination Worktree path must be canonical and absolute"}
 	}
@@ -985,7 +989,7 @@ func applyCheckout(ctx context.Context, root, target string, payload ExtractedCh
 	}
 	root = filepath.Clean(canonicalRoot)
 	target = filepath.Join(root, relativeTarget)
-	if !validGitObjectID(payload.State.HEAD) || payload.State.IndexCount != len(payload.State.IndexEntries) || payload.State.AbsentCount != len(payload.State.AbsentPaths) || payload.State.Digest == "" {
+	if !validGitObjectID(payload.State.HEAD) || payload.State.IndexCount != len(payload.State.IndexEntries) || payload.State.AbsentCount != len(payload.State.AbsentPaths) || payload.State.Digest == "" || payload.State.RevalidationDigest == "" {
 		return CheckoutState{}, &Error{Code: CodeInvalidInput, Message: "workspace payload state is incomplete"}
 	}
 	if _, err := os.Lstat(target); errors.Is(err, os.ErrNotExist) {
@@ -996,7 +1000,7 @@ func applyCheckout(ctx context.Context, root, target string, payload ExtractedCh
 	} else if err != nil {
 		return CheckoutState{}, err
 	}
-	return applyExistingCheckout(ctx, target, payload, expectedDigest, operationCreated)
+	return applyExistingCheckout(ctx, target, payload, expectedDigest, operationCreatedBranch)
 }
 
 func createCheckout(ctx context.Context, root, target string, payload ExtractedCheckout) (CheckoutState, error) {
@@ -1041,7 +1045,7 @@ func createCheckout(ctx context.Context, root, target string, payload ExtractedC
 			return CheckoutState{}, gitTransferError("record destination origin", result, err)
 		}
 	}
-	if _, err = applyExistingCheckout(ctx, stage, payload, "", false); err != nil {
+	if _, err = applyExistingCheckout(ctx, stage, payload, "", ""); err != nil {
 		return CheckoutState{}, err
 	}
 	destinationParent, err := openDestinationParent(root, parent)
@@ -1081,7 +1085,7 @@ func createCheckout(ctx context.Context, root, target string, payload ExtractedC
 
 func reconcileCreatedCheckout(ctx context.Context, target string, expected CheckoutState, publicationErr error) (CheckoutState, error) {
 	observed, observeErr := ObserveCheckout(context.WithoutCancel(ctx), target)
-	if observeErr == nil && observed.Digest == expected.Digest {
+	if observeErr == nil && observed.RevalidationDigest == expected.RevalidationDigest {
 		return observed, nil
 	}
 	if observeErr == nil {
@@ -1113,12 +1117,12 @@ func initializeCheckoutHEAD(ctx context.Context, target string, state CheckoutSt
 	return &checkoutHEADUpdate{target: target, newHEAD: state.HEAD, headChanged: true}, nil
 }
 
-func applyExistingCheckout(ctx context.Context, target string, payload ExtractedCheckout, expectedDigest string, operationCreated bool) (CheckoutState, error) {
+func applyExistingCheckout(ctx context.Context, target string, payload ExtractedCheckout, expectedDigest, operationCreatedBranch string) (CheckoutState, error) {
 	destination, err := ObserveCheckout(ctx, target)
 	if err != nil {
 		return CheckoutState{}, err
 	}
-	if expectedDigest != "" && destination.Digest != expectedDigest {
+	if expectedDigest != "" && destination.RevalidationDigest != expectedDigest {
 		return CheckoutState{}, &Error{Code: CodeConflict, Message: "the destination Worktree changed after push preflight"}
 	}
 	incarnation, err := captureCheckoutIncarnation(ctx, target)
@@ -1146,7 +1150,8 @@ func applyExistingCheckout(ctx context.Context, target string, payload Extracted
 	if err = incarnation.Validate(ctx, target); err != nil {
 		return CheckoutState{}, err
 	}
-	if !operationCreated {
+	allowCreatedBranchRewind := operationCreatedBranch != "" && !payload.State.Detached && payload.State.Branch == operationCreatedBranch
+	if !allowCreatedBranchRewind {
 		if err = validateIncomingBranch(ctx, target, payload.State); err != nil {
 			return CheckoutState{}, err
 		}
@@ -1163,7 +1168,7 @@ func applyExistingCheckout(ctx context.Context, target string, payload Extracted
 	if err != nil {
 		return CheckoutState{}, err
 	}
-	if latest.Digest != destination.Digest {
+	if latest.RevalidationDigest != destination.RevalidationDigest {
 		return CheckoutState{}, &Error{Code: CodeConflict, Message: "the destination Worktree changed immediately before workspace application"}
 	}
 	if err = incarnation.Validate(ctx, target); err != nil {
@@ -1221,7 +1226,7 @@ func applyExistingCheckout(ctx context.Context, target string, payload Extracted
 	if err = incarnation.Validate(ctx, target); err != nil {
 		return CheckoutState{}, applyFailure(err)
 	}
-	headUpdate, err = updateCheckoutHEADWithBranchRewind(ctx, target, payload.State, operationCreated)
+	headUpdate, err = updateCheckoutHEADWithBranchRewind(ctx, target, payload.State, allowCreatedBranchRewind)
 	if err != nil {
 		return CheckoutState{}, applyFailure(err)
 	}
@@ -1502,6 +1507,7 @@ type gitWorktreeRecord struct {
 	Path     string
 	Branch   string
 	Detached bool
+	Bare     bool
 }
 
 func parseGitWorktreeList(raw []byte) ([]gitWorktreeRecord, error) {
@@ -1540,13 +1546,22 @@ func parseGitWorktreeList(raw []byte) ([]gitWorktreeRecord, error) {
 					return nil, &Error{Code: CodeConflict, Message: "Git returned malformed Worktree topology"}
 				}
 				record.Detached = true
-			case value == "bare", value == "locked", strings.HasPrefix(value, "locked "), value == "prunable", strings.HasPrefix(value, "prunable "):
+			case value == "bare":
+				if record.Bare {
+					return nil, &Error{Code: CodeConflict, Message: "Git returned malformed Worktree topology"}
+				}
+				record.Bare = true
+			case value == "locked", strings.HasPrefix(value, "locked "), value == "prunable", strings.HasPrefix(value, "prunable "):
 				// These documented porcelain fields do not affect branch ownership.
 			default:
 				return nil, &Error{Code: CodeConflict, Message: "Git returned unknown Worktree topology data"}
 			}
 		}
-		if !headSeen || (!branchSeen && !record.Detached) {
+		if record.Bare {
+			if headSeen || branchSeen || record.Detached {
+				return nil, &Error{Code: CodeConflict, Message: "Git returned malformed bare Repository topology"}
+			}
+		} else if !headSeen || (!branchSeen && !record.Detached) {
 			return nil, &Error{Code: CodeConflict, Message: "Git returned incomplete Worktree topology"}
 		}
 		records = append(records, record)

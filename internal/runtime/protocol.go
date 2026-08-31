@@ -175,6 +175,7 @@ type WorkspacePushApplyRequest struct {
 	PayloadSHA256               string `json:"payload_sha256"`
 	SourceStateDigest           string `json:"source_state_digest"`
 	OperationCreatedDestination bool   `json:"operation_created_destination,omitempty"`
+	OperationCreatedBranch      string `json:"operation_created_branch,omitempty"`
 }
 
 type SourceIdentityRequest struct {
@@ -392,8 +393,11 @@ func ValidateWorkspacePushApplyRequest(request WorkspacePushApplyRequest) error 
 	if !operationIDPattern.MatchString(request.OperationID) || request.PayloadSize <= 0 || request.PayloadSize > 1<<40 || !sha256Pattern.MatchString(request.PayloadSHA256) || (request.ExpectedStateDigest != "" && !sha256Pattern.MatchString(request.ExpectedStateDigest)) || !sha256Pattern.MatchString(request.SourceStateDigest) {
 		return &Error{Code: CodeInvalidInput, Message: "workspace push payload declaration is invalid"}
 	}
-	if request.OperationCreatedDestination && request.ExpectedStateDigest == "" {
+	if request.OperationCreatedDestination && (request.ExpectedStateDigest == "" || len(request.OperationCreatedBranch) > 1024 || hasControl(request.OperationCreatedBranch)) {
 		return &Error{Code: CodeInvalidInput, Message: "operation-created workspace push requires an expected destination state"}
+	}
+	if !request.OperationCreatedDestination && request.OperationCreatedBranch != "" {
+		return &Error{Code: CodeInvalidInput, Message: "workspace push branch rewind declaration is invalid"}
 	}
 	return nil
 }

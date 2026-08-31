@@ -51,6 +51,7 @@ func (a directAdapter) preflightPushDestination(ctx context.Context, worktree st
 func (a directAdapter) applyPush(ctx context.Context, request workspacetransfer.ApplyRequest, payload io.Reader) (workspacetransfer.ApplyResult, error) {
 	remote := hostruntime.NewWorkspacePushApplyRequest(request.OperationID, request.RemoteWorktree, request.ExpectedStateDigest, request.PayloadSHA256, request.PayloadSize, request.SourceState.Digest, a.state.boxIdentity)
 	remote.OperationCreatedDestination = request.OperationCreatedDestination
+	remote.OperationCreatedBranch = request.OperationCreatedBranch
 	result, err := a.runtime.ApplyWorkspacePush(ctx, remote, payload)
 	return workspacetransfer.ApplyResult{State: result.State, BytesTransferred: result.BytesTransferred}, err
 }

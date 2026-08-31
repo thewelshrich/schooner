@@ -56,6 +56,7 @@ type CheckoutState struct {
 	Files              []CheckoutFile       `json:"files"`
 	FileCount          int                  `json:"file_count"`
 	Digest             string               `json:"digest"`
+	RevalidationDigest string               `json:"revalidation_digest"`
 	Bytes              int64                `json:"bytes"`
 }
 
@@ -138,6 +139,9 @@ func ObserveCheckout(ctx context.Context, worktree string) (CheckoutState, error
 		RepositoryIdentity: local.OriginKey, CloneSource: local.CloneSource, Status: local.Status, Files: files, FileCount: len(files), Bytes: total,
 	}
 	state.Digest, err = checkoutDigest(state)
+	if err == nil {
+		state.RevalidationDigest, err = checkoutRevalidationDigest(state)
+	}
 	return state, err
 }
 
@@ -225,7 +229,7 @@ func CaptureCheckout(ctx context.Context, worktree, stagingDirectory string) (Ch
 	if err != nil {
 		return CheckoutCapture{}, err
 	}
-	if latest.Digest != state.Digest {
+	if latest.RevalidationDigest != state.RevalidationDigest {
 		return CheckoutCapture{}, &Error{Code: CodeConflict, Message: "the source Worktree changed while its workspace was being captured"}
 	}
 	failed = false
@@ -544,10 +548,24 @@ func rejectPartialCloneConfiguration(ctx context.Context, worktree string) error
 
 func checkoutDigest(state CheckoutState) (string, error) {
 	state.Digest = ""
+	state.RevalidationDigest = ""
 	state.Worktree = ""
 	state.CloneSource = ""
 	state.RepositoryIdentity = ""
 	encoded, err := json.Marshal(state)
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(encoded)
+	return hex.EncodeToString(digest[:]), nil
+}
+
+func checkoutRevalidationDigest(state CheckoutState) (string, error) {
+	encoded, err := json.Marshal(struct {
+		Digest             string `json:"digest"`
+		RepositoryIdentity string `json:"repository_identity"`
+		CloneSource        string `json:"clone_source"`
+	}{Digest: state.Digest, RepositoryIdentity: state.RepositoryIdentity, CloneSource: state.CloneSource})
 	if err != nil {
 		return "", err
 	}

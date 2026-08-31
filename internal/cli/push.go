@@ -216,7 +216,7 @@ func observeCreatedPushDestination(ctx context.Context, target boxtarget.Target,
 	}
 	observed, err := target.ObservePushDestination(ctx, expectedPath)
 	if err != nil {
-		return nil, err
+		return nil, &repository.Error{Code: repository.CodeOutcomeUnknown, Message: "the remote Worktree was cloned but could not be revalidated", Context: map[string]string{"remote_created": "true", "remote_worktree": expectedPath}, Cause: err}
 	}
 	if observed == nil {
 		return nil, &repository.Error{Code: repository.CodeOutcomeUnknown, Message: "the newly cloned remote Worktree disappeared before its workspace could be prepared"}

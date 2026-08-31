@@ -61,6 +61,23 @@ esac
 	}
 }
 
+func TestWorkspacePushReportsUnknownOutcomeWhenSSHResultIsLost(t *testing.T) {
+	testRemoteShell(t)
+	target := filepath.Join(t.TempDir(), "host-runtime")
+	hello := fmt.Sprintf(`{"schema_version":"1","protocol_version":"1","schooner_version":"v1.2.3","commit":"abc123","box_identity":%q,"os":"linux","architecture":"amd64","capabilities":["workspace.push.apply.v1"]}`, hostTestIdentity)
+	contents := fmt.Sprintf("#!/bin/sh\ncase \"$1 $2 $3\" in\n  'host hello ') printf '%%s\\n' '%s' ;;\n  'host workspace push-apply') cat >/dev/null; exit 255 ;;\n  *) exit 64 ;;\nesac\n", hello)
+	if err := os.WriteFile(target, []byte(contents), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runtime := NewHost(testSSHExecutable(t), nil, "v1.2.3", nil)
+	digest := strings.Repeat("a", 64)
+	payloadDigest := fmt.Sprintf("%x", sha256.Sum256([]byte("abc")))
+	_, err := runtime.ApplyWorkspacePush(t.Context(), box.Connection{Destination: "trusted-host"}, box.HostRuntime{Path: target}, hostTestIdentity, workspacetransfer.ApplyRequest{OperationID: strings.Repeat("b", 32), RemoteWorktree: "/remote/repo", PayloadSize: 3, PayloadSHA256: payloadDigest, SourceState: repository.CheckoutState{Digest: digest}}, bytes.NewBufferString("abc"))
+	if box.ErrorCode(err) != "outcome_unknown" {
+		t.Fatalf("lost SSH apply result error = %v, code=%s", err, box.ErrorCode(err))
+	}
+}
+
 func TestInteractiveHostHandshakePreservesTransportError(t *testing.T) {
 	ssh := writeExecutable(t, "#!/bin/sh\nprintf 'Permission denied (publickey).\\n' >&2\nexit 255\n")
 	runtime := NewHost(ssh, nil, "v1.2.3", nil)

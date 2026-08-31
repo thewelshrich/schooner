@@ -137,6 +137,7 @@ func TestPushAllowsExactOperationCreatedCloneSeedAheadOfSource(t *testing.T) {
 	seed.Worktree = "/remote/repo"
 	seed.HEAD = "1111111111111111111111111111111111111111"
 	seed.Digest = "operation-created-seed"
+	seed.RevalidationDigest = "operation-created-seed"
 	seed.Status = repository.Status{}
 	remote := &fakeRemote{destination: &seed}
 
@@ -157,8 +158,10 @@ func TestPushRejectsOperationCreatedCloneSeedThatChanged(t *testing.T) {
 	}
 	seed.Worktree = "/remote/repo"
 	seed.Digest = "operation-created-seed"
+	seed.RevalidationDigest = "operation-created-seed"
 	destination := seed
 	destination.Digest = "changed-after-clone"
+	destination.RevalidationDigest = "changed-after-clone"
 	remote := &fakeRemote{destination: &destination}
 
 	result, err := Push(t.Context(), PushRequest{
