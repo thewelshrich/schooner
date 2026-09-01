@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -54,10 +55,15 @@ func TestHelp(t *testing.T) {
 
 func TestDoctorChecksLocalClientRatherThanBoxReadiness(t *testing.T) {
 	bin := t.TempDir()
-	for name, output := range map[string]string{
-		"ssh": "OpenSSH_9.9p2, LibreSSL 3.3.6",
-		"git": "git version 2.50.1",
-	} {
+	tools := map[string]string{
+		"ssh":        "OpenSSH_9.9p2, LibreSSL 3.3.6",
+		"ssh-keygen": "unused",
+		"git":        "git version 2.50.1",
+	}
+	if runtime.GOOS == "darwin" {
+		tools["sw_vers"] = "15.6.1"
+	}
+	for name, output := range tools {
 		path := filepath.Join(bin, name)
 		contents := "#!/bin/sh\nprintf '%s\\n' '" + output + "'\n"
 		if err := os.WriteFile(path, []byte(contents), 0o755); err != nil {
@@ -96,7 +102,7 @@ func TestDoctorChecksLocalClientRatherThanBoxReadiness(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &document); err != nil {
 		t.Fatal(err)
 	}
-	if document.SchemaVersion != "1" || document.Scope != "client" || !document.Healthy || len(document.Checks) != 3 {
+	if document.SchemaVersion != "2" || document.Scope != "client" || !document.Healthy || len(document.Checks) != 4 {
 		t.Fatalf("doctor document = %+v", document)
 	}
 }

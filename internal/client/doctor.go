@@ -6,13 +6,14 @@ import (
 	"fmt"
 	"os/exec"
 	"runtime"
+	"strconv"
 	"strings"
 
 	"github.com/thewelshrich/schooner/internal/process"
 )
 
 const (
-	SchemaVersion   = "1"
+	SchemaVersion   = "2"
 	toolOutputLimit = 4 << 10
 )
 
@@ -52,12 +53,11 @@ func (e environment) diagnose(ctx context.Context) (DoctorReport, error) {
 	if err := ctx.Err(); err != nil {
 		return DoctorReport{}, err
 	}
-	platformOK := (e.operatingSystem == "darwin" || e.operatingSystem == "linux") && (e.architecture == "amd64" || e.architecture == "arm64")
-	checks := []Check{{
-		ID:      "client_platform",
-		OK:      platformOK,
-		Message: platformMessage(platformOK, e.operatingSystem, e.architecture),
-	}}
+	platform, err := e.checkPlatform(ctx)
+	if err != nil {
+		return DoctorReport{}, err
+	}
+	checks := []Check{platform}
 	for _, tool := range []struct {
 		id, name, display string
 		arguments         []string
@@ -71,11 +71,54 @@ func (e environment) diagnose(ctx context.Context) (DoctorReport, error) {
 		}
 		checks = append(checks, check)
 	}
+	checks = append(checks, e.checkExecutable("ssh_keygen", "ssh-keygen", "OpenSSH key generator"))
 	healthy := true
 	for _, check := range checks {
 		healthy = healthy && check.OK
 	}
 	return DoctorReport{SchemaVersion: SchemaVersion, Scope: "client", Healthy: healthy, Checks: checks}, nil
+}
+
+func (e environment) checkPlatform(ctx context.Context) (Check, error) {
+	architectureOK := e.architecture == "amd64" || e.architecture == "arm64"
+	switch e.operatingSystem {
+	case "linux":
+		return Check{ID: "client_platform", OK: architectureOK, Message: platformMessage(architectureOK, "Linux/"+e.architecture, "")}, nil
+	case "darwin":
+		path, err := e.lookPath("sw_vers")
+		if err != nil {
+			return Check{ID: "client_platform", Message: platformMessage(false, "macOS/"+e.architecture, "could not determine the macOS version")}, nil
+		}
+		version, err := e.run(ctx, path, "-productVersion")
+		if ctx.Err() != nil {
+			return Check{}, ctx.Err()
+		}
+		version = firstLine(version)
+		major, parseErr := macOSMajorVersion(version)
+		if err != nil || parseErr != nil {
+			return Check{ID: "client_platform", Message: platformMessage(false, "macOS/"+e.architecture, "could not determine the macOS version")}, nil
+		}
+		ok := architectureOK && major >= 13
+		reason := ""
+		if major < 13 {
+			reason = "macOS 13 or later is required"
+		}
+		return Check{ID: "client_platform", OK: ok, Message: platformMessage(ok, "macOS "+version+"/"+e.architecture, reason)}, nil
+	default:
+		return Check{ID: "client_platform", Message: platformMessage(false, e.operatingSystem+"/"+e.architecture, "")}, nil
+	}
+}
+
+func macOSMajorVersion(version string) (int, error) {
+	major, _, _ := strings.Cut(version, ".")
+	return strconv.Atoi(major)
+}
+
+func (e environment) checkExecutable(id, name, display string) Check {
+	if _, err := e.lookPath(name); err != nil {
+		return Check{ID: id, Message: fmt.Sprintf("%s is unavailable in PATH.", display)}
+	}
+	return Check{ID: id, OK: true, Message: fmt.Sprintf("%s is available.", display)}
 }
 
 func (e environment) checkTool(ctx context.Context, id, name, display string, arguments ...string) (Check, error) {
@@ -114,15 +157,12 @@ func firstLine(value string) string {
 	return value
 }
 
-func platformMessage(ok bool, operatingSystem, architecture string) string {
-	platform := operatingSystem + "/" + architecture
-	if operatingSystem == "darwin" {
-		platform = "macOS/" + architecture
-	} else if operatingSystem == "linux" {
-		platform = "Linux/" + architecture
-	}
+func platformMessage(ok bool, platform, reason string) string {
 	if ok {
 		return "Client platform is supported: " + platform + "."
+	}
+	if reason != "" {
+		return "Client platform is unsupported: " + platform + " (" + reason + ")."
 	}
 	return "Client platform is unsupported: " + platform + "."
 }
