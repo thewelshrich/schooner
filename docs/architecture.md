@@ -100,6 +100,7 @@ internal/inventory/sqlite/    SQLite adapter and migrations
 internal/credentials/         resolution, profiles, redaction, and storage
 internal/secretstore/         operating-system credential-store seam
 internal/process/             bounded local process execution
+internal/client/              local client readiness diagnostics
 internal/output/              human and versioned JSON presentation
 internal/config/              typed configuration and precedence
 ```
@@ -109,6 +110,12 @@ only when it owns behavior. Hetzner is a planned second built-in provider; do
 not add an empty package for it. A future implementation may combine closely
 coupled concepts behind a deeper module while preserving the domain language
 and dependency rules.
+
+Local client diagnostics and remote Box diagnostics are separate modules.
+`schooner doctor` checks only prerequisites for the invoking client, while the
+private host doctor protocol retains Ubuntu, Box identity, Git, tmux, and
+Worktree Root checks. `box status` is the public live observation of those
+remote capabilities.
 
 ## Remote application and OpenSSH transport
 

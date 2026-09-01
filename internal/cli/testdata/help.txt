@@ -9,7 +9,7 @@ Available Commands:
   clone       Clone a Repository onto a Box
   completion  Generate the autocompletion script for the specified shell
   db          Manage local Schooner database state
-  doctor      Check this machine for Schooner readiness
+  doctor      Check local client readiness
   help        Help about any command
   logs        Capture bounded history from a managed Session
   provider    Manage cloud provider credential profiles

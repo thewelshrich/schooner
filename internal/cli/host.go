@@ -15,6 +15,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/thewelshrich/schooner/internal/box"
+	clientdoctor "github.com/thewelshrich/schooner/internal/client"
 	"github.com/thewelshrich/schooner/internal/repository"
 	hostruntime "github.com/thewelshrich/schooner/internal/runtime"
 	"github.com/thewelshrich/schooner/internal/runtime/host"
@@ -493,12 +494,11 @@ func encodeSourceOperationError(writer io.Writer, identity string, err error) er
 func newDoctorCommand(streams Streams, options *globalOptions) *cobra.Command {
 	return &cobra.Command{
 		Use:          "doctor",
-		Short:        "Check this machine for Schooner readiness",
+		Short:        "Check local client readiness",
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			runtime := options.hostRuntime()
-			report, err := runtime.Doctor(cmd.Context(), hostruntime.NewInspectRequest(box.DefaultWorktreeRoot))
+			report, err := clientdoctor.Diagnose(cmd.Context())
 			if err != nil {
 				return executionError{cause: err}
 			}
@@ -507,7 +507,7 @@ func newDoctorCommand(streams Streams, options *globalOptions) *cobra.Command {
 	}
 }
 
-func writeDoctorResult(w io.Writer, output string, report hostruntime.DoctorReport, theme *uitheme.Theme) error {
+func writeDoctorResult(w io.Writer, output string, report clientdoctor.DoctorReport, theme *uitheme.Theme) error {
 	var err error
 	switch output {
 	case "json":
@@ -566,7 +566,7 @@ func encodeHostOperationResult[Request, Result any](writer io.Writer, operation 
 	return encodeHostResult(writer, result)
 }
 
-func writeDoctorReport(w io.Writer, report hostruntime.DoctorReport, theme *uitheme.Theme) error {
+func writeDoctorReport(w io.Writer, report clientdoctor.DoctorReport, theme *uitheme.Theme) error {
 	status := "ready"
 	if !report.Healthy {
 		status = "needs attention"
@@ -598,22 +598,13 @@ func writeDoctorReport(w io.Writer, report hostruntime.DoctorReport, theme *uith
 			return err
 		}
 	}
-	if doctorIsUnsupportedLocalClient(report) {
-		if _, err := fmt.Fprintln(w); err != nil {
-			return err
-		}
-		return writeMutedNotice(w, theme, "This client can still manage remote boxes. Next: run `schooner box add` with a supported Ubuntu SSH destination.")
+	if _, err := fmt.Fprintln(w); err != nil {
+		return err
 	}
-	return nil
-}
-
-func doctorIsUnsupportedLocalClient(report hostruntime.DoctorReport) bool {
-	for _, check := range report.Checks {
-		if (check.ID == "platform" || check.ID == "operating_system") && !check.OK {
-			return true
-		}
+	if report.Healthy {
+		return writeMutedNotice(w, theme, "Ready to manage development boxes. Add one with `schooner box add`; check one with `schooner box status <name>`.")
 	}
-	return false
+	return writeMutedNotice(w, theme, "Fix the client checks above, then run `schooner doctor` again.")
 }
 
 func encodeHostResult(w io.Writer, value any) error {
