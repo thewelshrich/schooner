@@ -137,6 +137,19 @@ expect_root_failure() {
 help="$(bash "${installer}" --help)"
 [[ "${help}" == *"--install-dir"* && "${help}" == *"--version"* && "${help}" == *"--yes"* ]] || fail "help is incomplete"
 
+unset_shell_dir="${test_tmp}/unset-shell"
+output="$(env -u SHELL \
+  TEST_RELEASE_ROOT="${test_tmp}" \
+  TEST_LATEST_VERSION=v1.2.3 \
+  TEST_UNAME_S=Linux \
+  TEST_UNAME_M=x86_64 \
+  PATH="${test_tmp}/fake-bin:${PATH}" \
+  bash "${installer}" --version v1.2.3 --install-dir "${unset_shell_dir}" </dev/null)"
+[[ -x "${unset_shell_dir}/schooner" && "${output}" == *"is not on PATH"* ]] || fail "unset SHELL did not fall back to manual PATH guidance"
+
+grep -Fq 'elif [[ -f "${HOME}/.bash_profile" ]]' "${installer}" || fail "existing .bash_profile is not preferred before .profile"
+grep -Fq 'elif [[ -f "${HOME}/.bash_login" ]]' "${installer}" || fail "existing .bash_login is not preferred before .profile"
+
 install_dir="${test_tmp}/installed"
 output="$(invoke --install-dir "${install_dir}")"
 [[ "${output}" == *$'\nschooner\n'* && "${output}" == *"▁▂▄▆▆▄▂▁"* && "${output}" == *"Install Schooner"* && "${output}" == *"Version"* && "${output}" == *"v1.2.3"* && "${output}" == *"Installed Schooner v1.2.3"* && "${output}" == *"Downloaded and verified archive"* && "${output}" == *'export PATH='* ]] || fail "latest installation output is incomplete"
