@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -49,6 +50,60 @@ func TestHelp(t *testing.T) {
 				t.Errorf("stderr = %q, want empty", stderr)
 			}
 		})
+	}
+}
+
+func TestDoctorChecksLocalClientRatherThanBoxReadiness(t *testing.T) {
+	bin := t.TempDir()
+	tools := map[string]string{
+		"ssh":        "OpenSSH_9.9p2, LibreSSL 3.3.6",
+		"ssh-keygen": "unused",
+		"git":        "git version 2.50.1",
+	}
+	if runtime.GOOS == "darwin" {
+		tools["sw_vers"] = "15.6.1"
+	}
+	for name, output := range tools {
+		path := filepath.Join(bin, name)
+		contents := "#!/bin/sh\nprintf '%s\\n' '" + output + "'\n"
+		if err := os.WriteFile(path, []byte(contents), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", bin)
+
+	code, stdout, stderr := run(t.Context(), []string{"doctor"}, testBuild(), nil)
+	if code != 0 || stderr != "" {
+		t.Fatalf("code=%d stderr=%q stdout=%q", code, stderr, stdout)
+	}
+	for _, want := range []string{"Schooner doctor: ready", "Client platform is supported", "OpenSSH is available", "Git is available", "schooner box status"} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("doctor output missing %q: %s", want, stdout)
+		}
+	}
+	for _, unwanted := range []string{"Box identity", "tmux", "Worktree root", "Operating system is"} {
+		if strings.Contains(stdout, unwanted) {
+			t.Fatalf("doctor output contains Box-only check %q: %s", unwanted, stdout)
+		}
+	}
+
+	code, stdout, stderr = run(t.Context(), []string{"doctor", "--output", "json"}, testBuild(), nil)
+	if code != 0 || stderr != "" {
+		t.Fatalf("JSON code=%d stderr=%q stdout=%q", code, stderr, stdout)
+	}
+	var document struct {
+		SchemaVersion string `json:"schema_version"`
+		Scope         string `json:"scope"`
+		Healthy       bool   `json:"healthy"`
+		Checks        []struct {
+			ID string `json:"id"`
+		} `json:"checks"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &document); err != nil {
+		t.Fatal(err)
+	}
+	if document.SchemaVersion != "2" || document.Scope != "client" || !document.Healthy || len(document.Checks) != 4 {
+		t.Fatalf("doctor document = %+v", document)
 	}
 }
 

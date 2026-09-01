@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	clientdoctor "github.com/thewelshrich/schooner/internal/client"
 	hostruntime "github.com/thewelshrich/schooner/internal/runtime"
 	"github.com/thewelshrich/schooner/internal/runtime/host"
 )
@@ -51,7 +52,7 @@ func TestWriteDoctorResultReturnsFailureAfterUnhealthyReport(t *testing.T) {
 	for _, output := range []string{"human", "json"} {
 		t.Run(output, func(t *testing.T) {
 			var destination bytes.Buffer
-			report := hostruntime.DoctorReport{SchemaVersion: hostruntime.SchemaVersion, ProtocolVersion: hostruntime.ProtocolVersion, Healthy: false}
+			report := clientdoctor.DoctorReport{SchemaVersion: clientdoctor.SchemaVersion, Scope: "client", Healthy: false}
 			err := writeDoctorResult(&destination, output, report, nil)
 			var status exitStatusError
 			if !errors.As(err, &status) || status.code != exitFailure {
@@ -66,22 +67,22 @@ func TestWriteDoctorResultReturnsFailureAfterUnhealthyReport(t *testing.T) {
 
 func TestWriteDoctorResultReturnsSuccessForHealthyReport(t *testing.T) {
 	var destination bytes.Buffer
-	report := hostruntime.DoctorReport{SchemaVersion: hostruntime.SchemaVersion, ProtocolVersion: hostruntime.ProtocolVersion, Healthy: true}
+	report := clientdoctor.DoctorReport{SchemaVersion: clientdoctor.SchemaVersion, Scope: "client", Healthy: true}
 	if err := writeDoctorResult(&destination, "human", report, nil); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func TestDoctorExplainsUnsupportedLocalClientCanUseRemoteBoxes(t *testing.T) {
+func TestDoctorExplainsReadyClientCanAddBoxes(t *testing.T) {
 	var destination bytes.Buffer
-	report := hostruntime.DoctorReport{
-		SchemaVersion:   hostruntime.SchemaVersion,
-		ProtocolVersion: hostruntime.ProtocolVersion,
-		Healthy:         false,
-		Checks:          []hostruntime.Check{{ID: "platform", OK: false, Message: "Platform is darwin/arm64."}},
+	report := clientdoctor.DoctorReport{
+		SchemaVersion: clientdoctor.SchemaVersion,
+		Scope:         "client",
+		Healthy:       true,
+		Checks:        []clientdoctor.Check{{ID: "client_platform", OK: true, Message: "Client platform is supported: macOS/arm64."}},
 	}
 	_ = writeDoctorResult(&destination, "human", report, nil)
-	if !strings.Contains(destination.String(), "This client can still manage remote boxes") || !strings.Contains(destination.String(), "schooner box add") {
+	if !strings.Contains(destination.String(), "Schooner doctor: ready") || !strings.Contains(destination.String(), "Ready to manage development boxes") || !strings.Contains(destination.String(), "schooner box add") || !strings.Contains(destination.String(), "schooner box status") {
 		t.Fatalf("doctor output = %q", destination.String())
 	}
 }

@@ -100,7 +100,7 @@ invoke() {
   TEST_UNAME_S="${TEST_UNAME_S:-Linux}" \
   TEST_UNAME_M="${TEST_UNAME_M:-x86_64}" \
   PATH="${test_tmp}/fake-bin:${PATH}" \
-    bash "${installer}" "$@"
+    bash "${installer}" --yes "$@"
 }
 
 expect_failure() {
@@ -121,7 +121,7 @@ invoke_from_root() {
   TEST_UNAME_S=Linux \
   TEST_UNAME_M=x86_64 \
   PATH="${test_tmp}/fake-bin:${PATH}" \
-    bash "${installer}" "$@"
+    bash "${installer}" --yes "$@"
 }
 
 expect_root_failure() {
@@ -135,11 +135,11 @@ expect_root_failure() {
 }
 
 help="$(bash "${installer}" --help)"
-[[ "${help}" == *"--install-dir"* && "${help}" == *"--version"* ]] || fail "help is incomplete"
+[[ "${help}" == *"--install-dir"* && "${help}" == *"--version"* && "${help}" == *"--yes"* ]] || fail "help is incomplete"
 
 install_dir="${test_tmp}/installed"
 output="$(invoke --install-dir "${install_dir}")"
-[[ "${output}" == *"Installed Schooner v1.2.3"* && "${output}" == *'export PATH='* ]] || fail "latest installation output is incomplete"
+[[ "${output}" == *$'\nschooner\n'* && "${output}" == *"▁▂▄▆▆▄▂▁"* && "${output}" == *"Install Schooner"* && "${output}" == *"Version"* && "${output}" == *"v1.2.3"* && "${output}" == *"Installed Schooner v1.2.3"* && "${output}" == *"Downloaded and verified archive"* && "${output}" == *'export PATH='* ]] || fail "latest installation output is incomplete"
 [[ -x "${install_dir}/schooner" && -f "${install_dir}/.schooner-install-receipt.json" ]] || fail "installation files are missing"
 [[ "$("${install_dir}/schooner" version --output json)" == *'"version":"v1.2.3"'* ]] || fail "installed candidate is invalid"
 
@@ -249,7 +249,7 @@ TEST_LATEST_VERSION=v1.2.3 \
 TEST_UNAME_S=Linux \
 TEST_UNAME_M=x86_64 \
 PATH="${test_tmp}/fake-bin:${PATH}" \
-  bash "${installer}" --version v1.2.3 --install-dir "${cancel_dir}" >"${test_tmp}/cancel.out" 2>&1 &
+  bash "${installer}" --yes --version v1.2.3 --install-dir "${cancel_dir}" >"${test_tmp}/cancel.out" 2>&1 &
 installer_pid=$!
 for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
   [[ -e "${ready}" ]] && break
@@ -269,7 +269,7 @@ printf 'corrupt\n' >> "${corrupt_root}/dist/schooner_v1.2.3_linux_amd64.tar.gz"
 original_root="${test_tmp}"
 mkdir -p "${test_tmp}/corrupt-releases/v1.2.3"
 cp -R "${corrupt_root}/dist" "${test_tmp}/corrupt-releases/v1.2.3/dist"
-if output="$(TEST_RELEASE_ROOT="${test_tmp}/corrupt-releases" TEST_LATEST_VERSION=v1.2.3 PATH="${test_tmp}/fake-bin:${PATH}" bash "${installer}" --version v1.2.3 --install-dir "${test_tmp}/corrupt-install" 2>&1)"; then
+if output="$(TEST_RELEASE_ROOT="${test_tmp}/corrupt-releases" TEST_LATEST_VERSION=v1.2.3 PATH="${test_tmp}/fake-bin:${PATH}" bash "${installer}" --yes --version v1.2.3 --install-dir "${test_tmp}/corrupt-install" 2>&1)"; then
   fail "installer accepted a corrupt archive"
 fi
 [[ "${output}" == *"archive checksum mismatch"* ]] || fail "corrupt archive failure was unclear"
@@ -326,13 +326,13 @@ expect_root_failure "${members_root}" "invalid member set" --version v1.2.3 --in
 
 mismatch_root="${test_tmp}/mismatch-releases/v1.2.3"
 make_release "${mismatch_root}" v1.2.3 arm64
-if output="$(TEST_RELEASE_ROOT="${test_tmp}/mismatch-releases" TEST_LATEST_VERSION=v1.2.3 PATH="${test_tmp}/fake-bin:${PATH}" bash "${installer}" --version v1.2.3 --install-dir "${test_tmp}/mismatch-install" 2>&1)"; then
+if output="$(TEST_RELEASE_ROOT="${test_tmp}/mismatch-releases" TEST_LATEST_VERSION=v1.2.3 PATH="${test_tmp}/fake-bin:${PATH}" bash "${installer}" --yes --version v1.2.3 --install-dir "${test_tmp}/mismatch-install" 2>&1)"; then
   fail "installer accepted mismatched candidate identity"
 fi
 [[ "${output}" == *"candidate architecture does not match amd64"* ]] || fail "candidate mismatch failure was unclear"
 
 marker="${test_tmp}/mac-candidate-executed"
-if output="$(TEST_CANDIDATE_MARKER="${marker}" TEST_UNAME_S=Darwin TEST_UNAME_M=arm64 TEST_RELEASE_ROOT="${test_tmp}" TEST_LATEST_VERSION=v1.2.3 PATH="${test_tmp}/fake-bin:${PATH}" bash "${installer}" --version v1.2.3 --install-dir "${test_tmp}/unsigned-mac" 2>&1)"; then
+if output="$(TEST_CANDIDATE_MARKER="${marker}" TEST_UNAME_S=Darwin TEST_UNAME_M=arm64 TEST_RELEASE_ROOT="${test_tmp}" TEST_LATEST_VERSION=v1.2.3 PATH="${test_tmp}/fake-bin:${PATH}" bash "${installer}" --yes --version v1.2.3 --install-dir "${test_tmp}/unsigned-mac" 2>&1)"; then
   fail "installer accepted an unsigned macOS candidate"
 fi
 [[ ! -e "${marker}" ]] || fail "unsigned macOS candidate executed before signature verification"

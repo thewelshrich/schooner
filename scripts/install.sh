@@ -21,18 +21,173 @@ lock_token=""
 lock_held=false
 candidate_child=""
 watchdog_child=""
+cursor_hidden=false
+color=""
+bold=""
+faint=""
+success=""
+reset=""
+erase=""
+hide_cursor=""
+show_cursor=""
+assume_yes=false
 
 usage() {
   cat <<'USAGE'
 Install a verified Schooner release for the current user.
 
-Usage: install.sh [--version VERSION] [--install-dir DIRECTORY]
+Usage: install.sh [--version VERSION] [--install-dir DIRECTORY] [--yes]
 
 Options:
   --version VERSION       Install one exact v-prefixed release version
   --install-dir DIRECTORY Install into DIRECTORY instead of ~/.local/bin
+  -y, --yes               Install without an interactive confirmation
   -h, --help              Show this help
 USAGE
+}
+
+configure_appearance() {
+  if [[ -t 1 && "${TERM:-}" != dumb && -z "${NO_COLOR:-}" ]]; then
+    # ANSI 6/2/1 match the CLI's automatic theme: teal primary, green success.
+    color=$'\033[36m'
+    bold=$'\033[1m'
+    faint=$'\033[2m'
+    success=$'\033[32m'
+    reset=$'\033[0m'
+    erase=$'\033[K'
+    hide_cursor=$'\033[?25l'
+    show_cursor=$'\033[?25h'
+  fi
+}
+
+color_output() {
+  [[ -n "${color}" ]]
+}
+
+animated_intro() {
+  color_output && [[ "${assume_yes}" != true && -z "${CI:-}" ]]
+}
+
+restore_cursor() {
+  if [[ "${cursor_hidden}" == true ]]; then
+    printf '%s' "${show_cursor}"
+    cursor_hidden=false
+  fi
+}
+
+print_intro_settled() {
+  printf '%s%s%s%s\n' "${color}${bold}" "schooner" "${reset}" "${erase}"
+  printf '%s%s%s%s\n' "${color}${faint}" "▁▂▄▆▆▄▂▁" "${reset}" "${erase}"
+}
+
+print_intro_frame() {
+  local center="$1" word="schooner" heading="" wave="" index=0 letter distance glyph
+  while (( index < ${#word} )); do
+    letter="${word:index:1}"
+    if (( index == center || index == center - 1 )); then
+      heading+="${color}${bold}${letter}${reset}"
+    else
+      heading+="${letter}"
+    fi
+    distance=$((index - center))
+    if (( distance < 0 )); then
+      distance=$((-distance))
+    fi
+    case "${distance}" in
+      0) glyph="▆" ;;
+      1) glyph="▄" ;;
+      2) glyph="▂" ;;
+      *) glyph="▁" ;;
+    esac
+    if (( distance <= 1 )); then
+      wave+="${color}${glyph}${reset}"
+    else
+      wave+="${color}${faint}${glyph}${reset}"
+    fi
+    index=$((index + 1))
+  done
+  printf '%s%s\n' "${heading}" "${erase}"
+  printf '%s%s\n' "${wave}" "${erase}"
+}
+
+print_installer_intro() {
+  local frame
+  printf '\n'
+  if ! animated_intro; then
+    print_intro_settled
+    printf '%sPersistent development machines you own.%s\n\n' "${faint}" "${reset}"
+    return
+  fi
+
+  printf '%s' "${hide_cursor}"
+  cursor_hidden=true
+  for frame in 0 1 2 3 4 5 6 7; do
+    if (( frame > 0 )); then
+      printf '\033[2A'
+    fi
+    print_intro_frame "${frame}"
+    sleep 0.08
+  done
+  printf '\033[2A'
+  print_intro_settled
+  restore_cursor
+  printf '%sPersistent development machines you own.%s\n\n' "${faint}" "${reset}"
+}
+
+print_summary_row() {
+  printf '  %s%-8s%s  %s\n' "${faint}" "$1" "${reset}" "$2"
+}
+
+begin_step() {
+  if color_output; then
+    printf '%s…%s %s\n' "${color}" "${reset}" "$1"
+  fi
+}
+
+end_step() {
+  if color_output; then
+    printf '\033[1A\r%s' "${erase}"
+  fi
+  printf '%s✓%s %s\n' "${success}${bold}" "${reset}" "$1"
+}
+
+confirm_installation() {
+  local version="$1" platform="$2" directory="$3" answer
+
+  printf '%sInstall Schooner%s\n' "${color}${bold}" "${reset}"
+  print_summary_row Version "${version}"
+  print_summary_row Platform "${platform}"
+  print_summary_row Location "${directory%/}/schooner"
+  printf '%sNo sudo. Writes the executable and an ownership receipt only.%s\n\n' "${faint}" "${reset}"
+
+  if [[ "${assume_yes}" == true ]]; then
+    return
+  fi
+  if ! ( : <>/dev/tty ) 2>/dev/null; then
+    printf 'No terminal detected; continuing without confirmation. Use --yes for scripted installs.\n\n'
+    return
+  fi
+  exec 3<>/dev/tty
+
+  while true; do
+    printf '%sInstall Schooner?%s [Y/n] ' "${color}${bold}" "${reset}" >&3
+    if ! IFS= read -r answer <&3; then
+      answer=""
+    fi
+    case "${answer}" in
+      ""|y|Y|yes|YES)
+        printf '\n' >&3
+        exec 3>&-
+        return
+        ;;
+      n|N|no|NO)
+        printf '\nCancelled. No changes made.\n' >&3
+        exec 3>&-
+        exit 0
+        ;;
+      *) printf 'Please answer yes or no.\n' >&3 ;;
+    esac
+  done
 }
 
 fail() {
@@ -54,6 +209,7 @@ cleanup_lock() {
 
 cleanup() {
   local status=$?
+  restore_cursor
   if [[ -n "${candidate_child}" ]]; then
     kill -TERM "${candidate_child}" 2>/dev/null || true
   fi
@@ -358,11 +514,14 @@ acquire_lock() {
 }
 
 verify_macos_signature() {
-  local candidate="$1"
+  local candidate="$1" diagnostics
   [[ -x /usr/bin/codesign ]] || fail "/usr/bin/codesign is required on macOS"
   local requirement
   requirement="anchor apple generic and identifier \"${apple_identifier}\" and certificate leaf[subject.OU] = \"${apple_team_id}\" and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists"
-  /usr/bin/codesign --verify --strict --verbose=2 -R="${requirement}" "${candidate}" || fail "candidate has an invalid Schooner Developer ID signature"
+  if ! diagnostics="$(/usr/bin/codesign --verify --strict --verbose=2 -R="${requirement}" "${candidate}" 2>&1)"; then
+    [[ -z "${diagnostics}" ]] || printf '%s\n' "${diagnostics}" >&2
+    fail "candidate has an invalid Schooner Developer ID signature"
+  fi
 }
 
 verify_candidate_identity() {
@@ -432,6 +591,98 @@ path_contains_directory() {
   return 1
 }
 
+quote_for_shell() {
+  local value
+  value="$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+  printf "'%s'" "${value}"
+}
+
+resolve_shell_profile() {
+  local shell_name="${SHELL##*/}" base quoted_directory
+  profile_path=""
+  profile_command=""
+  quoted_directory="$(quote_for_shell "${install_dir}")"
+
+  case "${shell_name}" in
+    zsh)
+      base="${ZDOTDIR:-${HOME:-}}"
+      [[ "${base}" == /* ]] || return 1
+      profile_path="${base}/.zshrc"
+      profile_command="export PATH=${quoted_directory}:\"\$PATH\""
+      ;;
+    bash)
+      [[ -n "${HOME:-}" && "${HOME}" == /* ]] || return 1
+      if [[ -f "${HOME}/.bashrc" ]]; then
+        profile_path="${HOME}/.bashrc"
+      else
+        profile_path="${HOME}/.profile"
+      fi
+      profile_command="export PATH=${quoted_directory}:\"\$PATH\""
+      ;;
+    fish)
+      base="${XDG_CONFIG_HOME:-${HOME:-}/.config}"
+      [[ "${base}" == /* ]] || return 1
+      profile_path="${base}/fish/config.fish"
+      profile_command="fish_add_path -- ${quoted_directory}"
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+print_manual_path_guidance() {
+  local quoted_directory
+  quoted_directory="$(quote_for_shell "${install_dir}")"
+  printf '\n%s%s is not on PATH.%s Add this line to your shell profile, then open a new shell:\n\n' "${faint}" "${install_dir}" "${reset}"
+  printf '  export PATH=%s:"$PATH"\n' "${quoted_directory}"
+}
+
+append_path_update() {
+  local profile_directory
+  profile_directory="$(dirname "${profile_path}")"
+  mkdir -p "${profile_directory}" || return 1
+  if [[ -e "${profile_path}" && ! -f "${profile_path}" ]]; then
+    return 1
+  fi
+  touch "${profile_path}" || return 1
+  if grep -Fxq "${profile_command}" "${profile_path}" 2>/dev/null; then
+    return
+  fi
+  printf '\n# Schooner\n%s\n' "${profile_command}" >> "${profile_path}"
+}
+
+offer_path_update() {
+  local answer
+  if [[ "${assume_yes}" == true ]] || ! resolve_shell_profile || ! ( : <>/dev/tty ) 2>/dev/null; then
+    print_manual_path_guidance
+    return
+  fi
+
+  exec 3<>/dev/tty
+  printf '\n%s%s is not on PATH.%s Add it to %s now? [Y/n] ' "${faint}" "${install_dir}" "${reset}" "${profile_path}" >&3
+  if ! IFS= read -r answer <&3; then
+    answer=""
+  fi
+  exec 3>&-
+
+  case "${answer}" in
+    ""|y|Y|yes|YES)
+      if append_path_update; then
+        printf '\n%s✓%s Added Schooner to PATH in %s.\n' "${success}${bold}" "${reset}" "${profile_path}"
+        print_next_command "Open a new shell, then run:"
+        return
+      fi
+      printf '\nCould not update %s. Nothing outside the installation was changed.\n' "${profile_path}" >&2
+      print_manual_path_guidance
+      ;;
+    *) print_manual_path_guidance ;;
+  esac
+}
+
+print_next_command() {
+  printf '\n%s%s%s\n\n' "${faint}" "$1" "${reset}"
+  printf '  schooner doctor\n'
+}
+
 requested_version=""
 install_dir=""
 while (( $# > 0 )); do
@@ -445,6 +696,10 @@ while (( $# > 0 )); do
       (( $# >= 2 )) || fail "--install-dir requires a directory"
       install_dir="$2"
       shift 2
+      ;;
+    -y|--yes)
+      assume_yes=true
+      shift
       ;;
     -h|--help)
       usage
@@ -464,11 +719,16 @@ require_command stat
 platform_os="$(normalize_os "$(uname -s)")"
 platform_arch="$(normalize_arch "$(uname -m)")"
 
+configure_appearance
+print_installer_intro
+
 if [[ -n "${requested_version}" ]]; then
   validate_version "${requested_version}"
   selected_version="${requested_version}"
 else
+  begin_step "Resolving latest release"
   selected_version="$(resolve_latest)"
+  end_step "Resolved ${selected_version}"
 fi
 
 if [[ -z "${install_dir}" ]]; then
@@ -476,6 +736,7 @@ if [[ -z "${install_dir}" ]]; then
   install_dir="${HOME}/.local/bin"
 fi
 [[ "${install_dir}" != *$'\n'* && "${install_dir}" != *$'\r'* ]] || fail "install directory contains an unsafe newline"
+confirm_installation "${selected_version}" "${platform_os}/${platform_arch}" "${install_dir}"
 mkdir -p "${install_dir}" || fail "could not create install directory: ${install_dir}"
 [[ -d "${install_dir}" && ! -L "${install_dir}" ]] || fail "install directory must be a regular directory, not a symlink"
 install_dir="$(cd "${install_dir}" && pwd -P)"
@@ -488,6 +749,7 @@ executable_name="schooner_${selected_version}_${platform_os}_${platform_arch}"
 archive_path="${temporary_root}/${archive_name}"
 asset_root="${release_root}/download/${selected_version}"
 
+begin_step "Downloading archive"
 download "${asset_root}/SHA256SUMS" "${manifest_path}" "${max_manifest_bytes}"
 manifest_size="$(wc -c < "${manifest_path}" | tr -d ' ')"
 (( manifest_size <= max_manifest_bytes )) || fail "checksum manifest exceeds 1 MiB"
@@ -501,6 +763,7 @@ archive_size="$(wc -c < "${archive_path}" | tr -d ' ')"
 (( archive_size > 0 && archive_size <= max_archive_bytes )) || fail "release archive is empty or exceeds 512 MiB"
 [[ "$(hash_file "${archive_path}")" == "${archive_sha}" ]] || fail "archive checksum mismatch for ${archive_name}"
 validate_archive "${archive_path}"
+end_step "Downloaded and verified archive"
 
 target="${install_dir}/schooner"
 receipt="${install_dir}/${receipt_name}"
@@ -529,6 +792,7 @@ else
 fi
 
 [[ "${authorized}" == true ]] || fail "installation ownership could not be established"
+begin_step "Verifying executable"
 candidate_path="$(mktemp "${install_dir}/.schooner.tmp.XXXXXX")" || fail "could not create candidate in the install directory"
 (ulimit -f 262144; LC_ALL=C tar -xOzf "${archive_path}" schooner) > "${candidate_path}" || fail "could not read the executable from the release archive"
 candidate_size="$(wc -c < "${candidate_path}" | tr -d ' ')"
@@ -539,6 +803,7 @@ if [[ "${platform_os}" == "darwin" ]]; then
   verify_macos_signature "${candidate_path}"
 fi
 verify_candidate_identity "${candidate_path}" "${selected_version}" "${platform_os}" "${platform_arch}"
+end_step "Verified executable"
 
 [[ "$(file_fingerprint "${target}")" == "${baseline_target}" ]] || fail "installation target changed during verification; retry"
 [[ "$(file_fingerprint "${receipt}")" == "${baseline_receipt}" ]] || fail "installation receipt changed during verification; retry"
@@ -553,8 +818,10 @@ if ! write_receipt "${receipt}" "${target}" "${selected_version}" "${executable_
   exit 1
 fi
 
-printf 'Installed Schooner %s to %s\n' "${selected_version}" "${target}"
+printf '\n%s✓%s Installed Schooner %s\n' "${success}${bold}" "${reset}" "${selected_version}"
+print_summary_row Location "${target}"
 if ! path_contains_directory "${install_dir}"; then
-  printf '\n%s is not on PATH. Add this line to your shell profile, then open a new shell:\n\n' "${install_dir}"
-  printf '  export PATH=%q:"$PATH"\n' "${install_dir}"
+  offer_path_update
+else
+  print_next_command "Next:"
 fi

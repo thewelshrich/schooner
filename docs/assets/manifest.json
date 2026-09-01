@@ -15,6 +15,15 @@
       "width": 1200,
       "height": 630,
       "sha256": "2adc08f96bfa5902ef5673cd7c5587f29e37e9c8a9abd14770d275fd89523d74"
+    },
+    {
+      "path": "demo.gif",
+      "use": "README demo",
+      "width": 960,
+      "height": 540,
+      "generatedBy": "Local Remotion project (not committed): box add -> push -> start -> lid-closed tests still running -> multi-device ssh/tmux attach -> pull, animated and typeset, not a screen capture",
+      "note": "Revision 4: story is adopt work-lab, push a dirty billing checkout, start invoice tests, close the lid while tests still run, reattach with ordinary ssh + tmux attach from a phone, then schooner pull. No schooner resume command. Every status line, prompt title, and section heading is copied verbatim from internal/box/service.go and internal/ui/prompts/prompts.go as of 2026-09-01. Box name, repository name, and session ID are illustrative placeholders. Revision 3: revision 2's phone screen rect was computed against the 360x500 display box directly, ignoring that the phone artwork's native aspect ratio (1024x1536) forces objectFit:contain to pillarbox ~13px on each side; the rect is now derived from the artwork's actual alpha-channel-measured screen cutout (x:190-833, y:58-1468 at native resolution) with that pillarbox folded in, plus a 38px native safety inset (verified numerically to clear the ~86px-radius corner curvature by a real margin) so the terminal panel no longer visually covers the phone's bezel outline at the corners. Optimized with `gifsicle -O3 --lossy=80`.",
+      "sha256": "54daa2dde77b70b321c3197bb30246b4684cb9c92284be97e933d5803487f17a"
     }
   ]
 }

@@ -4,242 +4,243 @@
 
 # Schooner
 
-[![Release](https://img.shields.io/github/v/release/thewelshrich/schooner)](https://github.com/thewelshrich/schooner/releases/latest)
 [![CI](https://github.com/thewelshrich/schooner/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/thewelshrich/schooner/actions/workflows/ci.yml)
 [![License](https://img.shields.io/github/license/thewelshrich/schooner)](LICENSE)
+[![Follow @RichDevLab on X](https://img.shields.io/badge/follow-%40RichDevLab-000000?logo=x&logoColor=white)](https://x.com/RichDevLab)
 
-**Persistent remote development, on machines you control.**
+**Adopt a server. Get a persistent, resumable dev machine. Keep plain SSH
+access the whole time.**
 
-Schooner moves the current state of your local Git workspace to a remote Linux
-machine, opens a persistent tmux-backed development session, and brings the
-result home when you are done — all over ordinary SSH.
+Schooner is an open-source CLI that turns a plain Ubuntu box into a
+persistent development machine, using the tools you already trust: OpenSSH,
+Git worktrees, and tmux. No account, no hosted control plane, no daemon
+watching your machine, no loss of ordinary `ssh` access.
 
-**No account. No daemon. No hosted control plane. Ordinary SSH keeps working.**
+Schooner has no opinion about how you work once you're there. No required
+TUI, no GUI client, no bundled agent harness, no wrapper you have to run
+your coding agent through. It moves your workspace to a real machine and
+gets out of the way; run whatever editor, shell, or agent you already use.
 
-```console
-cd repository
+<p align="center">
+  <img src="docs/assets/demo.gif" alt="Animated terminal walkthrough of schooner box add, schooner push, schooner start, and picking the same session back up over plain SSH, using real Schooner CLI wording." width="720">
+</p>
 
-schooner push --box work-api   # put this workspace on the Box
-schooner start                 # start persistent remote work
-schooner resume                # come back after disconnecting
-schooner pull                  # bring the result home
-```
+## Contents
 
-The first successful `push` remembers the relationship between the local
-checkout, Box, and remote Worktree. After that, commands such as `start`,
-`resume`, `push`, and `pull` can use the current repository as context instead
-of making you repeatedly specify where the work lives.
+- [Why Schooner?](#why-schooner)
+- [Quick start](#quick-start)
+- [Installation](#installation)
+- [Common workflows](#common-workflows)
+- [How it works](#how-it-works)
+- [Documentation](#documentation)
+- [Contributing](#contributing)
+- [License](#license)
 
 ## Why Schooner?
 
-SSH gives you a remote shell. Git gives you repositories. tmux gives you
-persistent terminal sessions. Schooner connects those primitives into one
-coherent development workflow without putting a service between you and your
-machine.
-
-- **Work on infrastructure you control.** Adopt a server you already use or
-  provision a DigitalOcean Droplet. The machine remains yours and ordinary SSH
-  access remains available.
-- **Move the workspace, not only the commit history.** `schooner push`
-  transfers the current checkout state, including synchronizable uncommitted
-  and untracked work, into a safely validated remote Worktree.
-- **Leave without stopping.** Sessions live in tmux and survive a lost
-  connection, closed terminal, or closed laptop. Return with `schooner resume`.
+- **Keep your machines.** Adopt a server you already use or provision a
+  DigitalOcean Droplet. Ordinary SSH access always remains available.
+- **Keep work running.** Development sessions live in tmux and survive a lost
+  connection or closed laptop.
 - **Keep Git in charge.** Repositories and worktrees remain normal Git
-  repositories. Schooner does not turn them into records in a hosted service.
-- **Make movement explicit.** `push` and `pull` are deliberate one-shot
-  transfers. There is no watcher, daemon, or hidden continuous filesystem sync.
-- **Automate when you need to.** Interactive workflows also expose
-  deterministic flags and versioned JSON output.
+  repositories rather than becoming records in a hosted service.
+- **Keep automation possible.** Interactive flows have deterministic flags and
+  structured JSON output.
+- **Keep your stack.** Schooner is unopinionated about your editor, shell,
+  and coding agent. It moves the workspace; it does not put a TUI, GUI, or
+  harness between you and it.
+
+Not sure how that's different from what you already do?
+
+| Instead of&hellip; | Schooner |
+| --- | --- |
+| Hand-rolled `ssh` + `tmux new -s` aliases | The same OpenSSH and tmux, with one CLI that remembers boxes, worktrees, and sessions for you |
+| Coder, Gitpod, or GitHub Codespaces | No hosted control plane, no account, no vendor lock-in &mdash; the machine is still just a machine you can `ssh` into directly |
+| A remote-agent product with its own TUI, GUI, or required harness | No required interface at all &mdash; `push`, `start`, and `resume` hand you a plain shell on a real machine, and you run whatever editor or agent you want inside it |
+| A daemon or agent running on the box at all times | Schooner runs on demand, over SSH, and exits |
+
+## Quick start
+
+Start with an Ubuntu machine you can already reach through SSH &mdash; any
+`user@host` you'd normally pass to `ssh` works:
+
+```bash
+schooner doctor
+schooner box add work-api --ssh ubuntu@203.0.113.10
+
+cd repository
+schooner push
+schooner start
+
+schooner resume
+```
+
+`box add` is how Schooner meets a machine: it prepares Git, tmux, and the
+Schooner runtime for that SSH user and remembers it locally as a **Box**. It
+does not install a daemon, and `ssh ubuntu@203.0.113.10` continues to work
+exactly as before.
+
+`push` is an explicit one-shot workspace transfer, not Git push. It copies the
+current checkout to a checkout on the Box &mdash; Schooner calls that a
+**Worktree**, matching Git's own term &mdash; and remembers that route for
+later `push`, `pull`, `start`, and `resume` commands.
+
+`start` opens a persistent tmux session on the Box for that Worktree. Close
+your laptop, lose your Wi-Fi, whatever &mdash; `resume` reattaches to the same
+session exactly where you left it.
 
 ## Installation
 
 Schooner supports macOS 13 or later and contemporary Linux distributions on
 amd64 and arm64. The system OpenSSH client is required for Box connections.
 
-Install with Homebrew:
+Homebrew is the recommended path:
 
 ```bash
 brew install thewelshrich/tap/schooner
+schooner version
+schooner doctor
 ```
 
-Or install the matching signed or verified release directly:
+Update with `brew upgrade thewelshrich/tap/schooner`. `schooner update` prints
+that command for a Homebrew install and never replaces the executable beneath
+it. `brew uninstall schooner` removes the package; it does not change local
+inventory or any remote machine.
+
+Without Homebrew, the public installer selects the matching signed or verified
+release:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/thewelshrich/schooner/main/scripts/install.sh | bash
 ```
 
-Then check the local environment:
+The default target is `~/.local/bin/schooner`. The installer does not use
+`sudo`. In a terminal it uses the same heading as the CLI, shows the selected
+release and target, then asks for confirmation. If the target directory is not
+on `PATH`, it separately offers to add it to the active shell profile. Pass
+`--install-dir`, `--version`, or `--yes` after `--` to choose a directory, pin
+a release, or run unattended; unattended installs never edit shell profiles:
 
 ```bash
-schooner version
-schooner doctor
+curl -fsSL https://raw.githubusercontent.com/thewelshrich/schooner/main/scripts/install.sh | bash -s -- --yes
 ```
 
-Homebrew installations update with:
+`schooner update` replaces only a direct installation it owns. To uninstall
+that default install:
 
 ```bash
-brew upgrade thewelshrich/tap/schooner
+rm -- "$HOME/.local/bin/schooner" \
+  "$HOME/.local/bin/.schooner-install-receipt.json"
 ```
 
-Direct installations can update themselves with:
+Disable the occasional update notice with `SCHOONER_NO_UPDATE_CHECK=1`. Tagged
+binaries are also on
+[GitHub Releases](https://github.com/thewelshrich/schooner/releases). Source
+builds are for contributors; see the [development guide](docs/development.md).
+
+## Common workflows
+
+Commands below omit `--box`: Schooner falls back to your configured default
+Box, your only Box, or an interactive prompt. Pass `--box <name>` on any of
+them to target a specific Box instead.
+
+**Manage Boxes.** The guided `box add` flow is for people; scripts can pass
+the complete non-interactive form, including `--yes` and
+`--accept-new-host-key` for unattended first contact. Schooner never accepts
+a changed host key.
 
 ```bash
-schooner update
+schooner box add
+schooner box use work-api
+schooner box list
+schooner box status work-api
+schooner box ssh work-api
 ```
 
-The direct installer defaults to `~/.local/bin/schooner`, does not use `sudo`,
-and does not edit shell profiles. Tagged binaries are also available from
-[GitHub Releases](https://github.com/thewelshrich/schooner/releases).
-
-## Quick start
-
-Start with an Ubuntu machine you can already reach through SSH. An entry in
-`~/.ssh/config` works well:
-
-```sshconfig
-Host work-api
-    HostName 203.0.113.10
-    User ubuntu
-```
-
-Adopt it as a Schooner Box:
+**Clone and branch on the Box.** `worktree add` creates an additional
+checkout next to the primary one, the same way `git worktree add` would.
 
 ```bash
-schooner box add work-api --ssh work-api
+schooner clone git@github.com:owner/repository.git
+schooner worktree add repository repository-feature --branch feature
+schooner worktree list
 ```
 
-`box add` prepares Git, tmux, and the on-demand Schooner runtime for that SSH
-user. It does not install a daemon, and `ssh work-api` continues to work as
-normal.
-
-Now move an existing local workspace onto the Box:
+**Connect a private GitHub repository.** Each connected Box owns its own
+GitHub SSH key; Schooner never copies your laptop's keys or stores a GitHub
+token on the Box. See the [source access guide](docs/source-access.md) for
+permissions, status, and cleanup.
 
 ```bash
-cd /path/to/repository
-schooner push --box work-api
+schooner source connect github
+schooner source status
+schooner source disconnect github --yes
+```
+
+**Move work and pick it back up.** `start` and `resume` pick up the Worktree
+remembered by a successful `push` or `pull`. Exact selectors remain
+available: `schooner start repository`, `schooner sessions`, `schooner logs`,
+`schooner stop`, and `schooner shell`.
+
+```bash
+cd /path/to/local/repository
 schooner start
-```
-
-Work normally in the remote terminal. You can disconnect at any time. Later,
-from the same local repository:
-
-```bash
 schooner resume
-```
-
-When you want the remote workspace state back locally:
-
-```bash
 schooner pull
 ```
 
-`push` and `pull` are workspace transfers, not aliases for Git network
-operations. Schooner validates both sides before changing them and stops rather
-than silently merging, overwriting, or reconciling ambiguous state.
-
-## Bring your own machine — or create one
-
-An existing SSH-accessible Ubuntu machine is enough to use Schooner.
-
-If you want Schooner to provision a development machine for you, connect a
-DigitalOcean account and run the same `box add` flow:
+**Provision a machine instead of adopting one.** This creates billable
+infrastructure. See the [DigitalOcean guide](docs/digitalocean.md) for
+credentials, recovery, and destruction.
 
 ```bash
 schooner provider connect digitalocean personal --default
 schooner box add
 ```
 
-Provisioning creates billable infrastructure. See the
-[DigitalOcean guide](docs/digitalocean.md) for credentials, recovery, removal,
-and destruction.
-
-## Private GitHub repositories
-
-A Box can be connected directly to GitHub for private repository access:
-
-```bash
-schooner source connect github --box work-api
-```
-
-Each connected Box owns its own SSH key. Schooner does not copy your laptop SSH
-keys to the server or store a GitHub token on the Box.
-
-Once connected, clone normally through Schooner:
-
-```bash
-schooner clone git@github.com:owner/repository.git --box work-api
-```
-
-See the [source access guide](docs/source-access.md) for permissions, status,
-recovery, and cleanup.
-
-## Worktrees and persistent sessions
-
-Schooner keeps repositories, worktrees, and tmux sessions visible rather than
-hiding them behind a proprietary workspace format.
-
-```bash
-schooner worktree add repository repository-feature --branch feature --box work-api
-schooner worktree list --box work-api
-
-schooner sessions --box work-api
-schooner logs --box work-api
-schooner stop --box work-api
-schooner shell --box work-api
-```
-
-Exact selectors remain available when repository context is not enough. Run
-`schooner --help` or `schooner <command> --help` for the complete command
-reference.
-
 ## How it works
 
 ```text
-your laptop
+your terminal
     |
-    | schooner push / pull
     | system OpenSSH
     v
 your Linux machine
     |- Git owns repositories and worktrees
-    |- tmux keeps development sessions alive
+    |- tmux keeps sessions alive
     `- Schooner runs on demand and exits
 ```
 
-Schooner is deliberately not a cloud IDE, hosted development service, generic
-remote command runner, or continuous synchronization system. It is a thin
-workflow layer over machines and tools you already control.
+Three words carry most of the vocabulary above:
+
+- **Box** &mdash; a machine Schooner knows about, identified by its own
+  verified identity, not by whichever SSH alias you typed.
+- **Worktree** &mdash; a checkout on a Box. Same concept as `git worktree`,
+  just tracked by Schooner so `push`, `pull`, `start`, and `resume` know
+  which one to use.
+- **Session** &mdash; the tmux session `start` opens for a Worktree.
+  Ordinary tmux; `resume` just reattaches to it.
 
 `schooner box remove` forgets local inventory and never changes the machine.
 `schooner box destroy` is a separate command for supported provider-created
-infrastructure only. Schooner does not expose generic remote command execution
-or a `schooner run` escape hatch.
+infrastructure only. Disconnect GitHub source access before either command.
+Schooner does not expose generic remote command execution or a `schooner run`
+escape hatch.
 
 Supported remote systems are Ubuntu 24.04 and 26.04 on amd64 and arm64. The
-[roadmap](docs/roadmap.md) lists what is available now, what is planned, and
-what is intentionally out of scope.
+[roadmap](docs/roadmap.md) lists what is available now and what is not planned.
 
 ## Documentation
 
-The [documentation index](docs/README.md) contains user guides, architecture,
-domain language, contributor documentation, ADRs, and maintainer runbooks.
-
-Useful starting points:
-
-- [DigitalOcean](docs/digitalocean.md)
-- [Private GitHub source access](docs/source-access.md)
-- [Roadmap](docs/roadmap.md)
-- [Support](SUPPORT.md)
-- [Security policy](SECURITY.md)
+User guides and the contributor map live in the
+[documentation index](docs/README.md). Run `schooner --help` or
+`schooner <command> --help` for the command reference.
 
 ## Contributing
 
 Schooner is early, and focused bug reports and design feedback are welcome.
 Please read [CONTRIBUTING.md](CONTRIBUTING.md) and the
 [Code of Conduct](CODE_OF_CONDUCT.md) before opening a pull request.
-
-Follow [@RichDevLab](https://x.com/RichDevLab) for project updates.
 
 ## License
 
