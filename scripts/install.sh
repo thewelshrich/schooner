@@ -598,7 +598,8 @@ quote_for_shell() {
 }
 
 resolve_shell_profile() {
-  local shell_name="${SHELL##*/}" base quoted_directory
+  local shell_name="${SHELL:-}" base quoted_directory
+  shell_name="${shell_name##*/}"
   profile_path=""
   profile_command=""
   quoted_directory="$(quote_for_shell "${install_dir}")"
@@ -614,6 +615,10 @@ resolve_shell_profile() {
       [[ -n "${HOME:-}" && "${HOME}" == /* ]] || return 1
       if [[ -f "${HOME}/.bashrc" ]]; then
         profile_path="${HOME}/.bashrc"
+      elif [[ -f "${HOME}/.bash_profile" ]]; then
+        profile_path="${HOME}/.bash_profile"
+      elif [[ -f "${HOME}/.bash_login" ]]; then
+        profile_path="${HOME}/.bash_login"
       else
         profile_path="${HOME}/.profile"
       fi
