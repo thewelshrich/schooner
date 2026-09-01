@@ -20,3 +20,4 @@ amend an accepted decision in place.
 | [0010](0010-box-owned-github-source-identities.md) | Local GitHub Source Account; Box-owned SSH identities |
 | [0011](0011-direct-installation-ownership.md) | Direct installer and updater replace only receipted executables |
 | [0012](0012-directional-workspace-transfer.md) | Explicit `push` and `pull`; no synchronization history |
+| [0013](0013-local-links-for-contextual-work.md) | Explicit transfers create revalidated Local Links for contextual work |

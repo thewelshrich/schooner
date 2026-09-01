@@ -6,34 +6,51 @@
 ## Context
 
 Starting and returning to remote work are Schooner's most frequent actions.
-Requiring users to navigate resource-oriented command groups, or silently
-persisting relationships inferred from a network-origin match, would make the
-common workflow harder and create state that can drift from Git and tmux.
+Requiring users to navigate resource-oriented command groups or repeatedly
+select a Repository, Worktree, and Session makes the common workflow harder,
+while silently persisting inferred local-to-remote relationships would create
+state that can drift from Git and tmux.
 
 ## Decision
 
-`schooner start` and `schooner resume` are root commands with contextual
-defaults. Exact Worktree paths and Session IDs remain explicit selectors.
+`schooner start` and `schooner resume` remain root commands with contextual
+defaults. Exact Worktree paths and Session IDs remain explicit selectors for
+advanced and automated use.
 
-Without a selector, both commands prefer a revalidated Local Link created by a
-successful `push` or `pull`. They consume that route; they do not create it,
-copy files, or transfer commits. A stale link fails instead of being followed
-or replaced.
+Without a selector, `start` observes the current local Git checkout and matches
+its credential-free network-origin identity against live Repositories on the
+selected Box. A match uses the remote primary Worktree as-is and never changes
+its branch. When no match exists and the local origin is safely cloneable,
+Schooner reviews local-only state and offers to clone the origin's default
+branch before starting a managed Session.
 
-Without an applicable link, `start` may match the local checkout's
-credential-free origin to a live Repository on the selected Box, or offer to
-clone that origin after reviewing local-only state. `resume` stays inside the
-detected local Repository, or chooses the newest managed live Session on the
-Box when there is no local Repository. Unmanaged or uncertain Sessions require
-an explicit selection.
+Contextual clone uses the same durable source-aware recovery flow as the clone
+command. Interactive human use retains the review and confirmation. A
+non-interactive invocation may use already available Box or managed source
+credentials, but never authorizes a Source Account or registers a new Box key.
 
-JSON and non-interactive invocations never authorize a Source Account or
-register a Box key.
+Without a selector, `resume` treats a detected local Repository as binding
+context. It chooses only a managed live Session associated with a matching
+Repository, ordered by tmux activity, creation time, and tmux ID. If none
+matches, it stops and suggests `schooner start`; it never falls back to an
+unrelated Repository. Outside a local Repository, it chooses the newest
+managed live Session on the selected Box. Unmanaged or uncertain Sessions
+require an explicit selection.
+
+These decisions use live observations only. They do not create a Local Link,
+copy local files, synchronize commits, or imply `push` or `pull` behavior.
 
 ## Consequences
 
-- Everyday use is `schooner start` and `schooner resume`.
-- Inferred origin matches remain live observations; only an explicit transfer
-  persists a Local Link.
-- Bare `resume` cannot navigate from one local Repository to work for another.
-- Workspace transfer stays on `push` and `pull`. There is no `sync`.
+- The common workflow is `schooner start` and `schooner resume`, while exact
+  selectors remain quietly available.
+- Matching works across common HTTPS, SSH, Git, and SCP origin forms without
+  retaining credentials.
+- Local dirty files, detached HEADs, missing upstreams, and unpushed commits
+  are warnings before cloning because the clone contains only origin state.
+- Repository and Session ambiguity remains visible rather than being resolved
+  through hidden persistent preferences.
+- Repository context is trustworthy: bare `resume` cannot navigate from one
+  local Repository to work for another Repository.
+- Synchronization remains a separate future capability with explicit commands
+  and semantics.
