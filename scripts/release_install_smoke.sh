@@ -52,7 +52,7 @@ chmod 0755 "${test_tmp}/bin/curl"
 PATH="${test_tmp}/bin:${PATH}" \
 SCHOONER_SMOKE_DIST="${dist}" \
 SCHOONER_SMOKE_VERSION="${version}" \
-  bash "${repo_root}/scripts/install.sh" --install-dir "${test_tmp}/install"
+  bash "${repo_root}/scripts/install.sh" --yes --install-dir "${test_tmp}/install"
 
 version_json="$("${test_tmp}/install/schooner" version --output json)"
 VERSION_JSON="${version_json}" EXPECTED_VERSION="${version}" python3 - <<'PY'
@@ -68,6 +68,6 @@ test -f "${test_tmp}/install/.schooner-install-receipt.json"
 PATH="${test_tmp}/bin:${PATH}" \
 SCHOONER_SMOKE_DIST="${dist}" \
 SCHOONER_SMOKE_VERSION="${version}" \
-  bash "${repo_root}/scripts/install.sh" --version "${version}" --install-dir "${test_tmp}/install"
+  bash "${repo_root}/scripts/install.sh" --yes --version "${version}" --install-dir "${test_tmp}/install"
 
 printf 'release_install_smoke: %s installed and reverified\n' "${version}"

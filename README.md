@@ -82,9 +82,18 @@ curl -fsSL https://raw.githubusercontent.com/thewelshrich/schooner/main/scripts/
 ```
 
 The default target is `~/.local/bin/schooner`. The installer does not use
-`sudo` or edit shell profiles. Pass `--install-dir` or `--version` after `--`
-to choose a directory or pin a release. `schooner update` replaces only a
-direct installation it owns. To uninstall that default install:
+`sudo`. In a terminal it uses the same heading as the CLI, shows the selected
+release and target, then asks for confirmation. If the target directory is not
+on `PATH`, it separately offers to add it to the active shell profile. Pass
+`--install-dir`, `--version`, or `--yes` after `--` to choose a directory, pin
+a release, or run unattended; unattended installs never edit shell profiles:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/thewelshrich/schooner/main/scripts/install.sh | bash -s -- --yes
+```
+
+`schooner update` replaces only a direct installation it owns. To uninstall
+that default install:
 
 ```bash
 rm -- "$HOME/.local/bin/schooner" \
