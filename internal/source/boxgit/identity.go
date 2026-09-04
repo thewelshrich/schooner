@@ -262,7 +262,7 @@ func (m *Manager) Verify(ctx context.Context, request source.VerifyRequest) (ver
 		"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null",
 		"GIT_SSH_COMMAND=" + command, "GIT_SSH_VARIANT=ssh",
 	}
-	result, runErr := m.run.Run(ctx, environment, "git", "--no-optional-locks", "-c", "core.fsmonitor=false", "ls-remote", "--exit-code", "--", request.Repository, "HEAD")
+	result, runErr := m.run.Run(ctx, environment, "git", "--no-optional-locks", "-c", "core.fsmonitor=false", "ls-remote", "--", request.Repository, "HEAD")
 	if runErr != nil {
 		return source.VerifyResult{}, verifyError(result, runErr)
 	}
