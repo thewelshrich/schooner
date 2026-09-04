@@ -142,7 +142,7 @@ func (c *Cloud) Catalog(ctx context.Context, token string) (provider.Catalog, er
 }
 
 func (c *Cloud) Provision(ctx context.Context, token string, request provider.ProvisionRequest) (provider.ProvisionedMachine, error) {
-	if err := c.validateSelection(ctx, token, request); err != nil {
+	if err := validateProvisionInput(request); err != nil {
 		return provider.ProvisionedMachine{}, err
 	}
 	client := c.client(token)
@@ -177,6 +177,9 @@ func (c *Cloud) Provision(ctx context.Context, token string, request provider.Pr
 
 	warning := ""
 	if droplet == nil {
+		if err := c.validateSelection(ctx, token, request); err != nil {
+			return provider.ProvisionedMachine{}, err
+		}
 		controlKey, owned, ensureErr := ensureControlKey(ctx, client, request.CorrelationID, request.ControlPublicKey)
 		if ensureErr != nil {
 			return provider.ProvisionedMachine{}, ensureErr
@@ -313,14 +316,20 @@ func (c *Cloud) validateSelection(ctx context.Context, token string, request pro
 	for _, key := range catalog.AccessKeys {
 		availableKeys[key.ID] = true
 	}
+	for _, key := range request.AccessKeyIDs {
+		if !availableKeys[key] {
+			return box.NewError("invalid_input", "a selected DigitalOcean account SSH key is no longer available", nil)
+		}
+	}
+	return nil
+}
+
+func validateProvisionInput(request provider.ProvisionRequest) error {
 	if len(request.AccessKeyIDs)+len(request.LocalPublicKeys) > 15 {
 		return box.NewError("invalid_input", "select at most 15 additional SSH keys", nil)
 	}
 	selected := map[string]bool{}
 	for _, key := range request.AccessKeyIDs {
-		if !availableKeys[key] {
-			return box.NewError("invalid_input", "a selected DigitalOcean account SSH key is no longer available", nil)
-		}
 		if selected[key] {
 			return box.NewError("invalid_input", "select each DigitalOcean account SSH key at most once", nil)
 		}
