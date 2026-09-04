@@ -42,10 +42,6 @@ func (s *Service) Add(ctx context.Context, req AddRequest) (AddResult, error) {
 	}
 
 	conn := Connection{Destination: req.SSHDestination, IdentityFile: req.IdentityFile, AcceptNewHostKey: req.AcceptNewHostKey, BatchMode: req.BatchMode}
-	op := AddOperation{Name: req.Name, SSHDestination: req.SSHDestination, WorktreeRoot: req.WorktreeRoot, UpdatedAt: s.now().UTC()}
-	if err := s.store.BeginAdd(ctx, op); err != nil {
-		return AddResult{}, err
-	}
 
 	if err := s.runStep(ctx, req.Progress, StepResolve, "Resolve SSH destination", func() error { return s.runtime.Resolve(ctx, conn) }); err != nil {
 		return AddResult{}, err
@@ -70,6 +66,12 @@ func (s *Service) Add(ctx context.Context, req AddRequest) (AddResult, error) {
 			return AddResult{}, err
 		}
 	}
+	// Reserve only after read-only preflight, but before any machine mutation.
+	op := AddOperation{Name: req.Name, SSHDestination: req.SSHDestination, WorktreeRoot: req.WorktreeRoot, UpdatedAt: s.now().UTC()}
+	if err := s.store.BeginAdd(ctx, op); err != nil {
+		return AddResult{}, err
+	}
+
 	if err := s.runStep(ctx, req.Progress, StepIdentity, "Establish stable box identity", func() error {
 		var err error
 		candidate := identity
