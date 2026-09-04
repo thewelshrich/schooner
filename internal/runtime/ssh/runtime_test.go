@@ -235,3 +235,55 @@ func TestRunRemoteStreamConsumesUnboundedStdoutWithBoundedDiagnostics(t *testing
 		t.Fatalf("stream cancellation error = %v", err)
 	}
 }
+
+func TestInstallScriptKeepsPackageOutputOffStdout(t *testing.T) {
+	program, err := scripts.ReadFile("scripts/install.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory := t.TempDir()
+	// Stub sudo so the real script cannot install packages on the test host.
+	stub := `#!/bin/sh
+printf 'package progress: %s\n' "$*"
+case " $* " in
+  *" $SCHOONER_TEST_APT_FAILURE "*) exit 100 ;;
+esac
+exit 0
+`
+	if err := os.WriteFile(filepath.Join(directory, "sudo"), []byte(stub), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", directory+string(os.PathListSeparator)+os.Getenv("PATH"))
+	for _, step := range []string{"none", "update", "install"} {
+		t.Run(step, func(t *testing.T) {
+			t.Setenv("SCHOONER_TEST_APT_FAILURE", step)
+			command := exec.CommandContext(t.Context(), "sh", "-s", "--", "git", "tmux")
+			command.Stdin = bytes.NewReader(program)
+			var stderr bytes.Buffer
+			command.Stderr = &stderr
+			stdout, err := command.Output()
+			wantStdout := ""
+			if step == "none" {
+				wantStdout = "{\"schema_version\":\"1\",\"installed\":true}\n"
+				if err != nil {
+					t.Fatalf("install: %v; stderr=%s", err, &stderr)
+				}
+			} else {
+				var exitErr *exec.ExitError
+				if !errors.As(err, &exitErr) || exitErr.ExitCode() != 100 {
+					t.Fatalf("install error = %v, want exit 100", err)
+				}
+			}
+			if string(stdout) != wantStdout {
+				t.Fatalf("stdout = %q, want %q", stdout, wantStdout)
+			}
+			wantProgress := 2
+			if step == "update" {
+				wantProgress = 1
+			}
+			if got := strings.Count(stderr.String(), "package progress:"); got != wantProgress {
+				t.Fatalf("stderr = %q, want %d package diagnostics", &stderr, wantProgress)
+			}
+		})
+	}
+}

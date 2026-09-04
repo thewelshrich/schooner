@@ -8,10 +8,10 @@ for tool in "$@"; do
 done
 if [ -n "$packages" ]; then
   sudo -n env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a APT_LISTCHANGES_FRONTEND=none \
-    apt-get -o DPkg::Lock::Timeout=120 -o Acquire::Retries=3 update
+    apt-get -o DPkg::Lock::Timeout=120 -o Acquire::Retries=3 update >&2
   # shellcheck disable=SC2086 -- values are allow-listed above.
   sudo -n env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a APT_LISTCHANGES_FRONTEND=none \
-    apt-get -o DPkg::Lock::Timeout=120 -o Acquire::Retries=3 -o Dpkg::Options::=--force-confold install -y $packages
+    apt-get -o DPkg::Lock::Timeout=120 -o Acquire::Retries=3 -o Dpkg::Options::=--force-confold install -y $packages >&2
 fi
 printf '{"schema_version":"1","installed":true}\n'
 
