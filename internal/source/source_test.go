@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -616,6 +617,91 @@ func TestExpiredCredentialRefreshRotatesStoredEnvelope(t *testing.T) {
 	}
 	if err := json.Unmarshal([]byte(secrets.values[store.account.CredentialKey]), &envelope); err != nil || envelope.SchemaVersion != "1" || envelope.Generation != store.account.CredentialGeneration || envelope.AccessToken != "access-two" || envelope.RefreshToken != "refresh-two" {
 		t.Fatalf("envelope=%+v err=%v", envelope, err)
+	}
+}
+
+func TestRefreshedCredentialSurvivesAccountLookupFailure(t *testing.T) {
+	for _, restart := range []bool{false, true} {
+		t.Run(fmt.Sprintf("restart=%t", restart), func(t *testing.T) {
+			manager, store, secrets, github, target := testManager(t)
+			github.token.AccessExpiresAt = time.Now().Add(-time.Minute)
+			if _, err := manager.Connect(t.Context(), ConnectRequest{Target: target, AllowAuthorization: true}); err != nil {
+				t.Fatal(err)
+			}
+			github.refreshToken = Token{AccessToken: "access-two", RefreshToken: "refresh-two", AccessExpiresAt: time.Now().Add(time.Hour), RefreshExpiresAt: time.Now().Add(24 * time.Hour)}
+			lookupErr := errors.New("account lookup unavailable")
+			github.accountErrOnce = lookupErr
+			if token, _, _, err := manager.resolveAccount(t.Context(), false, nil); !errors.Is(err, lookupErr) || token.AccessToken != "" {
+				t.Fatalf("lookup error=%v; returned token=%t", err, token.AccessToken != "")
+			}
+			if store.account.Status != "action_required" {
+				t.Fatalf("unverified account status=%s", store.account.Status)
+			}
+			var pending struct {
+				SchemaVersion string `json:"schema_version"`
+				Token
+			}
+			if err := json.Unmarshal([]byte(secrets.values[store.account.CredentialKey]), &pending); err != nil || pending.SchemaVersion != "2" || !pending.VerifyAccount || pending.RefreshToken != "refresh-two" {
+				t.Fatal("rotated credential was not stored in a pending envelope")
+			}
+			if restart {
+				var err error
+				manager, err = NewManager(store, secrets, github, t.TempDir())
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			// A retry must still verify identity, even without device-flow permission.
+			for _, remote := range []RemoteAccount{{ID: "99", Login: "other"}, {ID: "42"}} {
+				github.account = remote
+				if token, _, _, err := manager.resolveAccount(t.Context(), false, nil); ErrorCode(err) != "conflict" || token.AccessToken != "" {
+					t.Fatalf("invalid identity error=%v; returned token=%t", err, token.AccessToken != "")
+				}
+			}
+			github.account = RemoteAccount{ID: "42", Login: "octocat"}
+			token, _, _, err := manager.resolveAccount(t.Context(), false, nil)
+			if err != nil || token.AccessToken != "access-two" || token.RefreshToken != "refresh-two" || token.VerifyAccount || github.refreshCalls != 1 || github.authorizeCalls != 1 || store.account.Status != "connected" {
+				t.Fatalf("recovery err=%v refresh=%d authorize=%d status=%s", err, github.refreshCalls, github.authorizeCalls, store.account.Status)
+			}
+		})
+	}
+}
+
+func TestRefreshedCredentialSurvivesCheckpointFailure(t *testing.T) {
+	for _, failure := range []string{"reference", "secret", "final"} {
+		t.Run(failure, func(t *testing.T) {
+			manager, store, secrets, github, target := testManager(t)
+			github.token.AccessExpiresAt = time.Now().Add(-time.Minute)
+			if _, err := manager.Connect(t.Context(), ConnectRequest{Target: target, AllowAuthorization: true}); err != nil {
+				t.Fatal(err)
+			}
+			github.refreshToken = Token{AccessToken: "access-two", RefreshToken: "refresh-two", AccessExpiresAt: time.Now().Add(time.Hour), RefreshExpiresAt: time.Now().Add(24 * time.Hour)}
+			switch failure {
+			case "reference":
+				store.saveAccountErrAt = store.saveAccountCalls + 1
+			case "secret":
+				secrets.setErr = errors.New("keyring locked")
+				github.accountErrOnce = errors.New("account lookup unavailable")
+			case "final":
+				store.saveAccountErrAt = store.saveAccountCalls + 2
+			}
+			if _, _, _, err := manager.resolveAccount(t.Context(), false, nil); err == nil {
+				t.Fatal("expected interrupted rotation")
+			}
+			store.saveAccountErrAt = 0
+			secrets.setErr = nil
+			if failure == "final" {
+				var err error
+				manager, err = NewManager(store, secrets, github, t.TempDir())
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			token, _, _, err := manager.resolveAccount(t.Context(), false, nil)
+			if err != nil || token.AccessToken != "access-two" || token.VerifyAccount || github.refreshCalls != 1 || store.account.Status != "connected" {
+				t.Fatalf("recovery err=%v refresh=%d status=%s", err, github.refreshCalls, store.account.Status)
+			}
+		})
 	}
 }
 
