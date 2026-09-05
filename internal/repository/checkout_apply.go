@@ -576,9 +576,10 @@ func RestoreCheckoutAfterFailedApply(ctx context.Context, target string, backup,
 		ordered = append(ordered, path)
 	}
 	sort.Strings(ordered)
+	managedDirectories := checkoutManagedDirectories(paths)
 
 	for _, path := range ordered {
-		current, present, err := checkoutFileForTransition(root, path, paths)
+		current, present, err := checkoutFileForTransition(root, path, paths, managedDirectories)
 		if err != nil {
 			return CheckoutState{}, err
 		}
@@ -604,7 +605,7 @@ func RestoreCheckoutAfterFailedApply(ctx context.Context, target string, backup,
 		if _, existed := backupFiles[path]; existed {
 			continue
 		}
-		current, present, err := checkoutFileForTransition(root, path, paths)
+		current, present, err := checkoutFileForTransition(root, path, paths, managedDirectories)
 		if err != nil {
 			return CheckoutState{}, err
 		}
@@ -698,10 +699,26 @@ func validateCheckoutDestinationParents(root *os.Root, relative string) error {
 	return nil
 }
 
+func checkoutManagedDirectories(tracked map[string]bool) map[string]bool {
+	directories := make(map[string]bool)
+	for leaf, managed := range tracked {
+		if !managed {
+			continue
+		}
+		for parent := filepath.ToSlash(filepath.Dir(leaf)); parent != "."; parent = filepath.ToSlash(filepath.Dir(parent)) {
+			if directories[parent] {
+				break
+			}
+			directories[parent] = true
+		}
+	}
+	return directories
+}
+
 // checkoutFileForTransition treats a tracked parent or a directory containing
 // only tracked leaves as an outgoing path shape, never as an ignored collision.
 // The ordinary reader remains strict for mutation and displacement verification.
-func checkoutFileForTransition(root *os.Root, relative string, tracked map[string]bool) (CheckoutFile, bool, error) {
+func checkoutFileForTransition(root *os.Root, relative string, tracked, directories map[string]bool) (CheckoutFile, bool, error) {
 	if err := validateCheckoutPath(relative); err != nil {
 		return CheckoutFile{}, false, err
 	}
@@ -725,18 +742,6 @@ func checkoutFileForTransition(root *os.Root, relative string, tracked map[strin
 	info, err := root.Lstat(filepath.FromSlash(relative))
 	if err != nil || !info.IsDir() {
 		return checkoutFileOnRoot(root, relative)
-	}
-	directories := make(map[string]bool)
-	for leaf, managed := range tracked {
-		if !managed {
-			continue
-		}
-		for parent := filepath.ToSlash(filepath.Dir(leaf)); parent != "."; parent = filepath.ToSlash(filepath.Dir(parent)) {
-			if directories[parent] {
-				break
-			}
-			directories[parent] = true
-		}
 	}
 	err = fs.WalkDir(root.FS(), relative, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -786,14 +791,36 @@ func pinReplacedCheckoutDirectories(root *os.Root, destinationFiles, incomingFil
 	return directories, nil
 }
 
+// Group each contiguous directory chain under its replacement root once.
+func checkoutDirectoryRemovals(paths []string) map[string][]string {
+	known := make(map[string]bool, len(paths))
+	for _, path := range paths {
+		known[filepath.ToSlash(path)] = true
+	}
+	groups := make(map[string][]string)
+	for _, path := range paths {
+		path = filepath.ToSlash(path)
+		root := path
+		for parent := filepath.ToSlash(filepath.Dir(root)); known[parent]; parent = filepath.ToSlash(filepath.Dir(parent)) {
+			root = parent
+		}
+		groups[root] = append(groups[root], path)
+	}
+	for _, paths := range groups {
+		sort.Sort(sort.Reverse(sort.StringSlice(paths)))
+	}
+	return groups
+}
+
 func (prepared *preparedCheckoutFiles) removeReplacedDirectories(path string) error {
-	var paths []string
-	for dir := range prepared.removedDirs {
-		if dir == path || strings.HasPrefix(dir, path+"/") {
+	if prepared.directoryRemovals == nil {
+		paths := make([]string, 0, len(prepared.removedDirs))
+		for dir := range prepared.removedDirs {
 			paths = append(paths, dir)
 		}
+		prepared.directoryRemovals = checkoutDirectoryRemovals(paths)
 	}
-	sort.Sort(sort.Reverse(sort.StringSlice(paths)))
+	paths := prepared.directoryRemovals[path]
 	for _, dir := range paths {
 		info, err := prepared.root.Lstat(filepath.FromSlash(dir))
 		if err != nil || !os.SameFile(info, prepared.removedDirs[dir]) {
@@ -822,11 +849,13 @@ type preparedCheckoutFile struct {
 }
 
 type preparedCheckoutFiles struct {
-	root        *os.Root
-	entries     []preparedCheckoutFile
-	createdDirs []string
-	removedDirs map[string]os.FileInfo
-	mutated     bool
+	root              *os.Root
+	entries           []preparedCheckoutFile
+	createdDirs       []string
+	removedDirs       map[string]os.FileInfo
+	directoryRemovals map[string][]string
+	recreatedDirs     map[string]os.FileInfo
+	mutated           bool
 }
 
 func prepareCheckoutFiles(root *os.Root, destination CheckoutState, payload ExtractedCheckout) (*preparedCheckoutFiles, error) {
@@ -1070,6 +1099,8 @@ func (prepared *preparedCheckoutFiles) Rollback() (rollbackErr error) {
 	for _, record := range prepared.entries {
 		known[record.path] = true
 	}
+	managedDirectories := checkoutManagedDirectories(known)
+	createdDirRemovals := checkoutDirectoryRemovals(prepared.createdDirs)
 	for index := range prepared.entries {
 		record := &prepared.entries[index]
 		if record.preserveDestination {
@@ -1086,7 +1117,7 @@ func (prepared *preparedCheckoutFiles) Rollback() (rollbackErr error) {
 				return &Error{Code: CodeOutcomeUnknown, Message: fmt.Sprintf("rollback material for destination path %q changed independently; preserved recovery content at %q", record.path, filepath.ToSlash(record.backupTemp))}
 			}
 		}
-		current, present, err := checkoutFileForTransition(prepared.root, record.path, known)
+		current, present, err := checkoutFileForTransition(prepared.root, record.path, known, managedDirectories)
 		if err != nil {
 			return err
 		}
@@ -1106,7 +1137,7 @@ func (prepared *preparedCheckoutFiles) Rollback() (rollbackErr error) {
 		if record.preserveDestination {
 			continue
 		}
-		current, present, err := checkoutFileForTransition(prepared.root, record.path, known)
+		current, present, err := checkoutFileForTransition(prepared.root, record.path, known, managedDirectories)
 		if err != nil {
 			return err
 		}
@@ -1125,29 +1156,46 @@ func (prepared *preparedCheckoutFiles) Rollback() (rollbackErr error) {
 			return &Error{Code: CodeOutcomeUnknown, Message: fmt.Sprintf("rollback material for destination path %q is unavailable", record.path)}
 		}
 		// Incoming children have already been removed in reverse apply order.
-		for i := len(prepared.createdDirs) - 1; i >= 0; i-- {
-			dir := prepared.createdDirs[i]
-			if dir == record.path || strings.HasPrefix(dir, record.path+"/") {
-				if err = prepared.root.Remove(dir); err != nil && !errors.Is(err, os.ErrNotExist) {
-					return err
-				}
+		for _, dir := range createdDirRemovals[record.path] {
+			if err = prepared.root.Remove(dir); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return err
 			}
 		}
 		dirs, err := ensureCheckoutDestinationDirectories(prepared.root, record.path)
 		if err != nil {
 			return err
 		}
+		if prepared.recreatedDirs == nil {
+			prepared.recreatedDirs = make(map[string]os.FileInfo)
+		}
 		for _, dir := range dirs {
-			if info := prepared.removedDirs[filepath.ToSlash(dir)]; info != nil {
-				if err = prepared.root.Chmod(dir, info.Mode()&(os.ModePerm|os.ModeSetuid|os.ModeSetgid|os.ModeSticky)); err != nil {
-					return err
-				}
+			info, err := prepared.root.Lstat(dir)
+			if err != nil {
+				return err
+			}
+			prepared.recreatedDirs[filepath.ToSlash(dir)] = info
+		}
+		var parents []string
+		for dir := filepath.ToSlash(filepath.Dir(record.path)); dir != "."; dir = filepath.ToSlash(filepath.Dir(dir)) {
+			if prepared.recreatedDirs[dir] != nil && prepared.removedDirs[dir] != nil {
+				parents = append(parents, dir)
+			}
+		}
+		for i := len(parents) - 1; i >= 0; i-- {
+			dir := parents[i]
+			if err = restoreCheckoutDirectoryMetadata(prepared.root, dir, prepared.recreatedDirs[dir], prepared.removedDirs[dir]); err != nil {
+				return err
 			}
 		}
 		if err = prepared.root.Rename(record.backupTemp, filepath.FromSlash(record.path)); err != nil {
 			return err
 		}
 		record.backupTemp = ""
+	}
+	for i := range prepared.entries {
+		if !prepared.entries[i].preserveDestination {
+			prepared.entries[i].preserveBackup = false
+		}
 	}
 	prepared.mutated = false
 	return nil
@@ -1582,8 +1630,9 @@ func PreflightCheckoutApplication(ctx context.Context, target string, destinatio
 	for _, entry := range destination.Files {
 		tracked[entry.Path] = entry.Tracked
 	}
+	managedDirectories := checkoutManagedDirectories(tracked)
 	for _, incoming := range incomingFiles {
-		_, present, statErr := checkoutFileForTransition(root, incoming.Path, tracked)
+		_, present, statErr := checkoutFileForTransition(root, incoming.Path, tracked, managedDirectories)
 		if statErr == nil && present && !tracked[incoming.Path] {
 			return &Error{Code: CodeConflict, Message: fmt.Sprintf("ignored destination path %q collides with the incoming workspace", incoming.Path)}
 		} else if statErr != nil {
@@ -1591,7 +1640,7 @@ func PreflightCheckoutApplication(ctx context.Context, target string, destinatio
 		}
 	}
 	for _, path := range incomingAbsent {
-		_, present, statErr := checkoutFileForTransition(root, path, tracked)
+		_, present, statErr := checkoutFileForTransition(root, path, tracked, managedDirectories)
 		if statErr != nil {
 			return statErr
 		}
@@ -1635,10 +1684,11 @@ func PreflightCheckoutFiles(ctx context.Context, target string, incomingFiles []
 	for _, path := range parseNULPaths(trackedOutput) {
 		tracked[path] = true
 	}
+	managedDirectories := checkoutManagedDirectories(tracked)
 	comparison := CheckoutComparison{}
 	for _, incoming := range incomingFiles {
 		if incoming.Kind == "absent" {
-			_, present, statErr := checkoutFileForTransition(root, incoming.Path, tracked)
+			_, present, statErr := checkoutFileForTransition(root, incoming.Path, tracked, managedDirectories)
 			if statErr != nil {
 				return CheckoutComparison{}, statErr
 			}
@@ -1647,7 +1697,7 @@ func PreflightCheckoutFiles(ctx context.Context, target string, incomingFiles []
 			}
 			continue
 		}
-		observed, present, statErr := checkoutFileForTransition(root, incoming.Path, tracked)
+		observed, present, statErr := checkoutFileForTransition(root, incoming.Path, tracked, managedDirectories)
 		if statErr != nil {
 			return CheckoutComparison{}, statErr
 		}

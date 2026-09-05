@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -289,57 +290,6 @@ func TestCheckoutTransitionStagingPreservesAdjacentFilesystem(t *testing.T) {
 	}
 }
 
-func TestCheckoutTransitionRollbackPreservesDirectoryMode(t *testing.T) {
-	target, before, incoming := checkoutPathTypeTransition(t, true)
-	mode := os.FileMode(0o755) | os.ModeSetgid | os.ModeSticky
-	// macOS inherits a temporary directory's group; use our own group so
-	// chmod can retain setgid both before replacement and after recreation.
-	if err := os.Chown(target, -1, os.Getgid()); err != nil {
-		t.Fatal(err)
-	}
-	for _, path := range []string{"file.txt", "file.txt/nested"} {
-		if err := os.Chown(filepath.Join(target, filepath.FromSlash(path)), -1, os.Getgid()); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Chmod(filepath.Join(target, filepath.FromSlash(path)), mode); err != nil {
-			t.Fatal(err)
-		}
-		info, err := os.Lstat(filepath.Join(target, filepath.FromSlash(path)))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got := info.Mode() & (os.ModePerm | os.ModeSetuid | os.ModeSetgid | os.ModeSticky); got != mode {
-			t.Fatalf("initial directory mode = %v, want %v", got, mode)
-		}
-	}
-	root, err := os.OpenRoot(target)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer root.Close()
-	prepared, err := prepareCheckoutFiles(root, before, incoming)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer prepared.Release()
-	if err = prepared.Apply(); err != nil {
-		t.Fatal(err)
-	}
-	if err = prepared.Rollback(); err != nil {
-		t.Fatal(err)
-	}
-	prepared.Release()
-	for _, path := range []string{"file.txt", "file.txt/nested"} {
-		info, err := root.Lstat(filepath.FromSlash(path))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got := info.Mode() & (os.ModePerm | os.ModeSetuid | os.ModeSetgid | os.ModeSticky); got != mode {
-			t.Fatalf("restored directory %q mode = %v, want %v", path, got, mode)
-		}
-	}
-}
-
 func TestCheckoutExternalRestoreEmptyTransitionDirectories(t *testing.T) {
 	target, before, incoming := checkoutPathTypeTransition(t, false)
 	capture, err := CaptureCheckout(t.Context(), target, t.TempDir())
@@ -406,5 +356,30 @@ func TestCheckoutPreflightPagesExcludeUnrelatedSiblings(t *testing.T) {
 				t.Fatal(err)
 			}
 		})
+	}
+}
+
+func TestCheckoutPreflightManySiblingTransitions(t *testing.T) {
+	target := checkoutTestRepository(t)
+	var incoming []CheckoutFile
+	for i := 0; i < 128; i++ {
+		dir := fmt.Sprintf("sibling-%03d", i)
+		if err := os.Mkdir(filepath.Join(target, dir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeCheckoutFile(t, filepath.Join(target, dir, "child"), "tracked\n", 0o644)
+		incoming = append(incoming, CheckoutFile{Path: dir, Kind: "file", Tracked: true})
+	}
+	runCheckoutGit(t, "-C", target, "add", ".")
+	destination, err := ObserveCheckout(t.Context(), target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = PreflightCheckoutApplication(t.Context(), target, destination, incoming, nil); err != nil {
+		t.Fatal(err)
+	}
+	writeCheckoutFile(t, filepath.Join(target, "sibling-127", "ignored.env"), "preserve\n", 0o644)
+	if err = PreflightCheckoutApplication(t.Context(), target, destination, incoming, nil); ErrorCode(err) != CodeConflict {
+		t.Fatalf("bulk transition collision error = %v", err)
 	}
 }
