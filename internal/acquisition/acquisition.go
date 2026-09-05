@@ -33,6 +33,7 @@ type ProvisionOperation struct {
 	SSHDestination   string
 	IdentityFile     string
 	Checkpoint       string
+	Warning          string
 	UpdatedAt        time.Time
 }
 
@@ -48,7 +49,7 @@ type Store interface {
 	FindProvision(context.Context, string) (ProvisionOperation, error)
 	BeginProvision(context.Context, ProvisionOperation) (ProvisionOperation, error)
 	CheckpointProvision(context.Context, ProvisionOperation) error
-	CompleteProvision(context.Context, string) error
+	CompleteProvision(context.Context, ProvisionOperation, string) error
 	BeginDestroy(context.Context, DestroyOperation) error
 	CheckpointDestroy(context.Context, DestroyOperation) error
 	CompleteDestroy(context.Context, string) error
@@ -148,6 +149,38 @@ func (s *Service) Provision(ctx context.Context, request ProvisionRequest) (Prov
 	if len(request.AccessKeyIDs)+len(request.LocalPublicKeys) > 15 {
 		return ProvisionResult{}, box.NewError("invalid_input", "select at most 15 additional SSH keys", nil)
 	}
+	accessKeyIDs := append([]string(nil), request.AccessKeyIDs...)
+	sort.Strings(accessKeyIDs)
+	localPublicKeys := append([]provider.PublicKey(nil), request.LocalPublicKeys...)
+	sort.Slice(localPublicKeys, func(i, j int) bool { return localPublicKeys[i].Fingerprint < localPublicKeys[j].Fingerprint })
+	operation := ProvisionOperation{Name: request.Name, Profile: request.Profile, Region: request.Region, Size: request.Size, Image: request.Image, NetworkID: request.NetworkID, AccessKeyIDs: accessKeyIDs, LocalPublicKeys: localPublicKeys, AutomaticBackups: request.AutomaticBackups, IPv6: request.IPv6, WorktreeRoot: request.WorktreeRoot, Checkpoint: "requested", UpdatedAt: s.now().UTC()}
+	if existing, findErr := s.store.FindProvision(ctx, request.Name); findErr == nil {
+		if operation.Profile == "" {
+			operation.Profile = existing.Profile
+		}
+		if err := ConflictForOperation(existing, operation); err != nil {
+			return ProvisionResult{}, err
+		}
+		// Box preparation commits before the provisioning checkpoint is removed.
+		// Resume that local completion without repeating provider or remote work.
+		if record, findErr := s.store.FindByName(ctx, existing.Name); findErr == nil {
+			if record.Acquisition != "provisioned" || record.Provider != string(provider.DigitalOcean) || existing.ResourceID == "" || record.ProviderResourceID != existing.ResourceID || record.ProviderCorrelationID != existing.CorrelationID || record.CredentialProfile != string(existing.Profile) {
+				return ProvisionResult{}, box.NewError("conflict", "box name is already in use by a different provisioning operation", nil)
+			}
+			observation, observationErr := s.store.LastObservation(ctx, record.ID)
+			if observationErr != nil {
+				return ProvisionResult{}, observationErr
+			}
+			if err := s.store.CompleteProvision(ctx, existing, record.ID); err != nil {
+				return ProvisionResult{}, err
+			}
+			return ProvisionResult{AddResult: box.AddResult{Box: record, Capabilities: observation.Capabilities, Verified: []string{"git", "schooner", "tmux"}}, Resource: provider.ResourceRef{Provider: provider.DigitalOcean, ResourceID: record.ProviderResourceID, CorrelationID: record.ProviderCorrelationID, Profile: existing.Profile}, Warning: existing.Warning}, nil
+		} else if !box.IsNotFound(findErr) {
+			return ProvisionResult{}, findErr
+		}
+	} else if !box.IsNotFound(findErr) {
+		return ProvisionResult{}, findErr
+	}
 	credential, err := s.credentials.Resolve(ctx, request.Profile)
 	if err != nil {
 		return ProvisionResult{}, err
@@ -160,31 +193,12 @@ func (s *Service) Provision(ctx context.Context, request ProvisionRequest) (Prov
 	if err != nil {
 		return ProvisionResult{}, err
 	}
-	accessKeyIDs := append([]string(nil), request.AccessKeyIDs...)
-	sort.Strings(accessKeyIDs)
-	localPublicKeys := append([]provider.PublicKey(nil), request.LocalPublicKeys...)
-	sort.Slice(localPublicKeys, func(i, j int) bool { return localPublicKeys[i].Fingerprint < localPublicKeys[j].Fingerprint })
-	operation := ProvisionOperation{Name: request.Name, CorrelationID: correlationID, Profile: credential.Profile, Region: request.Region, Size: request.Size, Image: request.Image, NetworkID: request.NetworkID, AccessKeyIDs: accessKeyIDs, LocalPublicKeys: localPublicKeys, AutomaticBackups: request.AutomaticBackups, IPv6: request.IPv6, WorktreeRoot: request.WorktreeRoot, IdentityFile: identity.PrivateKey, Checkpoint: "requested", UpdatedAt: s.now().UTC()}
+	operation.CorrelationID = correlationID
+	operation.Profile = credential.Profile
+	operation.IdentityFile = identity.PrivateKey
 	operation, err = s.store.BeginProvision(ctx, operation)
 	if err != nil {
 		return ProvisionResult{}, err
-	}
-	// Box preparation commits before the provisioning checkpoint is removed.
-	// Resume that local completion without repeating provider or remote work.
-	if record, findErr := s.store.FindByName(ctx, operation.Name); findErr == nil {
-		if record.Acquisition != "provisioned" || record.Provider != string(provider.DigitalOcean) || operation.ResourceID == "" || record.ProviderResourceID != operation.ResourceID || record.ProviderCorrelationID != operation.CorrelationID || record.CredentialProfile != string(operation.Profile) {
-			return ProvisionResult{}, box.NewError("conflict", "box name is already in use by a different provisioning operation", nil)
-		}
-		observation, observationErr := s.store.LastObservation(ctx, record.ID)
-		if observationErr != nil {
-			return ProvisionResult{}, observationErr
-		}
-		if err = s.store.CompleteProvision(ctx, operation.Name); err != nil {
-			return ProvisionResult{}, err
-		}
-		return ProvisionResult{AddResult: box.AddResult{Box: record, Capabilities: observation.Capabilities}, Resource: provider.ResourceRef{Provider: provider.DigitalOcean, ResourceID: record.ProviderResourceID, CorrelationID: record.ProviderCorrelationID, Profile: operation.Profile}}, nil
-	} else if !box.IsNotFound(findErr) {
-		return ProvisionResult{}, findErr
 	}
 	operation.Checkpoint = "provider_request_pending"
 	operation.UpdatedAt = s.now().UTC()
@@ -203,6 +217,7 @@ func (s *Service) Provision(ctx context.Context, request ProvisionRequest) (Prov
 		return ProvisionResult{}, err
 	}
 	operation.ResourceID = machine.ResourceID
+	operation.Warning = machine.Warning
 	operation.SSHDestination = machine.SSHUsername + "@" + machine.PublicIPv4
 	operation.Checkpoint = "resource_identified"
 	operation.UpdatedAt = s.now().UTC()
@@ -236,7 +251,7 @@ func (s *Service) Provision(ctx context.Context, request ProvisionRequest) (Prov
 		_ = s.store.CheckpointProvision(ctx, operation)
 		return ProvisionResult{}, err
 	}
-	if err = s.store.CompleteProvision(ctx, request.Name); err != nil {
+	if err = s.store.CompleteProvision(ctx, operation, added.Box.ID); err != nil {
 		return ProvisionResult{}, err
 	}
 	return ProvisionResult{AddResult: added, Resource: resource, Warning: machine.Warning}, nil

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/thewelshrich/schooner/internal/acquisition"
@@ -29,7 +30,7 @@ func (s *cancelAfterBoxCommit) CompleteAdd(ctx context.Context, op box.AddOperat
 }
 
 func TestInterruptedProvisionCompletion(t *testing.T) {
-	for _, cleanup := range []string{"resume", "mismatch", "remove", "destroy"} {
+	for _, cleanup := range []string{"resume", "resume-online", "legacy-resume", "mismatch", "remove", "destroy", "race-remove", "race-readd", "race-replace-box"} {
 		t.Run(cleanup, func(t *testing.T) {
 			dbPath := filepath.Join(t.TempDir(), "state.db")
 			db, err := sqlite.Open(t.Context(), dbPath)
@@ -40,7 +41,10 @@ func TestInterruptedProvisionCompletion(t *testing.T) {
 			defer cancel()
 			store := &cancelAfterBoxCommit{Store: db, cancel: cancel}
 			runtime := &testRuntime{capabilities: box.Capabilities{OSID: "ubuntu", OSVersion: "24.04", Architecture: "amd64", Home: "/root", WorktreeRoot: "/root/schooner", WorktreeRootExists: true, Git: box.Tool{Available: true}, Tmux: box.Tool{Available: true}}}
-			cloud := &testCloud{}
+			cloud := &testCloud{warning: "temporary provider SSH key cleanup required"}
+			if cleanup == "legacy-resume" {
+				cloud.warning = ""
+			}
 			svc := acquisition.New(box.New(runtime, store), store, testResolver{}, cloud, testIdentity{}, &testWaiter{})
 			request := acquisition.ProvisionRequest{Name: "work", Region: "fra1", Size: "small", Image: "ubuntu-24-04-x64", WorktreeRoot: box.DefaultWorktreeRoot}
 			_, err = svc.Provision(ctx, request)
@@ -86,10 +90,48 @@ func TestInterruptedProvisionCompletion(t *testing.T) {
 				}
 				return
 			}
-			if cleanup == "resume" {
+			if cleanup == "race-remove" || cleanup == "race-readd" || cleanup == "race-replace-box" {
+				raced := &afterObservationStore{Store: db, after: func() {
+					if _, err := db.Remove(t.Context(), "work"); err != nil {
+						t.Fatal(err)
+					}
+					replacement := op
+					if cleanup == "race-readd" {
+						replacement.CorrelationID = "replacement"
+					}
+					if _, err := db.BeginProvision(t.Context(), replacement); err != nil {
+						t.Fatal(err)
+					}
+					if cleanup == "race-replace-box" {
+						record.ID = "replacement-box"
+						if err := db.CompleteAdd(t.Context(), box.AddOperation{Name: record.Name}, record, box.Observation{BoxID: record.ID}); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}}
+				svc = acquisition.New(boxes, raced, testResolver{}, cloud, testIdentity{}, &testWaiter{})
+				if _, err := svc.Provision(t.Context(), request); box.ErrorCode(err) != "conflict" {
+					t.Fatalf("stale completion = %v", err)
+				}
+				pending, err := db.FindProvision(t.Context(), "work")
+				if err != nil {
+					t.Fatalf("concurrent checkpoint lost: %v", err)
+				}
+				if cleanup == "race-readd" && pending.CorrelationID != "replacement" {
+					t.Fatalf("replacement = %+v", pending)
+				}
+				return
+			}
+			if cleanup == "resume" || cleanup == "resume-online" || cleanup == "legacy-resume" {
+				if cleanup != "resume-online" {
+					svc = acquisition.New(boxes, db, unavailableDependencies{}, cloud, unavailableDependencies{}, &testWaiter{})
+				}
 				result, retryErr := svc.Provision(t.Context(), request)
 				if retryErr != nil || result.Box.ID != record.ID || result.Capabilities.OSID != "ubuntu" {
 					t.Fatalf("resume = %+v, %v", result, retryErr)
+				}
+				if result.Warning != cloud.warning || !slices.Equal(result.Verified, []string{"git", "schooner", "tmux"}) {
+					t.Fatalf("recovered warning/verified = %q, %v", result.Warning, result.Verified)
 				}
 				if _, err := db.FindProvision(t.Context(), "work"); !box.IsNotFound(err) {
 					t.Fatalf("completed checkpoint remains: %v", err)
@@ -143,6 +185,7 @@ func (w *testWaiter) WaitReady(_ context.Context, connection box.Connection) err
 type testCloud struct {
 	provision provider.ProvisionRequest
 	destroyed bool
+	warning   string
 }
 
 func (*testCloud) Identify(context.Context, string) (provider.Account, error) {
@@ -157,7 +200,7 @@ func (*testCloud) Catalog(context.Context, string) (provider.Catalog, error) {
 }
 func (f *testCloud) Provision(_ context.Context, _ string, request provider.ProvisionRequest) (provider.ProvisionedMachine, error) {
 	f.provision = request
-	return provider.ProvisionedMachine{ResourceID: "42", PublicIPv4: "203.0.113.8", SSHUsername: "root"}, nil
+	return provider.ProvisionedMachine{ResourceID: "42", PublicIPv4: "203.0.113.8", SSHUsername: "root", Warning: f.warning}, nil
 }
 func (*testCloud) Inspect(_ context.Context, _ string, ref provider.ResourceRef) (provider.Resource, error) {
 	return provider.Resource{ID: ref.ResourceID, CorrelationID: ref.CorrelationID}, nil
@@ -203,4 +246,27 @@ func (f *testRuntime) EnsureWorktreeRoot(_ context.Context, connection box.Conne
 
 func (f *testRuntime) ConfigureHost(context.Context, box.Connection, box.HostRuntime, string, string) error {
 	return nil
+}
+
+// Recovery must work even when credentials and local key material are unavailable.
+type unavailableDependencies struct{}
+
+func (unavailableDependencies) Resolve(context.Context, provider.CredentialProfileRef) (credentials.Credential, error) {
+	return credentials.Credential{}, errors.New("credentials unavailable")
+}
+func (unavailableDependencies) Ensure(context.Context) (acquisition.Identity, error) {
+	return acquisition.Identity{}, errors.New("identity unavailable")
+}
+
+type afterObservationStore struct {
+	*sqlite.Store
+	after func()
+}
+
+func (s *afterObservationStore) LastObservation(ctx context.Context, id string) (box.Observation, error) {
+	observation, err := s.Store.LastObservation(ctx, id)
+	if err == nil {
+		s.after()
+	}
+	return observation, err
 }
