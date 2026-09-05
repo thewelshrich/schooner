@@ -95,6 +95,7 @@ type Token struct {
 	RefreshToken     string    `json:"refresh_token,omitempty"`
 	AccessExpiresAt  time.Time `json:"access_expires_at,omitempty"`
 	RefreshExpiresAt time.Time `json:"refresh_expires_at,omitempty"`
+	VerifyAccount    bool      `json:"verify_account,omitempty"`
 }
 
 type DeviceAuthorization struct {
@@ -934,7 +935,7 @@ func (m *Manager) resolveAccount(ctx context.Context, allowAuthorization bool, b
 		return m.authorizeAfterConfirmation(ctx, account, beforeAuthorization)
 	}
 	warning := ""
-	if account.Status == "action_required" && persisted {
+	if account.Status == "action_required" && persisted && !token.VerifyAccount {
 		account.Status = "connected"
 		account.UpdatedAt = m.now().UTC()
 		if err = m.store.SaveSourceAccount(ctx, account); err != nil {
@@ -943,6 +944,9 @@ func (m *Manager) resolveAccount(ctx context.Context, allowAuthorization bool, b
 		warning = "Recovered an interrupted operating-system credential-store checkpoint."
 	}
 	if token.AccessExpiresAt.IsZero() || token.AccessExpiresAt.After(m.now().UTC().Add(30*time.Second)) {
+		if token.VerifyAccount {
+			return m.verifyRefreshedToken(ctx, account, token, warning, allowAuthorization, beforeAuthorization)
+		}
 		remote := RemoteAccount{ID: account.ExternalID, Login: account.Login}
 		if !validRemoteAccount(remote) {
 			return Token{}, RemoteAccount{}, "", NewError("conflict", "stored GitHub account metadata is invalid", nil)
@@ -968,15 +972,17 @@ func (m *Manager) resolveAccount(ctx context.Context, allowAuthorization bool, b
 			if !validCredentialToken(refreshed) {
 				return Token{}, RemoteAccount{}, "", authenticationRequired("GitHub returned an incomplete refreshed authorization")
 			}
-			remote, identifyErr := m.github.Account(ctx, refreshed.AccessToken)
-			if identifyErr != nil {
-				return Token{}, RemoteAccount{}, "", identifyErr
+			// Refresh consumes the previous pair. Retain its replacement before
+			// the fallible account lookup, but never use it without verification.
+			refreshed.VerifyAccount = true
+			m.mu.Lock()
+			m.ephemeral[GitHub] = refreshed
+			m.mu.Unlock()
+			persistWarning, persistErr := m.persistToken(ctx, account, refreshed, RemoteAccount{ID: account.ExternalID, Login: account.Login})
+			if persistErr != nil {
+				return Token{}, RemoteAccount{}, "", persistErr
 			}
-			if remote.ID != account.ExternalID {
-				return Token{}, RemoteAccount{}, "", NewError("conflict", "GitHub authorization now resolves to a different account", nil)
-			}
-			persistWarning, persistErr := m.persistToken(ctx, account, refreshed, remote)
-			return refreshed, remote, appendWarning(warning, persistWarning), persistErr
+			return m.verifyRefreshedToken(ctx, account, refreshed, appendWarning(warning, persistWarning), allowAuthorization, beforeAuthorization)
 		}
 		if ErrorCode(refreshErr) != "authentication_required" {
 			return Token{}, RemoteAccount{}, "", refreshErr
@@ -986,6 +992,23 @@ func (m *Manager) resolveAccount(ctx context.Context, allowAuthorization bool, b
 		return Token{}, RemoteAccount{}, "", authenticationRequired("the GitHub Source Account needs to be reauthorized")
 	}
 	return m.authorizeAfterConfirmation(ctx, account, beforeAuthorization)
+}
+
+// verifyRefreshedToken also resumes a rotation interrupted before identity verification.
+func (m *Manager) verifyRefreshedToken(ctx context.Context, account Account, token Token, warning string, allowAuthorization bool, beforeAuthorization func(context.Context, RemoteAccount) error) (Token, RemoteAccount, string, error) {
+	remote, err := m.github.Account(ctx, token.AccessToken)
+	if err != nil {
+		if ErrorCode(err) == "authentication_required" && allowAuthorization {
+			return m.authorizeAfterConfirmation(ctx, account, beforeAuthorization)
+		}
+		return Token{}, RemoteAccount{}, "", err
+	}
+	if !validRemoteAccount(remote) || remote.ID != account.ExternalID {
+		return Token{}, RemoteAccount{}, "", NewError("conflict", "GitHub authorization now resolves to a different account", nil)
+	}
+	token.VerifyAccount = false
+	persistWarning, err := m.persistToken(ctx, account, token, remote)
+	return token, remote, appendWarning(warning, persistWarning), err
 }
 
 func (m *Manager) authorizeAfterConfirmation(ctx context.Context, existing Account, before func(context.Context, RemoteAccount) error) (Token, RemoteAccount, string, error) {
@@ -1048,7 +1071,7 @@ func (m *Manager) loadToken(account Account) (Token, bool, error) {
 		Generation    string `json:"generation"`
 		Token
 	}
-	if err = json.Unmarshal([]byte(value), &envelope); err != nil || envelope.SchemaVersion != "1" || envelope.Generation != account.CredentialGeneration || !validCredentialToken(envelope.Token) {
+	if err = json.Unmarshal([]byte(value), &envelope); err != nil || (envelope.SchemaVersion != "1" && envelope.SchemaVersion != "2") || (envelope.SchemaVersion == "2") != envelope.VerifyAccount || envelope.Generation != account.CredentialGeneration || !validCredentialToken(envelope.Token) {
 		return Token{}, false, authenticationRequired("the stored GitHub credential is invalid")
 	}
 	return envelope.Token, true, nil
@@ -1062,11 +1085,16 @@ func (m *Manager) persistToken(ctx context.Context, existing Account, token Toke
 	if err != nil {
 		return "", NewError("internal", "could not create a source credential generation", err)
 	}
+	// Older clients must reject pending credentials rather than ignore the marker.
+	schemaVersion := "1"
+	if token.VerifyAccount {
+		schemaVersion = "2"
+	}
 	encoded, err := json.Marshal(struct {
 		SchemaVersion string `json:"schema_version"`
 		Generation    string `json:"generation"`
 		Token
-	}{SchemaVersion: "1", Generation: generation, Token: token})
+	}{SchemaVersion: schemaVersion, Generation: generation, Token: token})
 	if err != nil {
 		return "", err
 	}
@@ -1100,7 +1128,9 @@ func (m *Manager) persistToken(ctx context.Context, existing Account, token Toke
 		m.mu.Unlock()
 		return "Operating-system credential storage is unavailable; GitHub authorization is usable only for this Schooner process.", nil
 	}
-	account.Status = "connected"
+	if !token.VerifyAccount {
+		account.Status = "connected"
+	}
 	if err = m.store.SaveSourceAccount(ctx, account); err != nil {
 		return "", err
 	}

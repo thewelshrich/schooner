@@ -66,6 +66,12 @@ Identity after an authentication failure, verify the requested Repository, and
 retry once. Existing managed identities require no prompt. JSON and
 non-interactive flows never authorize or register a key.
 
+Refreshed token pairs are checkpointed before account lookup with a required
+identity-verification marker. Pending envelopes use schema version 2 so older
+clients reject them; verified envelopes retain version 1. Every retry must match
+the retained account ID before using pending credentials. If credential storage
+fails, recovery remains limited to the current process, without plaintext fallback.
+
 ## Consequences
 
 - Compromise of one Box source key does not expose workstation keys or another

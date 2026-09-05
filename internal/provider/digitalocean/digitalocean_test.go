@@ -158,6 +158,91 @@ func TestProvisionReconcilesCreatesAndDestroysTaggedDroplet(t *testing.T) {
 	}
 }
 
+func TestProvisionRecoversWithoutCreationCatalogue(t *testing.T) {
+	for _, tc := range []struct {
+		name, knownID, tags, wantCode string
+		correlated, exists            bool
+	}{
+		{name: "correlated", correlated: true, exists: true},
+		{name: "known and correlated", knownID: "42", correlated: true, exists: true},
+		{name: "known only", knownID: "42", exists: true},
+		{name: "different recorded ID", knownID: "43", correlated: true, exists: true, wantCode: "conflict"},
+		{name: "missing correlation tag", knownID: "42", exists: true, tags: "schooner", wantCode: "conflict"},
+		{name: "new resource needs catalogue", wantCode: "invalid_input"},
+		{name: "deleted resource needs catalogue", knownID: "42", wantCode: "invalid_input"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet {
+					t.Errorf("unexpected mutation: %s %s", r.Method, r.URL.Path)
+					http.Error(w, "unexpected mutation", http.StatusBadRequest)
+					return
+				}
+				switch r.URL.Path {
+				case "/v2/droplets":
+					if tc.correlated {
+						writeJSON(w, dropletJSON())
+					} else {
+						writeJSON(w, `{"droplets":[]}`)
+					}
+				case "/v2/droplets/42":
+					if !tc.exists {
+						http.NotFound(w, r)
+						return
+					}
+					tags := tc.tags
+					if tags == "" {
+						tags = "schooner-op-op-1"
+					}
+					writeJSON(w, fmt.Sprintf(`{"droplet":{"id":42,"tags":[%q],"networks":{"v4":[{"ip_address":"203.0.113.8","type":"public"}]}}}`, tags))
+				case "/v2/account/keys":
+					// The originally selected key has been removed.
+					writeJSON(w, `{"ssh_keys":[]}`)
+				case "/v2/regions", "/v2/sizes", "/v2/images", "/v2/vpcs":
+					if tc.exists {
+						t.Errorf("recovery consulted creation catalogue: %s", r.URL.Path)
+					}
+					writeJSON(w, `{}`)
+				default:
+					t.Errorf("unexpected request: %s", r.URL.Path)
+					http.NotFound(w, r)
+				}
+			}))
+			defer server.Close()
+			cloud := New()
+			cloud.baseURL = server.URL + "/"
+			request := provider.ProvisionRequest{Name: "work", CorrelationID: "op-1", KnownResourceID: tc.knownID, Region: "fra1", Size: "s-1vcpu-1gb", Image: "ubuntu-24-04-x64", AccessKeyIDs: []string{"9"}, ControlPublicKey: "ssh-ed25519 BBBB Schooner"}
+			machine, err := cloud.Provision(t.Context(), "token", request)
+			if (err == nil) != (tc.wantCode == "") || (err != nil && box.ErrorCode(err) != tc.wantCode) {
+				t.Fatalf("machine=%+v err=%v, want code %q", machine, err, tc.wantCode)
+			}
+			if err == nil && (machine.ResourceID != "42" || machine.PublicIPv4 != "203.0.113.8") {
+				t.Fatalf("machine=%+v", machine)
+			}
+		})
+	}
+}
+
+func TestProvisionRejectsInvalidKeysBeforeReconciliation(t *testing.T) {
+	for _, request := range []provider.ProvisionRequest{
+		{AccessKeyIDs: make([]string, 16)},
+		{AccessKeyIDs: []string{"9", "9"}},
+		{LocalPublicKeys: []provider.PublicKey{{Name: "invalid"}}},
+		{LocalPublicKeys: []provider.PublicKey{
+			{Name: "one", Fingerprint: "same", PublicKey: "ssh-ed25519 AAAA"},
+			{Name: "two", Fingerprint: "same", PublicKey: "ssh-ed25519 AAAA"},
+		}},
+	} {
+		cloud := New()
+		// Any attempted reconciliation must fail without reaching a server.
+		cloud.baseURL = "invalid://unused/"
+		_, err := cloud.Provision(t.Context(), "token", request)
+		if box.ErrorCode(err) != "invalid_input" {
+			t.Fatalf("request=%+v err=%v", request, err)
+		}
+	}
+}
+
 func TestInspectRejectsMissingCorrelationTag(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, `{"droplet":{"id":42,"name":"work","tags":["schooner"]}}`)

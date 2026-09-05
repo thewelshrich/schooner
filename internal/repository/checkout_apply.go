@@ -1900,9 +1900,28 @@ func preflightIncomingGitSemantics(ctx context.Context, target string, incomingF
 	if paths.Len() == 0 {
 		return nil
 	}
+	// Incoming files were captured under the source's .gitignore rules. Check
+	// only destination-local rules here; tracked .gitignore files are replaced
+	// by the incoming workspace and may not even appear on this manifest page.
+	ignoreRoot, err := destinationIgnoreWorktree(ctx, target, incomingFiles)
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(ignoreRoot)
+	arguments := []string{"--no-optional-locks", "-c", "core.fsmonitor=false", "-C", target}
+	// Git resolves relative exclusion paths after changing to its worktree.
+	// Preserve their original destination-relative meaning in the scratch tree.
+	excludes, configErr := git(ctx, commandRunner{}, target, "config", "--path", "--get", "core.excludesFile")
+	if configErr != nil && exitCode(configErr) != 1 {
+		return configErr
+	}
+	if path := strings.TrimSuffix(string(excludes), "\n"); path != "" && !filepath.IsAbs(path) {
+		arguments = append(arguments, "-c", "core.excludesFile="+filepath.Join(target, path))
+	}
+	arguments = append(arguments, "check-ignore", "--no-index", "--stdin", "-z")
 	var ignored bytes.Buffer
-	result, err := process.RunStreamingWithoutEnvironment(ctx, target, gitRepositoryEnvironment, nil, &paths, &ignored,
-		"git", "--no-optional-locks", "-c", "core.fsmonitor=false", "-C", target, "check-ignore", "--no-index", "--stdin", "-z")
+	result, err := process.RunStreamingWithoutEnvironment(ctx, target, gitRepositoryEnvironment, []string{"GIT_WORK_TREE=" + ignoreRoot}, &paths, &ignored,
+		"git", arguments...)
 	if err != nil && process.ExitCode(err) != 1 {
 		return gitTransferError("check destination ignore rules", result, err)
 	}
@@ -1911,6 +1930,67 @@ func preflightIncomingGitSemantics(ctx context.Context, target string, incomingF
 		return &Error{Code: CodeConflict, Message: fmt.Sprintf("destination ignore rules exclude incoming untracked path %q", ignoredPaths[0])}
 	}
 	return nil
+}
+
+// destinationIgnoreWorktree omits versioned ignore files while retaining local
+// .gitignore files. Git still reads the destination's config and info/exclude.
+func destinationIgnoreWorktree(ctx context.Context, target string, files []CheckoutFile) (string, error) {
+	trackedOutput, err := git(ctx, commandRunner{}, target, "ls-files", "-z", "--cached", "--", ".gitignore", ":(glob)**/.gitignore")
+	if err != nil {
+		return "", err
+	}
+	seen := make(map[string]bool)
+	for _, path := range parseNULPaths(trackedOutput) {
+		seen[path] = true
+	}
+	root, err := os.OpenRoot(target)
+	if err != nil {
+		return "", err
+	}
+	defer root.Close()
+	temporary, err := os.MkdirTemp("", "schooner-ignore-*")
+	if err != nil {
+		return "", err
+	}
+	failed := true
+	defer func() {
+		if failed {
+			_ = os.RemoveAll(temporary)
+		}
+	}()
+	for _, entry := range files {
+		if entry.Tracked || entry.Kind == "absent" {
+			continue
+		}
+		for directory := filepath.Dir(entry.Path); ; directory = filepath.Dir(directory) {
+			path := filepath.Join(directory, ".gitignore")
+			if !seen[path] {
+				seen[path] = true
+				info, err := root.Lstat(path)
+				if err != nil && !errors.Is(err, os.ErrNotExist) && !errors.Is(err, syscall.ENOTDIR) {
+					return "", err
+				}
+				// Git does not follow symlinks when reading .gitignore files.
+				if err == nil && info.Mode().IsRegular() {
+					contents, err := root.ReadFile(path)
+					if err != nil {
+						return "", err
+					}
+					if err := os.MkdirAll(filepath.Join(temporary, directory), 0o700); err != nil {
+						return "", err
+					}
+					if err := os.WriteFile(filepath.Join(temporary, path), contents, 0o600); err != nil {
+						return "", err
+					}
+				}
+			}
+			if directory == "." {
+				break
+			}
+		}
+	}
+	failed = false
+	return temporary, nil
 }
 
 func validateIncomingBranch(ctx context.Context, target string, state CheckoutState) error {

@@ -264,7 +264,10 @@ func (s *testStore) CheckpointProvision(_ context.Context, value ProvisionOperat
 	s.provision = &value
 	return nil
 }
-func (s *testStore) CompleteProvision(context.Context, string) error { s.provision = nil; return nil }
+func (s *testStore) CompleteProvision(context.Context, ProvisionOperation, string) error {
+	s.provision = nil
+	return nil
+}
 func (s *testStore) BeginDestroy(_ context.Context, value DestroyOperation) error {
 	s.destroy = &value
 	return nil
