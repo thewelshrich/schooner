@@ -586,6 +586,9 @@ func RestoreCheckoutAfterFailedApply(ctx context.Context, target string, backup,
 	for path := range incomingFiles {
 		paths[path] = true
 	}
+	for _, path := range append(append([]string(nil), backup.State.AbsentPaths...), incoming.State.AbsentPaths...) {
+		paths[path] = true
+	}
 	ordered := make([]string, 0, len(paths))
 	for path := range paths {
 		ordered = append(ordered, path)
@@ -607,7 +610,7 @@ func RestoreCheckoutAfterFailedApply(ctx context.Context, target string, backup,
 	// The capture records leaves, not directory ownership or permissions.
 	// Refuse before deleting anything if applying the backup would invent them.
 	backupPaths := make(map[string]bool, len(backupFiles))
-	for path := range backupFiles {
+	for path := range checkoutTransitionFiles(backup.State) {
 		backupPaths[path] = true
 	}
 	var backupDirectories []string
@@ -624,14 +627,11 @@ func RestoreCheckoutAfterFailedApply(ctx context.Context, target string, backup,
 
 	// Expected incoming chains may remain as empty directories after their
 	// leaves have already been removed by an interrupted inner rollback.
-	recoveryFiles := checkoutFileMap(currentState.Files)
-	for path, entry := range incomingFiles {
+	recoveryFiles := checkoutTransitionFiles(currentState)
+	for path, entry := range checkoutTransitionFiles(incoming.State) {
 		recoveryFiles[path] = entry
 	}
-	replacementRoots := checkoutFileMap(backup.State.Files)
-	for _, path := range backup.State.AbsentPaths {
-		replacementRoots[path] = CheckoutFile{Path: path}
-	}
+	replacementRoots := checkoutTransitionFiles(backup.State)
 	directories, err := pinReplacedCheckoutDirectories(root, recoveryFiles, replacementRoots)
 	if err != nil {
 		return CheckoutState{}, err
@@ -814,6 +814,15 @@ type checkoutDirectoryMetadata struct {
 	hasProvenance bool
 }
 
+// Include deleted tracked leaves when deriving directory topology.
+func checkoutTransitionFiles(state CheckoutState) map[string]CheckoutFile {
+	files := checkoutFileMap(state.Files)
+	for _, path := range state.AbsentPaths {
+		files[path] = CheckoutFile{Path: path, Kind: "absent", Tracked: true}
+	}
+	return files
+}
+
 // pinReplacedCheckoutDirectories records the directory identities that an
 // incoming leaf replaces, before outgoing files are removed.
 func pinReplacedCheckoutDirectories(root *os.Root, destinationFiles, incomingFiles map[string]CheckoutFile) (map[string]checkoutDirectoryMetadata, error) {
@@ -922,6 +931,7 @@ type preparedCheckoutFile struct {
 type preparedCheckoutFiles struct {
 	root              *os.Root
 	entries           []preparedCheckoutFile
+	previousAbsent    []string
 	createdDirs       []string
 	createdDirInfo    map[string]os.FileInfo
 	removedDirs       map[string]checkoutDirectoryMetadata
@@ -933,10 +943,8 @@ type preparedCheckoutFiles struct {
 func prepareCheckoutFiles(root *os.Root, destination CheckoutState, payload ExtractedCheckout) (*preparedCheckoutFiles, error) {
 	destinationFiles := checkoutFileMap(destination.Files)
 	incomingFiles := checkoutFileMap(payload.State.Files)
-	replacementRoots := checkoutFileMap(payload.State.Files)
-	for _, path := range payload.State.AbsentPaths {
-		replacementRoots[path] = CheckoutFile{Path: path}
-	}
+	replacementRoots := checkoutTransitionFiles(payload.State)
+	destinationPaths := checkoutTransitionFiles(destination)
 	paths := make(map[string]struct{}, len(payload.State.Files)+len(destination.Files))
 	for path := range replacementRoots {
 		paths[path] = struct{}{}
@@ -961,7 +969,7 @@ func prepareCheckoutFiles(root *os.Root, destination CheckoutState, payload Extr
 		}
 		return ordered[i] < ordered[j]
 	})
-	prepared := &preparedCheckoutFiles{root: root, entries: make([]preparedCheckoutFile, 0, len(ordered))}
+	prepared := &preparedCheckoutFiles{root: root, entries: make([]preparedCheckoutFile, 0, len(ordered)), previousAbsent: destination.AbsentPaths}
 	failed := true
 	defer func() {
 		if failed {
@@ -969,7 +977,7 @@ func prepareCheckoutFiles(root *os.Root, destination CheckoutState, payload Extr
 		}
 	}()
 	var err error
-	prepared.removedDirs, err = pinReplacedCheckoutDirectories(root, destinationFiles, replacementRoots)
+	prepared.removedDirs, err = pinReplacedCheckoutDirectories(root, destinationPaths, replacementRoots)
 	if err != nil {
 		return nil, err
 	}
@@ -1207,6 +1215,9 @@ func (prepared *preparedCheckoutFiles) Rollback() (rollbackErr error) {
 	for _, record := range prepared.entries {
 		known[record.path] = true
 	}
+	for _, path := range prepared.previousAbsent {
+		known[path] = true
+	}
 	managedDirectories := checkoutManagedDirectories(known)
 	createdDirRemovals := checkoutDirectoryRemovals(prepared.createdDirs)
 	for index := range prepared.entries {
@@ -1314,12 +1325,68 @@ func (prepared *preparedCheckoutFiles) Rollback() (rollbackErr error) {
 		}
 		record.backupTemp = ""
 	}
+	if err := prepared.restoreRemovedEmptyDirectories(); err != nil {
+		return err
+	}
 	for i := range prepared.entries {
 		if !prepared.entries[i].preserveDestination {
+			if err := prepared.verifyRestoredBackup(&prepared.entries[i]); err != nil {
+				return err
+			}
 			prepared.entries[i].preserveBackup = false
 		}
 	}
 	prepared.mutated = false
+	return nil
+}
+
+// Directory metadata is also needed when every original tracked leaf was absent.
+func (prepared *preparedCheckoutFiles) restoreRemovedEmptyDirectories() error {
+	paths := make([]string, 0, len(prepared.removedDirs))
+	for path := range prepared.removedDirs {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	for _, path := range paths {
+		info, err := prepared.root.Lstat(filepath.FromSlash(path))
+		if err == nil && os.SameFile(info, prepared.removedDirs[path].info) {
+			continue
+		}
+		if errors.Is(err, os.ErrNotExist) {
+			if err = makeCheckoutDirectoryNoFollow(prepared.root, filepath.FromSlash(path), 0o700); err != nil {
+				return err
+			}
+			info, err = prepared.root.Lstat(filepath.FromSlash(path))
+			if err != nil {
+				return err
+			}
+			if prepared.recreatedDirs == nil {
+				prepared.recreatedDirs = make(map[string]os.FileInfo)
+			}
+			prepared.recreatedDirs[path] = info
+		} else if err != nil || !os.SameFile(info, prepared.recreatedDirs[path]) {
+			return &Error{Code: CodeOutcomeUnknown, Message: fmt.Sprintf("directory %q changed before rollback completed", path), Cause: err}
+		}
+		// A prior attempt may have created this identity but failed to restore
+		// metadata. Every retry must restore and verify it before reporting success.
+		directory, err := restoreCheckoutDirectoryMetadata(prepared.root, path, info, prepared.removedDirs[path])
+		if err != nil {
+			return err
+		}
+		directory.Close()
+	}
+	return nil
+}
+
+func (prepared *preparedCheckoutFiles) verifyRestoredBackup(record *preparedCheckoutFile) error {
+	if record.previous == nil {
+		return nil
+	}
+	current, present, err := checkoutFileOnRoot(prepared.root, record.path)
+	if err != nil || !present || !checkoutFileContentEqual(current, *record.previous) {
+		record.preserveBackup = true
+		return &Error{Code: CodeOutcomeUnknown, Message: fmt.Sprintf("restored contents at %q changed; recovery material must be retained", record.path), Cause: err}
+	}
 	return nil
 }
 
@@ -1757,6 +1824,9 @@ func PreflightCheckoutApplication(ctx context.Context, target string, destinatio
 	tracked := make(map[string]bool, len(destination.Files))
 	for _, entry := range destination.Files {
 		tracked[entry.Path] = entry.Tracked
+	}
+	for _, path := range destination.AbsentPaths {
+		tracked[path] = true
 	}
 	managedDirectories := checkoutManagedDirectories(tracked)
 	for _, incoming := range incomingFiles {

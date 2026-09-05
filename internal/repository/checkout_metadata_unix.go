@@ -191,5 +191,8 @@ func (prepared *preparedCheckoutFiles) restoreBackupAt(record *preparedCheckoutF
 			return &Error{Code: CodeOutcomeUnknown, Message: fmt.Sprintf("restored directory %q moved; recovery backup preserved at %q", path, record.backupTemp), Cause: err}
 		}
 	}
+	if err := prepared.verifyRestoredBackup(record); err != nil {
+		return err
+	}
 	return unix.Unlinkat(int(source.Fd()), filepath.Base(record.backupTemp), 0)
 }

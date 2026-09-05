@@ -742,3 +742,88 @@ func TestCheckoutUntrackedChildReplacesTrackedSymlink(t *testing.T) {
 		})
 	}
 }
+
+func TestCheckoutTransitionWithAbsentTrackedDescendants(t *testing.T) {
+	for _, rollback := range []bool{false, true} {
+		t.Run(fmt.Sprintf("rollback=%t", rollback), func(t *testing.T) {
+			target, _, incoming := checkoutPathTypeTransition(t, true)
+			if err := os.Remove(filepath.Join(target, "file.txt/nested/child")); err != nil {
+				t.Fatal(err)
+			}
+			before, err := ObserveCheckout(t.Context(), target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Contains(before.AbsentPaths, "file.txt/nested/child") {
+				t.Fatal("missing absent descendant")
+			}
+			if _, err = PreflightCheckoutFiles(t.Context(), target, incoming.State.Files); err != nil {
+				t.Fatal(err)
+			}
+			if err = PreflightCheckoutApplication(t.Context(), target, before, incoming.State.Files, incoming.State.AbsentPaths); err != nil {
+				t.Fatal(err)
+			}
+			if rollback {
+				root, err := os.OpenRoot(target)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer root.Close()
+				prepared, err := prepareCheckoutFiles(root, before, incoming)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer prepared.Release()
+				if err = prepared.Apply(); err != nil {
+					t.Fatal(err)
+				}
+				if err = prepared.Rollback(); err != nil {
+					t.Fatal(err)
+				}
+				prepared.Release()
+				for _, path := range []string{"file.txt", "file.txt/nested"} {
+					info, err := root.Lstat(path)
+					if err != nil || !info.IsDir() {
+						t.Fatalf("original empty directory missing: %s: %v", path, err)
+					}
+				}
+				restored, err := ObserveCheckout(t.Context(), target)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if restored.Digest != before.Digest {
+					t.Fatal("absent tracked state not restored")
+				}
+			} else {
+				capture, err := CaptureCheckout(t.Context(), target, t.TempDir())
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer capture.Release()
+				backup, err := ExtractCheckoutPayload(capture.PayloadPath, t.TempDir())
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer backup.Release()
+				applied, err := ApplyCheckoutIfUnchanged(t.Context(), target, incoming, before.RevalidationDigest)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if applied.Digest != incoming.State.Digest {
+					t.Fatal("incoming file not applied")
+				}
+				// Persistent captures cannot recreate the original empty directory metadata.
+				if _, err = RestoreCheckoutAfterFailedApply(t.Context(), target, backup, incoming); ErrorCode(err) != CodeOutcomeUnknown {
+					t.Fatalf("external restore = %v", err)
+				}
+				after, err := ObserveCheckout(t.Context(), target)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if after.Digest != applied.Digest {
+					t.Fatal("failed external restore mutated checkout")
+				}
+			}
+		})
+	}
+}

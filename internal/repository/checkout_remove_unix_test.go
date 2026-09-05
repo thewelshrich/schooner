@@ -204,3 +204,42 @@ func TestCheckoutCreatedDirectoryCleanupDoesNotRequireMetadataSupport(t *testing
 		t.Fatalf("safe empty-directory cleanup = %v", err)
 	}
 }
+
+func TestCheckoutDirectoryRemovalRejectsIntermediateSymlink(t *testing.T) {
+	for _, ancestor := range []string{"outer", "outer/inner"} {
+		t.Run(ancestor, func(t *testing.T) {
+			target := t.TempDir()
+			if err := os.MkdirAll(filepath.Join(target, "outer/inner/deep/leaf"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			root, err := os.OpenRoot(target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer root.Close()
+			info, err := root.Lstat("outer/inner/deep/leaf")
+			if err != nil {
+				t.Fatal(err)
+			}
+			metadata, err := checkCheckoutDirectoryPermissions(root, "outer/inner/deep/leaf", info)
+			if err != nil {
+				t.Fatal(err)
+			}
+			moved := ancestor + "-moved"
+			if err = root.Rename(ancestor, moved); err != nil {
+				t.Fatal(err)
+			}
+			if err = root.Symlink(filepath.Base(moved), ancestor); err != nil {
+				t.Fatal(err)
+			}
+			changed, err := removeCheckoutDirectory(root, "outer/inner/deep/leaf", metadata, true)
+			if err == nil || changed {
+				t.Fatalf("symlink ancestor removal: changed=%t err=%v", changed, err)
+			}
+			remaining, err := root.Lstat(filepath.Join(moved, strings.TrimPrefix("outer/inner/deep/leaf", ancestor+"/")))
+			if err != nil || !os.SameFile(remaining, info) {
+				t.Fatal("moved directory mutated")
+			}
+		})
+	}
+}

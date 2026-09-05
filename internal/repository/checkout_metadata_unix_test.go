@@ -148,48 +148,73 @@ func TestCheckoutOwnershipFailurePreservesBackupAndRetries(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("requires an unprivileged process to reject chown")
 	}
-	target, before, incoming := checkoutPathTypeTransition(t, true)
-	root, err := os.OpenRoot(target)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer root.Close()
-	prepared, err := prepareCheckoutFiles(root, before, incoming)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer prepared.Release()
-	if err = prepared.Apply(); err != nil {
-		t.Fatal(err)
-	}
-	original := prepared.removedDirs["file.txt"]
-	stat := *original.info.Sys().(*syscall.Stat_t)
-	stat.Uid = uint32(os.Geteuid() + 1)
-	modified := original
-	modified.info = checkoutOwnershipInfo{FileInfo: original.info, stat: stat}
-	prepared.removedDirs["file.txt"] = modified
-	if err = prepared.Rollback(); ErrorCode(err) != CodeOutcomeUnknown {
-		t.Fatalf("unrestorable ownership error = %v", err)
-	}
-	prepared.Release()
-	for _, record := range prepared.entries {
-		if record.previous != nil {
-			if _, err = root.Lstat(record.backupTemp); err != nil {
-				t.Fatalf("lost recovery material: %v", err)
+	for _, absent := range []bool{false, true} {
+		t.Run(fmt.Sprintf("absent=%t", absent), func(t *testing.T) {
+			target, before, incoming := checkoutPathTypeTransition(t, true)
+			if absent {
+				if err := os.Remove(filepath.Join(target, "file.txt/nested/child")); err != nil {
+					t.Fatal(err)
+				}
+				var err error
+				before, err = ObserveCheckout(t.Context(), target)
+				if err != nil {
+					t.Fatal(err)
+				}
 			}
-		}
-	}
-	prepared.removedDirs["file.txt"] = original
-	if err = prepared.Rollback(); err != nil {
-		t.Fatal(err)
-	}
-	prepared.Release()
-	after, err := ObserveCheckout(t.Context(), target)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if after.RevalidationDigest != before.RevalidationDigest {
-		t.Fatal("retry did not fully restore the checkout")
+			root, err := os.OpenRoot(target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer root.Close()
+			prepared, err := prepareCheckoutFiles(root, before, incoming)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer prepared.Release()
+			if err = prepared.Apply(); err != nil {
+				t.Fatal(err)
+			}
+			original := prepared.removedDirs["file.txt"]
+			stat := *original.info.Sys().(*syscall.Stat_t)
+			stat.Uid = uint32(os.Geteuid() + 1)
+			modified := original
+			modified.info = checkoutOwnershipInfo{FileInfo: original.info, stat: stat}
+			prepared.removedDirs["file.txt"] = modified
+			if err = prepared.Rollback(); ErrorCode(err) != CodeOutcomeUnknown {
+				t.Fatalf("unrestorable ownership error = %v", err)
+			}
+			prepared.Release()
+			for _, record := range prepared.entries {
+				if record.previous != nil {
+					if _, err = root.Lstat(record.backupTemp); err != nil {
+						t.Fatalf("lost recovery material: %v", err)
+					}
+				}
+			}
+			if err = prepared.Rollback(); ErrorCode(err) != CodeOutcomeUnknown {
+				t.Fatalf("retry accepted unrestored ownership: %v", err)
+			}
+			prepared.removedDirs["file.txt"] = original
+			if err = prepared.Rollback(); err != nil {
+				t.Fatal(err)
+			}
+			prepared.Release()
+			if absent {
+				for _, path := range []string{"file.txt", "file.txt/nested"} {
+					info, err := root.Lstat(path)
+					if err != nil || !info.IsDir() {
+						t.Fatalf("empty directory not restored: %s: %v", path, err)
+					}
+				}
+			}
+			after, err := ObserveCheckout(t.Context(), target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if after.RevalidationDigest != before.RevalidationDigest {
+				t.Fatal("retry did not fully restore the checkout")
+			}
+		})
 	}
 }
 
@@ -597,5 +622,52 @@ func TestCheckoutRollbackRejectsSwappedBackupBeforeInstall(t *testing.T) {
 				t.Fatal(err)
 			}
 		})
+	}
+}
+
+func TestCheckoutRestoredBackupRejectsRetainedWriter(t *testing.T) {
+	root, err := os.OpenRoot(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	writer, err := root.Create("backup")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer writer.Close()
+	if _, err = writer.WriteString("original"); err != nil {
+		t.Fatal(err)
+	}
+	previous, _, err := checkoutFileOnRoot(root, "backup")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = root.Link("backup", "linked"); err != nil {
+		t.Fatal(err)
+	}
+	linked, present, err := checkoutFileOnRoot(root, "linked")
+	if err != nil || !present || !checkoutFileContentEqual(linked, previous) {
+		t.Fatal("invalid initial rollback link")
+	}
+	// The original descriptor changes the validated inode before installation.
+	if _, err = writer.WriteAt([]byte("modified"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err = root.Rename("linked", "restored"); err != nil {
+		t.Fatal(err)
+	}
+	record := preparedCheckoutFile{path: "restored", backupTemp: "backup", previous: &previous}
+	prepared := preparedCheckoutFiles{root: root}
+	if err = prepared.verifyRestoredBackup(&record); ErrorCode(err) != CodeOutcomeUnknown {
+		t.Fatalf("installed verification = %v", err)
+	}
+	if !record.preserveBackup {
+		t.Fatal("recovery material was not retained")
+	}
+	prepared.entries = []preparedCheckoutFile{record}
+	prepared.Release()
+	if _, err = root.Lstat("backup"); err != nil {
+		t.Fatal("backup released after failed installed verification")
 	}
 }

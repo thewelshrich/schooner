@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"syscall"
+	"strings"
 
 	"golang.org/x/sys/unix"
 )
@@ -16,7 +16,7 @@ import (
 // The private directory and its open descriptor isolate verification/removal
 // from further changes to the shared Worktree namespace.
 func removeCheckoutDirectory(root *os.Root, path string, expected checkoutDirectoryMetadata, preserveMetadata bool) (mutated bool, result error) {
-	parent, err := root.OpenFile(filepath.Dir(path), os.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW, 0)
+	parent, err := openCheckoutDirectoryNoFollow(root, filepath.Dir(path))
 	if err != nil {
 		return false, err
 	}
@@ -106,4 +106,39 @@ func removeEmptyCheckoutQuarantine(parent *os.File, name string, expected unix.S
 		return fmt.Errorf("quarantine identity changed")
 	}
 	return unix.Unlinkat(int(parent.Fd()), name, unix.AT_REMOVEDIR)
+}
+
+// Each open is relative to the preceding pinned directory, so O_NOFOLLOW
+// protects every component, including intermediate ancestors.
+func openCheckoutDirectoryNoFollow(root *os.Root, path string) (*os.File, error) {
+	if path != "." {
+		if err := validateCheckoutPath(filepath.ToSlash(path)); err != nil {
+			return nil, err
+		}
+	}
+	directory, err := root.Open(".")
+	if err != nil {
+		return nil, err
+	}
+	if path == "." {
+		return directory, nil
+	}
+	for _, component := range strings.Split(path, string(filepath.Separator)) {
+		fd, err := unix.Openat(int(directory.Fd()), component, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+		directory.Close()
+		if err != nil {
+			return nil, err
+		}
+		directory = os.NewFile(uintptr(fd), component)
+	}
+	return directory, nil
+}
+
+func makeCheckoutDirectoryNoFollow(root *os.Root, path string, mode os.FileMode) error {
+	parent, err := openCheckoutDirectoryNoFollow(root, filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	defer parent.Close()
+	return unix.Mkdirat(int(parent.Fd()), filepath.Base(path), uint32(mode.Perm()))
 }
