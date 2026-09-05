@@ -36,12 +36,7 @@ func (u *updater) acquireLock() (*installationLock, error) {
 		if !errors.Is(err, os.ErrExist) {
 			return nil, &Error{Code: CodeLocked, Message: "acquire the local update lock", Cause: err}
 		}
-		if reclaimErr := u.reclaimLock(directory, host, token); reclaimErr != nil {
-			return nil, reclaimErr
-		}
-		if err = os.Mkdir(directory, 0o700); err != nil {
-			return nil, &Error{Code: CodeLocked, Message: "acquire the local update lock after retiring its stale owner", Cause: err}
-		}
+		return nil, u.existingLockError(directory, host)
 	}
 	owner := lockOwner{host: host, pid: os.Getpid(), target: u.executablePath, token: token}
 	if err = writeLockOwner(filepath.Join(directory, "owner"), owner); err != nil {
@@ -51,7 +46,7 @@ func (u *updater) acquireLock() (*installationLock, error) {
 	return &installationLock{directory: directory, token: token}, nil
 }
 
-func (u *updater) reclaimLock(directory, host, replacementToken string) error {
+func (u *updater) existingLockError(directory, host string) error {
 	info, err := os.Lstat(directory)
 	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return &Error{Code: CodeLocked, Message: "installation is locked by an invalid previous operation", Cause: err}
@@ -74,17 +69,9 @@ func (u *updater) reclaimLock(directory, host, replacementToken string) error {
 	if alive {
 		return &Error{Code: CodeLocked, Message: fmt.Sprintf("another Schooner installation is active for %s", u.executablePath)}
 	}
-	stale := directory + ".stale." + replacementToken
-	if err = os.Rename(directory, stale); err != nil {
-		return &Error{Code: CodeLocked, Message: "the stale installation lock changed; retry", Cause: err}
-	}
-	if err = os.Remove(filepath.Join(stale, "owner")); err == nil {
-		err = os.Remove(stale)
-	}
-	if err != nil {
-		return &Error{Code: CodeLocked, Message: "retire the stale installation lock", Cause: err}
-	}
-	return nil
+	// A checked owner can be replaced before a rename. Never retire a lock
+	// automatically: two stale-lock observers could otherwise both acquire it.
+	return &Error{Code: CodeLocked, Message: fmt.Sprintf("stale installation lock at %s; stop all installers and updaters, then remove its owner file and directory before retrying", directory)}
 }
 
 func (l *installationLock) release() {

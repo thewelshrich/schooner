@@ -472,7 +472,7 @@ read_lock_value() {
 }
 
 acquire_lock() {
-  local install_directory="$1" target="$2" owner host pid stale token owner_count
+  local install_directory="$1" target="$2" owner host token owner_count
   lock_directory="${install_directory}/${lock_name}"
   host="$(hostname 2>/dev/null || uname -n)"
   [[ "${host}" =~ ^[0-9A-Za-z._-]+$ ]] || fail "local hostname is unsafe for installation locking"
@@ -494,11 +494,8 @@ acquire_lock() {
     if kill -0 "${owner_pid}" 2>/dev/null; then
       fail "another Schooner installation is active for ${target}"
     fi
-    stale="${lock_directory}.stale.${lock_token}"
-    mv "${lock_directory}" "${stale}" 2>/dev/null || fail "the stale installation lock changed; retry"
-    rm -f "${stale}/owner"
-    rmdir "${stale}" || fail "could not retire the stale installation lock"
-    mkdir "${lock_directory}" || fail "could not acquire the installation lock"
+    # Inspection and rename cannot atomically identify the same lock owner.
+    fail "stale installation lock at ${lock_directory}; stop all installers and updaters, then remove its owner file and directory before retrying"
   fi
   owner="${lock_directory}/owner"
   token="${lock_token}"
