@@ -253,7 +253,11 @@ func TestCheckoutPathTypeExternalRestore(t *testing.T) {
 				if after.RevalidationDigest != applied.RevalidationDigest {
 					t.Fatal("refused restore mutated the destination")
 				}
-				_, err = restoreCheckoutTransaction(t.Context(), target, capture, incoming, t.TempDir(), &Error{Code: CodeConflict, Message: "interrupted application"})
+				recoveryStaging := t.TempDir()
+				_, err = restoreCheckoutTransaction(t.Context(), target, capture, incoming, recoveryStaging, &Error{Code: CodeConflict, Message: "interrupted application"})
+				if entries, readErr := os.ReadDir(recoveryStaging); readErr != nil || len(entries) != 0 {
+					t.Fatalf("failed recovery leaked extraction: %v, %v", entries, readErr)
+				}
 				if ErrorCode(err) != CodeOutcomeUnknown || !strings.Contains(err.Error(), capture.PayloadPath) {
 					t.Fatalf("retained capture guidance = %v", err)
 				}
@@ -456,5 +460,35 @@ func TestCheckoutTransactionRecoveryCaptureLifecycle(t *testing.T) {
 				t.Fatalf("completed rollback did not release capture: %v", statErr)
 			}
 		})
+	}
+}
+
+func TestCheckoutUnknownRecoveryDoesNotInstallBackup(t *testing.T) {
+	target, _, incoming := checkoutPathTypeTransition(t, true)
+	staging := t.TempDir()
+	capture, err := CaptureCheckout(t.Context(), target, staging)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer capture.Release()
+	// Model an inner rollback that recreated the chain but failed metadata
+	// restoration before reinstalling the private original leaf.
+	leaf := filepath.Join(target, "file.txt", "nested", "child")
+	if err = os.Remove(leaf); err != nil {
+		t.Fatal(err)
+	}
+	recoveryStaging := t.TempDir()
+	_, err = restoreCheckoutTransaction(t.Context(), target, capture, incoming, recoveryStaging, &Error{Code: CodeOutcomeUnknown, Message: "directory ownership restoration failed"})
+	if ErrorCode(err) != CodeOutcomeUnknown || !strings.Contains(err.Error(), capture.PayloadPath) {
+		t.Fatalf("recovery error = %v", err)
+	}
+	if _, err = os.Stat(leaf); !os.IsNotExist(err) {
+		t.Fatalf("unknown recovery installed backup leaf: %v", err)
+	}
+	if _, err = os.Stat(capture.PayloadPath); err != nil {
+		t.Fatalf("backup lost: %v", err)
+	}
+	if entries, err := os.ReadDir(recoveryStaging); err != nil || len(entries) != 0 {
+		t.Fatalf("unknown recovery extracted payload: %v, %v", entries, err)
 	}
 }

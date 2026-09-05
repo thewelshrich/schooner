@@ -3,8 +3,10 @@
 package repository
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 )
@@ -176,5 +178,52 @@ func TestCheckoutOwnershipFailurePreservesBackupAndRetries(t *testing.T) {
 	}
 	if after.RevalidationDigest != before.RevalidationDigest {
 		t.Fatal("retry did not fully restore the checkout")
+	}
+}
+
+func TestCheckoutTransitionRejectsDirectoryACL(t *testing.T) {
+	for _, late := range []bool{false, true} {
+		t.Run(fmt.Sprintf("after-preparation=%t", late), func(t *testing.T) {
+			target, before, incoming := checkoutPathTypeTransition(t, true)
+			root, err := os.OpenRoot(target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer root.Close()
+			var prepared *preparedCheckoutFiles
+			if late {
+				prepared, err = prepareCheckoutFiles(root, before, incoming)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer prepared.Release()
+			}
+			installCheckoutTestACL(t, filepath.Join(target, "file.txt", "nested"))
+			if late {
+				err = prepared.removeReplacedDirectories("file.txt")
+			} else {
+				prepared, err = prepareCheckoutFiles(root, before, incoming)
+				if prepared != nil {
+					defer prepared.Release()
+				}
+			}
+			if ErrorCode(err) != CodeConflict || !strings.Contains(err.Error(), "extended permissions") {
+				t.Fatalf("ACL rejection = %v", err)
+			}
+			if _, err = os.Stat(filepath.Join(target, "file.txt", "nested", "child")); err != nil {
+				t.Fatalf("original leaf lost: %v", err)
+			}
+		})
+	}
+}
+
+func TestCheckoutACLInspectionFailure(t *testing.T) {
+	directory, err := os.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory.Close()
+	if err = rejectCheckoutDirectoryACL(directory); err == nil {
+		t.Fatal("closed descriptor accepted")
 	}
 }

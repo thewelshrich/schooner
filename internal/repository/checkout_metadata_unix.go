@@ -55,3 +55,26 @@ func restoreCheckoutDirectoryMetadata(root *os.Root, path string, recreated, ori
 	}
 	return nil
 }
+
+// Captures do not preserve ACLs. Inspect the pinned directory, never a pathname
+// handed to a subprocess, and refuse unsupported permissions before removal.
+func checkCheckoutDirectoryPermissions(root *os.Root, path string, expected os.FileInfo) (result error) {
+	defer func() {
+		if result != nil {
+			result = &Error{Code: CodeConflict, Message: fmt.Sprintf("directory %q extended permissions cannot be safely preserved", path), Cause: result}
+		}
+	}()
+	directory, err := root.OpenFile(path, os.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return err
+	}
+	defer directory.Close()
+	info, err := directory.Stat()
+	if err != nil {
+		return err
+	}
+	if !os.SameFile(info, expected) {
+		return fmt.Errorf("directory changed independently")
+	}
+	return rejectCheckoutDirectoryACL(directory)
+}

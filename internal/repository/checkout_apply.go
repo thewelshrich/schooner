@@ -542,14 +542,15 @@ func ApplyCheckoutTransaction(ctx context.Context, target string, payload Extrac
 }
 
 func restoreCheckoutTransaction(ctx context.Context, target string, backup CheckoutCapture, incoming ExtractedCheckout, stagingDirectory string, applyErr error) (CheckoutState, error) {
+	if ErrorCode(applyErr) == CodeOutcomeUnknown {
+		return CheckoutState{}, &Error{Code: CodeOutcomeUnknown, Message: fmt.Sprintf("workspace recovery remains incomplete; captured backup preserved at %q for manual recovery", backup.PayloadPath), Cause: applyErr}
+	}
 	restore, restoreErr := ExtractCheckoutPayload(backup.PayloadPath, stagingDirectory)
 	if restoreErr == nil {
+		defer restore.Release()
 		_, restoreErr = RestoreCheckoutAfterFailedApply(context.WithoutCancel(ctx), target, restore, incoming)
-		if restoreErr == nil {
-			restore.Release()
-		}
 	}
-	if restoreErr != nil || ErrorCode(applyErr) == CodeOutcomeUnknown {
+	if restoreErr != nil {
 		return CheckoutState{}, &Error{Code: CodeOutcomeUnknown, Message: fmt.Sprintf("workspace recovery remains incomplete; captured backup preserved at %q for manual recovery", backup.PayloadPath), Cause: errors.Join(applyErr, restoreErr)}
 	}
 	backup.Release()
@@ -815,6 +816,11 @@ func pinReplacedCheckoutDirectories(root *os.Root, destinationFiles, incomingFil
 				if !info.IsDir() {
 					break
 				}
+				if _, pinned := directories[dir]; !pinned {
+					if err = checkCheckoutDirectoryPermissions(root, filepath.FromSlash(dir), info); err != nil {
+						return nil, err
+					}
+				}
 				directories[dir] = info
 			}
 			break
@@ -857,6 +863,9 @@ func (prepared *preparedCheckoutFiles) removeReplacedDirectories(path string) er
 		info, err := prepared.root.Lstat(filepath.FromSlash(dir))
 		if err != nil || !os.SameFile(info, prepared.removedDirs[dir]) {
 			return &Error{Code: CodeConflict, Message: fmt.Sprintf("destination directory %q changed during workspace application", dir), Cause: err}
+		}
+		if err = checkCheckoutDirectoryPermissions(prepared.root, filepath.FromSlash(dir), info); err != nil {
+			return err
 		}
 		// Remove only an empty directory; any concurrent file blocks replacement.
 		if err = prepared.root.Remove(filepath.FromSlash(dir)); err != nil {
