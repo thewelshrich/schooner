@@ -249,8 +249,19 @@ target=${stale_dir}/schooner
 token=stale.test
 EOF
 chmod 0600 "${stale_dir}/.schooner-install.lock/owner"
+cp "${stale_dir}/.schooner-install.lock/owner" "${test_tmp}/stale-owner"
+# Concurrent callers must both refuse, preserving the same owner record.
+expect_failure "stop all installers and updaters" --version v1.2.3 --install-dir "${stale_dir}" &
+stale_first=$!
+expect_failure "stop all installers and updaters" --version v1.2.3 --install-dir "${stale_dir}" &
+stale_second=$!
+wait "${stale_first}"
+wait "${stale_second}"
+cmp "${test_tmp}/stale-owner" "${stale_dir}/.schooner-install.lock/owner" || fail "stale owner changed"
+rm "${stale_dir}/.schooner-install.lock/owner"
+rmdir "${stale_dir}/.schooner-install.lock"
 invoke --version v1.2.3 --install-dir "${stale_dir}" >/dev/null
-[[ ! -e "${stale_dir}/.schooner-install.lock" ]] || fail "stale lock was not retired"
+[[ ! -e "${stale_dir}/.schooner-install.lock" ]] || fail "lock remains after manual recovery"
 
 cancel_dir="${test_tmp}/cancelled"
 ready="${test_tmp}/candidate-ready"

@@ -53,8 +53,11 @@ metadata without replacing user code.
 
 Installer and updater operations coordinate through an adjacent exclusive
 `.schooner-install.lock` directory. Its versioned owner record binds hostname,
-PID, canonical target, and a random token. A live or ambiguous lock fails closed;
-a demonstrably dead local lock may be renamed and retired. Each operation
+PID, canonical target, and a random token. All existing locks fail closed,
+including demonstrably dead local owners. Automatic retirement cannot safely
+distinguish the inspected directory from a newer owner installed by another
+reclaimer. Recovery requires stopping all installers and updaters before manually
+removing the owner file and empty lock directory. The owner format is unchanged. Each operation
 captures target and receipt fingerprints under the lock and rechecks them before
 same-directory executable promotion. The receipt is promoted only after the
 executable.

@@ -133,6 +133,12 @@ rm -- "$HOME/.local/bin/schooner" \
   "$HOME/.local/bin/.schooner-install-receipt.json"
 ```
 
+If an interrupted installer or updater leaves a stale installation lock, stop
+all installer and `schooner update` processes first. Inspect the `owner` file in
+the reported `.schooner-install.lock` directory and confirm its operation has
+ended, then remove that file and the empty directory before retrying. Existing
+locks are never reclaimed automatically, to prevent concurrent replacements.
+
 Disable the occasional update notice with `SCHOONER_NO_UPDATE_CHECK=1`. Tagged
 binaries are also on
 [GitHub Releases](https://github.com/thewelshrich/schooner/releases). Source

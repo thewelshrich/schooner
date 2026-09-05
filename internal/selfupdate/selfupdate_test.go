@@ -381,7 +381,7 @@ func TestReceiptFailureReportsValidButUnownedUpdate(t *testing.T) {
 	}
 }
 
-func TestInstallationLockFailsClosedAndReclaimsDeadLocalOwner(t *testing.T) {
+func TestInstallationLockFailsClosedUntilManualRecovery(t *testing.T) {
 	u, target, _ := testUpdater(t, "linux", "amd64", "v0.2.0", "v0.3.0")
 	lockPath := filepath.Join(filepath.Dir(target), lockDirectoryName)
 	if err := os.Mkdir(lockPath, 0o700); err != nil {
@@ -396,6 +396,18 @@ func TestInstallationLockFailsClosedAndReclaimsDeadLocalOwner(t *testing.T) {
 		t.Fatalf("live lock error = %v", err)
 	}
 	u.processAlive = func(int) (bool, error) { return false, nil }
+	if _, err := u.acquireLock(); ErrorCode(err) != CodeLocked || !strings.Contains(err.Error(), "stop all installers and updaters") {
+		t.Fatalf("stale lock error = %v", err)
+	}
+	if got, err := readLockOwner(filepath.Join(lockPath, "owner")); err != nil || got != owner {
+		t.Fatalf("stale owner changed: %+v, %v", got, err)
+	}
+	if err := os.Remove(filepath.Join(lockPath, "owner")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(lockPath); err != nil {
+		t.Fatal(err)
+	}
 	lock, err := u.acquireLock()
 	if err != nil {
 		t.Fatal(err)
