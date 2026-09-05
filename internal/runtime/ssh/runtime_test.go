@@ -235,3 +235,63 @@ func TestRunRemoteStreamConsumesUnboundedStdoutWithBoundedDiagnostics(t *testing
 		t.Fatalf("stream cancellation error = %v", err)
 	}
 }
+
+func TestInstallScriptKeepsPackageOutputOffStdout(t *testing.T) {
+	program, err := scripts.ReadFile("scripts/install.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory := t.TempDir()
+	// Stub sudo so the real script cannot install packages on the test host.
+	stub := `#!/bin/sh
+printf 'package progress: %s\n' "$*"
+case " $* " in
+  *" $SCHOONER_TEST_APT_FAILURE "*) printf 'E: package operation failed\n' >&2; exit 100 ;;
+esac
+exit 0
+`
+	if err := os.WriteFile(filepath.Join(directory, "sudo"), []byte(stub), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", directory+string(os.PathListSeparator)+os.Getenv("PATH"))
+	for _, step := range []string{"none", "update", "install"} {
+		t.Run(step, func(t *testing.T) {
+			t.Setenv("SCHOONER_TEST_APT_FAILURE", step)
+			command := exec.CommandContext(t.Context(), "sh", "-s", "--", "git", "tmux")
+			command.Stdin = bytes.NewReader(program)
+			var stderr bytes.Buffer
+			command.Stderr = &stderr
+			stdout, err := command.Output()
+			wantStdout := ""
+			if step == "none" {
+				wantStdout = "{\"schema_version\":\"1\",\"installed\":true}\n"
+				if err != nil {
+					t.Fatalf("install: %v; stderr=%s", err, &stderr)
+				}
+			} else {
+				var exitErr *exec.ExitError
+				if !errors.As(err, &exitErr) || exitErr.ExitCode() != 100 {
+					t.Fatalf("install error = %v, want exit 100", err)
+				}
+			}
+			if string(stdout) != wantStdout {
+				t.Fatalf("stdout = %q, want %q", stdout, wantStdout)
+			}
+			wantStderr := ""
+			if step != "none" {
+				wantStderr = "E: package operation failed\n"
+			}
+			if stderr.String() != wantStderr {
+				t.Fatalf("stderr = %q, want %q", &stderr, wantStderr)
+			}
+			err = New(testSSHExecutable(t), nil).InstallTools(t.Context(), box.Connection{Destination: "test-host"}, []string{"git", "tmux"})
+			if step == "none" {
+				if err != nil {
+					t.Fatalf("InstallTools: %v", err)
+				}
+			} else if box.ErrorCode(err) != "remote_operation_failed" || !strings.Contains(err.Error(), strings.TrimSpace(wantStderr)) {
+				t.Fatalf("InstallTools error = %v, want native apt diagnostic", err)
+			}
+		})
+	}
+}
