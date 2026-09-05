@@ -369,7 +369,10 @@ func (s *Store) Remove(ctx context.Context, name string) (box.Record, error) {
 	if err != nil {
 		return box.Record{}, err
 	}
-	if _, err = tx.ExecContext(ctx, `DELETE FROM add_operations WHERE name=?`, name); err == nil {
+	if _, err = tx.ExecContext(ctx, `DELETE FROM add_operations WHERE name=?`, name); err == nil && record.Acquisition == "provisioned" {
+		_, err = tx.ExecContext(ctx, `DELETE FROM provision_operations WHERE name=? AND resource_id=? AND correlation_id=? AND credential_profile=?`, name, record.ProviderResourceID, record.ProviderCorrelationID, record.CredentialProfile)
+	}
+	if err == nil {
 		_, err = tx.ExecContext(ctx, `DELETE FROM boxes WHERE name=?`, name)
 	}
 	if err != nil {
@@ -650,10 +653,10 @@ func (s *Store) BeginProvision(ctx context.Context, requested acquisition.Provis
 }
 
 func (s *Store) FindProvision(ctx context.Context, name string) (acquisition.ProvisionOperation, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT name,correlation_id,credential_profile,region,size,image,network_id,access_key_ids_json,local_public_keys_json,automatic_backups,ipv6,worktree_root,resource_id,ssh_destination,identity_file,checkpoint,updated_at FROM provision_operations WHERE name=?`, name)
+	row := s.db.QueryRowContext(ctx, `SELECT name,correlation_id,credential_profile,region,size,image,network_id,access_key_ids_json,local_public_keys_json,automatic_backups,ipv6,worktree_root,resource_id,ssh_destination,identity_file,checkpoint,updated_at,warning FROM provision_operations WHERE name=?`, name)
 	var result acquisition.ProvisionOperation
 	var keys, localKeys, updated string
-	err := row.Scan(&result.Name, &result.CorrelationID, &result.Profile, &result.Region, &result.Size, &result.Image, &result.NetworkID, &keys, &localKeys, &result.AutomaticBackups, &result.IPv6, &result.WorktreeRoot, &result.ResourceID, &result.SSHDestination, &result.IdentityFile, &result.Checkpoint, &updated)
+	err := row.Scan(&result.Name, &result.CorrelationID, &result.Profile, &result.Region, &result.Size, &result.Image, &result.NetworkID, &keys, &localKeys, &result.AutomaticBackups, &result.IPv6, &result.WorktreeRoot, &result.ResourceID, &result.SSHDestination, &result.IdentityFile, &result.Checkpoint, &updated, &result.Warning)
 	if errors.Is(err, sql.ErrNoRows) {
 		return acquisition.ProvisionOperation{}, box.NotFound(name)
 	}
@@ -671,7 +674,7 @@ func (s *Store) FindProvision(ctx context.Context, name string) (acquisition.Pro
 }
 
 func (s *Store) CheckpointProvision(ctx context.Context, operation acquisition.ProvisionOperation) error {
-	result, err := s.db.ExecContext(ctx, `UPDATE provision_operations SET resource_id=?,ssh_destination=?,identity_file=?,checkpoint=?,updated_at=? WHERE name=?`, operation.ResourceID, operation.SSHDestination, operation.IdentityFile, operation.Checkpoint, formatTime(operation.UpdatedAt), operation.Name)
+	result, err := s.db.ExecContext(ctx, `UPDATE provision_operations SET resource_id=?,ssh_destination=?,identity_file=?,checkpoint=?,updated_at=?,warning=? WHERE name=? AND correlation_id=?`, operation.ResourceID, operation.SSHDestination, operation.IdentityFile, operation.Checkpoint, formatTime(operation.UpdatedAt), operation.Warning, operation.Name, operation.CorrelationID)
 	if err != nil {
 		return err
 	}
@@ -681,9 +684,25 @@ func (s *Store) CheckpointProvision(ctx context.Context, operation acquisition.P
 	return nil
 }
 
-func (s *Store) CompleteProvision(ctx context.Context, name string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM provision_operations WHERE name=?`, name)
-	return err
+// CompleteProvision atomically checks the committed Box and operation identity.
+// A concurrent remove/re-add must neither lose its checkpoint nor return stale success.
+func (s *Store) CompleteProvision(ctx context.Context, operation acquisition.ProvisionOperation, boxID string) error {
+	result, err := s.db.ExecContext(ctx, `DELETE FROM provision_operations
+		WHERE name=? AND correlation_id=? AND resource_id=? AND credential_profile=?
+		AND EXISTS (SELECT 1 FROM boxes WHERE id=? AND name=provision_operations.name
+			AND acquisition='provisioned' AND provider='digitalocean'
+			AND provider_resource_id=provision_operations.resource_id
+			AND provider_correlation_id=provision_operations.correlation_id
+			AND credential_profile=provision_operations.credential_profile)`, operation.Name, operation.CorrelationID, operation.ResourceID, operation.Profile, boxID)
+	if err != nil {
+		return err
+	}
+	if count, err := result.RowsAffected(); err != nil {
+		return err
+	} else if count != 1 {
+		return box.NewError("conflict", "provisioning operation or committed box changed before completion", nil)
+	}
+	return nil
 }
 
 func (s *Store) BeginDestroy(ctx context.Context, operation acquisition.DestroyOperation) error {

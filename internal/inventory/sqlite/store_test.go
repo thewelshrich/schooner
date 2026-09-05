@@ -64,7 +64,7 @@ func TestStoreLifecycleAndMigrationHistory(t *testing.T) {
 	}
 	defer store.Close()
 	var count int
-	if err = store.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil || count != 8 {
+	if err = store.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil || count != 9 {
 		t.Fatalf("migration count = %d, err = %v", count, err)
 	}
 }
@@ -119,8 +119,8 @@ func TestOpenReadOnlyReadsBoxesAndLocalLinksWithoutChangingInventory(t *testing.
 		t.Fatalf("OpenReadOnly() = %+v, %t, %v", readOnly, exists, err)
 	}
 	var migrationCount int
-	if err = readOnly.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM schema_migrations`).Scan(&migrationCount); err != nil || migrationCount != 7 {
-		t.Fatalf("migration count = %d, %v; want 7, nil", migrationCount, err)
+	if err = readOnly.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM schema_migrations`).Scan(&migrationCount); err != nil || migrationCount != 8 {
+		t.Fatalf("migration count = %d, %v; want 8, nil", migrationCount, err)
 	}
 	gotRecord, err := readOnly.FindByID(t.Context(), record.ID)
 	if err != nil || gotRecord.Name != record.Name || gotRecord.RemoteIdentity != record.RemoteIdentity {
