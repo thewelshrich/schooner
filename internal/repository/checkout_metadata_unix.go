@@ -186,7 +186,8 @@ func (prepared *preparedCheckoutFiles) restoreBackupAt(record *preparedCheckoutF
 		return &Error{Code: CodeOutcomeUnknown, Message: fmt.Sprintf("rollback material for destination path %q changed before installation; recovery backup preserved at %q", record.path, record.backupTemp)}
 	}
 	if err = renameNoReplaceAt(source, name, parent, filepath.Base(record.path)); err != nil {
-		return err
+		record.preserveBackup = true
+		return &Error{Code: CodeOutcomeUnknown, Message: fmt.Sprintf("rollback destination %q could not be installed without replacement; backup preserved at %q", record.path, record.backupTemp), Cause: err}
 	}
 	for _, path := range ancestors {
 		err := verifyCheckoutDirectoryIdentity(prepared.root, path, prepared.recreatedDirs[path])

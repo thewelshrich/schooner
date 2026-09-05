@@ -1014,10 +1014,7 @@ func prepareCheckoutFiles(root *os.Root, destination CheckoutState, payload Extr
 			copy := value
 			record.incoming = &copy
 			dirs, err := ensureCheckoutDestinationDirectories(root, record.stagingBase)
-			prepared.createdDirs = append(prepared.createdDirs, dirs...)
-			if pinErr := prepared.pinCreatedDirectories(dirs); pinErr != nil {
-				return nil, pinErr
-			}
+			prepared.recordCreatedDirectories(dirs)
 			if err != nil {
 				return nil, err
 			}
@@ -1031,29 +1028,27 @@ func prepareCheckoutFiles(root *os.Root, destination CheckoutState, payload Extr
 	return prepared, nil
 }
 
-func (prepared *preparedCheckoutFiles) pinCreatedDirectories(paths []string) error {
+type createdCheckoutDirectory struct {
+	path string
+	info os.FileInfo
+}
+
+func (prepared *preparedCheckoutFiles) recordCreatedDirectories(dirs []createdCheckoutDirectory) {
 	if prepared.createdDirInfo == nil {
 		prepared.createdDirInfo = make(map[string]os.FileInfo)
 	}
-	for _, path := range paths {
-		info, err := prepared.root.Lstat(path)
-		if err != nil {
-			return err
-		}
-		if !info.IsDir() {
-			return &Error{Code: CodeConflict, Message: "created directory changed independently"}
-		}
-		prepared.createdDirInfo[path] = info
+	for _, dir := range dirs {
+		prepared.createdDirs = append(prepared.createdDirs, dir.path)
+		prepared.createdDirInfo[dir.path] = dir.info
 	}
-	return nil
 }
 
-func ensureCheckoutDestinationDirectories(root *os.Root, relative string) ([]string, error) {
+func ensureCheckoutDestinationDirectories(root *os.Root, relative string) ([]createdCheckoutDirectory, error) {
 	parent := filepath.Dir(filepath.FromSlash(relative))
 	if parent == "." {
 		return nil, nil
 	}
-	created := make([]string, 0)
+	created := make([]createdCheckoutDirectory, 0)
 	current := ""
 	for _, component := range strings.Split(parent, string(filepath.Separator)) {
 		if current == "" {
@@ -1063,10 +1058,13 @@ func ensureCheckoutDestinationDirectories(root *os.Root, relative string) ([]str
 		}
 		info, err := root.Lstat(current)
 		if errors.Is(err, os.ErrNotExist) {
-			if err = root.Mkdir(current, 0o755); err != nil {
+			info, err := makeCheckoutDirectoryNoFollow(root, current, 0o755)
+			if info != nil {
+				created = append(created, createdCheckoutDirectory{path: current, info: info})
+			}
+			if err != nil {
 				return created, err
 			}
-			created = append(created, current)
 			continue
 		}
 		if err != nil {
@@ -1089,12 +1087,9 @@ func (prepared *preparedCheckoutFiles) Apply() error {
 		}
 		if record.incoming != nil {
 			dirs, err := ensureCheckoutDestinationDirectories(prepared.root, record.path)
-			prepared.createdDirs = append(prepared.createdDirs, dirs...)
+			prepared.recordCreatedDirectories(dirs)
 			if len(dirs) != 0 {
 				prepared.mutated = true
-			}
-			if pinErr := prepared.pinCreatedDirectories(dirs); pinErr != nil {
-				return pinErr
 			}
 			if err != nil {
 				return err
@@ -1286,6 +1281,14 @@ func (prepared *preparedCheckoutFiles) Rollback() (rollbackErr error) {
 		if record.backupTemp == "" {
 			return &Error{Code: CodeOutcomeUnknown, Message: fmt.Sprintf("rollback material for destination path %q is unavailable", record.path)}
 		}
+		if present {
+			if record.incoming == nil || !checkoutFileContentEqual(current, *record.incoming) {
+				return &Error{Code: CodeConflict, Message: "destination changed before rollback installation"}
+			}
+			if err := prepared.removeRecoveryFile(record.path, *record.incoming); err != nil {
+				return err
+			}
+		}
 		// Incoming children have already been removed in reverse apply order.
 		for _, dir := range createdDirRemovals[record.path] {
 			changed, removeErr := removeCheckoutDirectory(prepared.root, dir, checkoutDirectoryMetadata{info: prepared.createdDirInfo[dir]}, false)
@@ -1295,18 +1298,14 @@ func (prepared *preparedCheckoutFiles) Rollback() (rollbackErr error) {
 			}
 		}
 		dirs, err := ensureCheckoutDestinationDirectories(prepared.root, record.path)
-		if err != nil {
-			return err
-		}
 		if prepared.recreatedDirs == nil {
 			prepared.recreatedDirs = make(map[string]os.FileInfo)
 		}
 		for _, dir := range dirs {
-			info, err := prepared.root.Lstat(dir)
-			if err != nil {
-				return err
-			}
-			prepared.recreatedDirs[filepath.ToSlash(dir)] = info
+			prepared.recreatedDirs[filepath.ToSlash(dir.path)] = dir.info
+		}
+		if err != nil {
+			return err
 		}
 		var parents []string
 		for dir := filepath.ToSlash(filepath.Dir(record.path)); dir != "."; dir = filepath.ToSlash(filepath.Dir(dir)) {
@@ -1326,12 +1325,14 @@ func (prepared *preparedCheckoutFiles) Rollback() (rollbackErr error) {
 			}
 			parent = opened
 		}
-		if parent != nil {
-			err = prepared.restoreBackupAt(record, parent, parents)
-			parent.Close()
-		} else {
-			err = prepared.root.Rename(record.backupTemp, filepath.FromSlash(record.path))
+		if parent == nil {
+			parent, err = openCheckoutDirectoryNoFollow(prepared.root, filepath.Dir(filepath.FromSlash(record.path)))
+			if err != nil {
+				return err
+			}
 		}
+		err = prepared.restoreBackupAt(record, parent, parents)
+		parent.Close()
 		if err != nil {
 			return err
 		}
@@ -1365,17 +1366,16 @@ func (prepared *preparedCheckoutFiles) restoreRemovedEmptyDirectories() error {
 			continue
 		}
 		if errors.Is(err, os.ErrNotExist) {
-			if err = makeCheckoutDirectoryNoFollow(prepared.root, filepath.FromSlash(path), 0o700); err != nil {
-				return err
-			}
-			info, err = prepared.root.Lstat(filepath.FromSlash(path))
-			if err != nil {
-				return err
-			}
+			info, err = makeCheckoutDirectoryNoFollow(prepared.root, filepath.FromSlash(path), 0o700)
 			if prepared.recreatedDirs == nil {
 				prepared.recreatedDirs = make(map[string]os.FileInfo)
 			}
-			prepared.recreatedDirs[path] = info
+			if info != nil {
+				prepared.recreatedDirs[path] = info
+			}
+			if err != nil {
+				return err
+			}
 		} else if err != nil || !os.SameFile(info, prepared.recreatedDirs[path]) {
 			return &Error{Code: CodeOutcomeUnknown, Message: fmt.Sprintf("directory %q changed before rollback completed", path), Cause: err}
 		}

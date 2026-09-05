@@ -134,13 +134,53 @@ func openCheckoutDirectoryNoFollow(root *os.Root, path string) (*os.File, error)
 	return directory, nil
 }
 
-func makeCheckoutDirectoryNoFollow(root *os.Root, path string, mode os.FileMode) error {
+func makeCheckoutDirectoryNoFollow(root *os.Root, path string, mode os.FileMode) (info os.FileInfo, result error) {
 	parent, err := openCheckoutDirectoryNoFollow(root, filepath.Dir(path))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer parent.Close()
-	return unix.Mkdirat(int(parent.Fd()), filepath.Base(path), uint32(mode.Perm()))
+	temporary, err := checkoutTemporaryPath(path)
+	if err != nil {
+		return nil, err
+	}
+	name := filepath.Base(temporary)
+	if err = unix.Mkdirat(int(parent.Fd()), name, uint32(mode.Perm())); err != nil {
+		return nil, err
+	}
+	var created unix.Stat_t
+	if err = unix.Fstatat(int(parent.Fd()), name, &created, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+		return nil, &Error{Code: CodeOutcomeUnknown, Message: fmt.Sprintf("private directory retained at %q", filepath.Join(root.Name(), temporary)), Cause: err}
+	}
+	published := false
+	defer func() {
+		if !published {
+			if err := removeEmptyCheckoutQuarantine(parent, name, created); err != nil {
+				result = &Error{Code: CodeOutcomeUnknown, Message: fmt.Sprintf("private directory retained at %q", filepath.Join(root.Name(), temporary)), Cause: errors.Join(result, err)}
+			}
+		}
+	}()
+	fd, err := unix.Openat(int(parent.Fd()), name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, err
+	}
+	directory := os.NewFile(uintptr(fd), temporary)
+	defer directory.Close()
+	info, err = directory.Stat()
+	if err != nil {
+		return nil, err
+	}
+	var opened unix.Stat_t
+	if err = unix.Fstat(fd, &opened); err != nil || opened.Dev != created.Dev || opened.Ino != created.Ino {
+		return nil, &Error{Code: CodeConflict, Message: "private directory changed before publication", Cause: err}
+	}
+	if err = renameNoReplaceAt(parent, name, parent, filepath.Base(path)); err != nil {
+		return nil, err
+	}
+	published = true
+	// Return the descriptor's pre-publication identity, never trust a lookup
+	// through the newly published name as the identity of our creation.
+	return info, nil
 }
 
 func verifyCheckoutDirectoryIdentity(root *os.Root, path string, expected os.FileInfo) error {

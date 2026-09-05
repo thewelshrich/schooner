@@ -168,13 +168,12 @@ func TestCheckoutReleasePreservesCreatedDirectoryReplacement(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer root.Close()
-	if err = root.Mkdir("created", 0o755); err != nil {
+	info, err := makeCheckoutDirectoryNoFollow(root, "created", 0o755)
+	if err != nil {
 		t.Fatal(err)
 	}
-	prepared := preparedCheckoutFiles{root: root, createdDirs: []string{"created"}}
-	if err = prepared.pinCreatedDirectories(prepared.createdDirs); err != nil {
-		t.Fatal(err)
-	}
+	prepared := preparedCheckoutFiles{root: root}
+	prepared.recordCreatedDirectories([]createdCheckoutDirectory{{path: "created", info: info}})
 	if err = root.Rename("created", "original"); err != nil {
 		t.Fatal(err)
 	}
@@ -191,14 +190,13 @@ func TestCheckoutCreatedDirectoryCleanupDoesNotRequireMetadataSupport(t *testing
 		t.Fatal(err)
 	}
 	defer root.Close()
-	if err = root.Mkdir("created", 0o755); err != nil {
+	info, err := makeCheckoutDirectoryNoFollow(root, "created", 0o755)
+	if err != nil {
 		t.Fatal(err)
 	}
 	installCheckoutTestACL(t, filepath.Join(root.Name(), "created"))
-	prepared := preparedCheckoutFiles{root: root, createdDirs: []string{"created"}}
-	if err = prepared.pinCreatedDirectories(prepared.createdDirs); err != nil {
-		t.Fatalf("ordinary created directory rejected: %v", err)
-	}
+	prepared := preparedCheckoutFiles{root: root}
+	prepared.recordCreatedDirectories([]createdCheckoutDirectory{{path: "created", info: info}})
 	prepared.Release()
 	if _, err = root.Lstat("created"); !os.IsNotExist(err) {
 		t.Fatalf("safe empty-directory cleanup = %v", err)
@@ -241,5 +239,90 @@ func TestCheckoutDirectoryRemovalRejectsIntermediateSymlink(t *testing.T) {
 				t.Fatal("moved directory mutated")
 			}
 		})
+	}
+}
+
+func TestCheckoutCreatedDirectoryIdentitySurvivesPublicSwap(t *testing.T) {
+	t.Parallel()
+	for _, creation := range []string{"ensure", "empty-rollback"} {
+		t.Run(creation, func(t *testing.T) {
+			root, err := os.OpenRoot(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer root.Close()
+			var info os.FileInfo
+			if creation == "ensure" {
+				dirs, err := ensureCheckoutDestinationDirectories(root, "public/child")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(dirs) != 1 {
+					t.Fatal("missing created directory")
+				}
+				info = dirs[0].info
+			} else {
+				info, err = makeCheckoutDirectoryNoFollow(root, "public", 0o700)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			// Swap after publication but before the caller records the returned identity.
+			if err = root.Rename("public", "moved"); err != nil {
+				t.Fatal(err)
+			}
+			if err = root.Mkdir("public", 0o755); err != nil {
+				t.Fatal(err)
+			}
+			replacement, err := root.Lstat("public")
+			if err != nil {
+				t.Fatal(err)
+			}
+			moved, err := root.Lstat("moved")
+			if err != nil || !os.SameFile(moved, info) || os.SameFile(replacement, info) {
+				t.Fatal("creation trusted public replacement")
+			}
+			metadata, err := checkCheckoutDirectoryPermissions(root, "moved", moved)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err = restoreCheckoutDirectoryMetadata(root, "public", info, metadata); ErrorCode(err) != CodeOutcomeUnknown {
+				t.Fatalf("replacement accepted: %v", err)
+			}
+			prepared := preparedCheckoutFiles{root: root}
+			prepared.recordCreatedDirectories([]createdCheckoutDirectory{{path: "public", info: info}})
+			prepared.Release()
+			after, err := root.Lstat("public")
+			if err != nil || !os.SameFile(after, replacement) {
+				t.Fatal("cleanup removed independent directory")
+			}
+		})
+	}
+}
+
+func TestCheckoutPrivateDirectoryPublicationPreservesCollision(t *testing.T) {
+	t.Parallel()
+	root, err := os.OpenRoot(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	if err = root.Mkdir("existing", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	original, err := root.Lstat("existing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info, err := makeCheckoutDirectoryNoFollow(root, "existing", 0o700); err == nil || info != nil {
+		t.Fatal("publication replaced existing directory")
+	}
+	after, err := root.Lstat("existing")
+	if err != nil || !os.SameFile(after, original) {
+		t.Fatal("existing identity changed")
+	}
+	entries, err := os.ReadDir(root.Name())
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("private directory leaked: %v %v", entries, err)
 	}
 }

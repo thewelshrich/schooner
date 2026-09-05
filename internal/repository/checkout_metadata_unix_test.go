@@ -729,3 +729,63 @@ func TestCheckoutEmptyDirectoryRecoveryRejectsAncestorSwap(t *testing.T) {
 		})
 	}
 }
+
+func TestCheckoutRootBackupInstallPreservesCollision(t *testing.T) {
+	t.Parallel()
+	for _, kind := range []string{"file", "symlink"} {
+		t.Run(kind, func(t *testing.T) {
+			root, err := os.OpenRoot(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer root.Close()
+			writeCheckoutFile(t, filepath.Join(root.Name(), "backup"), "original private data", 0o600)
+			previous, _, err := checkoutFileOnRoot(root, "backup")
+			if err != nil {
+				t.Fatal(err)
+			}
+			info, err := root.Lstat("backup")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = root.Mkdir("restored", 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err = root.Remove("restored"); err != nil {
+				t.Fatal(err)
+			}
+			// A concurrent leaf appears after the transition directory is removed.
+			if kind == "file" {
+				writeCheckoutFile(t, filepath.Join(root.Name(), "restored"), "concurrent", 0o600)
+			} else {
+				if err = root.Symlink("elsewhere", "restored"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			concurrent, err := root.Lstat("restored")
+			if err != nil {
+				t.Fatal(err)
+			}
+			record := preparedCheckoutFile{path: "restored", backupTemp: "backup", previous: &previous, backupInfo: info}
+			parent, err := openCheckoutDirectoryNoFollow(root, ".")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer parent.Close()
+			prepared := preparedCheckoutFiles{root: root}
+			if err = prepared.restoreBackupAt(&record, parent, nil); ErrorCode(err) != CodeOutcomeUnknown {
+				t.Fatalf("collision = %v", err)
+			}
+			prepared.entries = []preparedCheckoutFile{record}
+			prepared.Release()
+			after, err := root.Lstat("restored")
+			if err != nil || !os.SameFile(after, concurrent) {
+				t.Fatal("concurrent leaf overwritten")
+			}
+			data, err := os.ReadFile(filepath.Join(root.Name(), "backup"))
+			if err != nil || string(data) != "original private data" {
+				t.Fatal("backup not retained")
+			}
+		})
+	}
+}
