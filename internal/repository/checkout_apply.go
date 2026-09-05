@@ -1117,15 +1117,16 @@ func (prepared *preparedCheckoutFiles) Apply() error {
 			}
 			continue
 		}
-		if record.previous == nil {
-			prepared.mutated = true
-			if err = prepared.root.Link(record.incomingTemp, filepath.FromSlash(record.path)); err == nil {
-				err = prepared.root.Remove(record.incomingTemp)
-			}
-		} else {
-			err = renameCheckoutNoReplace(prepared.root, record.incomingTemp, filepath.FromSlash(record.path))
+		parent, openErr := openCheckoutDirectoryNoFollow(prepared.root, filepath.Dir(filepath.FromSlash(record.path)))
+		if openErr != nil {
+			return openErr
 		}
+		err = prepared.installIncomingAt(record, parent)
+		parent.Close()
 		if err != nil {
+			if ErrorCode(err) == CodeOutcomeUnknown {
+				return err
+			}
 			if record.previous != nil {
 				record.preserveDestination = true
 				_ = prepared.removeDisplaced(record)
@@ -1138,6 +1139,53 @@ func (prepared *preparedCheckoutFiles) Apply() error {
 			return err
 		}
 	}
+	for path, info := range prepared.createdDirInfo {
+		if err := verifyCheckoutDirectoryIdentity(prepared.root, path, info); err != nil {
+			return &Error{Code: CodeOutcomeUnknown, Message: fmt.Sprintf("created directory %q changed before apply completed", path), Cause: err}
+		}
+	}
+	return nil
+}
+
+func (prepared *preparedCheckoutFiles) installIncomingAt(record *preparedCheckoutFile, parent *os.File) error {
+	info, err := parent.Stat()
+	if err != nil {
+		return err
+	}
+	if err = prepared.verifyIncomingParent(record.path, info); err != nil {
+		return err
+	}
+	source, err := openCheckoutDirectoryNoFollow(prepared.root, filepath.Dir(record.incomingTemp))
+	if err != nil {
+		return err
+	}
+	defer source.Close()
+	prepared.mutated = true
+	if err = renameNoReplaceAt(source, filepath.Base(record.incomingTemp), parent, filepath.Base(record.path)); err != nil {
+		return err
+	}
+	record.incomingTemp = ""
+	if err = prepared.verifyIncomingParent(record.path, info); err != nil {
+		return &Error{Code: CodeOutcomeUnknown, Message: "incoming installation ancestry changed; recovery material must be retained", Cause: err}
+	}
+	return nil
+}
+
+func (prepared *preparedCheckoutFiles) verifyIncomingParent(path string, opened os.FileInfo) error {
+	parent := filepath.Dir(filepath.FromSlash(path))
+	if expected := prepared.createdDirInfo[parent]; expected != nil && !os.SameFile(expected, opened) {
+		return &Error{Code: CodeConflict, Message: "created installation parent changed independently"}
+	}
+	if err := verifyCheckoutDirectoryIdentity(prepared.root, parent, opened); err != nil {
+		return err
+	}
+	for dir := parent; dir != "."; dir = filepath.Dir(dir) {
+		if expected := prepared.createdDirInfo[dir]; expected != nil {
+			if err := verifyCheckoutDirectoryIdentity(prepared.root, dir, expected); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
 }
 
@@ -1146,7 +1194,7 @@ func (prepared *preparedCheckoutFiles) displaceAndVerify(record *preparedCheckou
 	if err != nil {
 		return err
 	}
-	if err = prepared.root.Rename(filepath.FromSlash(record.path), displaced); err != nil {
+	if err = renameCheckoutNoReplace(prepared.root, filepath.FromSlash(record.path), displaced); err != nil {
 		return &Error{Code: CodeConflict, Message: fmt.Sprintf("destination path %q changed immediately before replacement", record.path), Cause: err}
 	}
 	prepared.mutated = true
@@ -1191,14 +1239,14 @@ func (prepared *preparedCheckoutFiles) removeDisplaced(record *preparedCheckoutF
 func renameCheckoutNoReplace(root *os.Root, source, destination string) error {
 	sourceParent := filepath.Dir(source)
 	destinationParent := filepath.Dir(destination)
-	sourceDirectory, err := root.Open(sourceParent)
+	sourceDirectory, err := openCheckoutDirectoryNoFollow(root, sourceParent)
 	if err != nil {
 		return err
 	}
 	defer sourceDirectory.Close()
 	destinationDirectory := sourceDirectory
 	if destinationParent != sourceParent {
-		destinationDirectory, err = root.Open(destinationParent)
+		destinationDirectory, err = openCheckoutDirectoryNoFollow(root, destinationParent)
 		if err != nil {
 			return err
 		}
@@ -1269,7 +1317,10 @@ func (prepared *preparedCheckoutFiles) Rollback() (rollbackErr error) {
 		}
 		if record.previous == nil {
 			if present {
-				if err = prepared.root.Remove(filepath.FromSlash(record.path)); err != nil {
+				if record.incoming == nil || !checkoutFileContentEqual(current, *record.incoming) {
+					return &Error{Code: CodeConflict, Message: "incoming-only path changed before rollback deletion"}
+				}
+				if err = prepared.removeRecoveryFile(record.path, *record.incoming); err != nil {
 					return err
 				}
 			}

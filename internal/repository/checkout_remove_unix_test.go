@@ -326,3 +326,62 @@ func TestCheckoutPrivateDirectoryPublicationPreservesCollision(t *testing.T) {
 		t.Fatalf("private directory leaked: %v %v", entries, err)
 	}
 }
+
+func TestCheckoutIncomingInstallRejectsCreatedParentSwap(t *testing.T) {
+	t.Parallel()
+	for _, swap := range []string{"before-open", "after-open", "symlink"} {
+		t.Run(swap, func(t *testing.T) {
+			root, err := os.OpenRoot(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer root.Close()
+			dirs, err := ensureCheckoutDestinationDirectories(root, "parent/nested/incoming")
+			if err != nil {
+				t.Fatal(err)
+			}
+			prepared := preparedCheckoutFiles{root: root}
+			prepared.recordCreatedDirectories(dirs)
+			writeCheckoutFile(t, filepath.Join(root.Name(), "stage"), "private incoming", 0o600)
+			var parent *os.File
+			if swap != "before-open" {
+				parent, err = openCheckoutDirectoryNoFollow(root, "parent/nested")
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer parent.Close()
+			}
+			if err = root.Rename("parent", "moved"); err != nil {
+				t.Fatal(err)
+			}
+			if swap == "symlink" {
+				err = root.Symlink("moved", "parent")
+			} else {
+				err = os.MkdirAll(filepath.Join(root.Name(), "parent/nested"), 0o755)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if parent == nil {
+				parent, err = openCheckoutDirectoryNoFollow(root, "parent/nested")
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer parent.Close()
+			}
+			record := preparedCheckoutFile{path: "parent/nested/incoming", incomingTemp: "stage"}
+			if err = prepared.installIncomingAt(&record, parent); err == nil {
+				t.Fatal("changed parent accepted")
+			}
+			for _, path := range []string{"parent/nested/incoming", "moved/nested/incoming"} {
+				if _, err = root.Lstat(path); !os.IsNotExist(err) {
+					t.Fatalf("incoming data installed despite parent swap: %s", path)
+				}
+			}
+			// Even with no remaining file record, Apply must verify all created ancestors.
+			if err = prepared.Apply(); ErrorCode(err) != CodeOutcomeUnknown {
+				t.Fatalf("final created ancestry verification = %v", err)
+			}
+		})
+	}
+}

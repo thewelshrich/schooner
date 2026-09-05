@@ -68,6 +68,7 @@ func checkoutPathTypeTransitionAt(t *testing.T, directoryToFile bool, relative s
 }
 
 func TestCheckoutPathTypeTransitions(t *testing.T) {
+	t.Parallel()
 	for _, directoryToFile := range []bool{false, true} {
 		name := "file-to-directory"
 		if directoryToFile {
@@ -93,6 +94,7 @@ func TestCheckoutPathTypeTransitions(t *testing.T) {
 }
 
 func TestCheckoutPathTypeTransitionRollback(t *testing.T) {
+	t.Parallel()
 	for _, directoryToFile := range []bool{false, true} {
 		name := "file-to-directory"
 		if directoryToFile {
@@ -175,6 +177,7 @@ func TestCheckoutPathTypeTransitionRollback(t *testing.T) {
 }
 
 func TestCheckoutPathTypeTransitionPreservesIgnoredCollision(t *testing.T) {
+	t.Parallel()
 	target, before, payload := checkoutPathTypeTransition(t, true)
 	ignored := filepath.Join(target, "file.txt", "nested", "ignored.env")
 	writeCheckoutFile(t, ignored, "keep\n", 0o644)
@@ -194,6 +197,7 @@ func TestCheckoutPathTypeTransitionPreservesIgnoredCollision(t *testing.T) {
 }
 
 func TestCheckoutPathTypeTransitionPreservesConcurrentFile(t *testing.T) {
+	t.Parallel()
 	target, before, payload := checkoutPathTypeTransition(t, true)
 	root, err := os.OpenRoot(target)
 	if err != nil {
@@ -227,6 +231,7 @@ func TestCheckoutPathTypeTransitionPreservesConcurrentFile(t *testing.T) {
 }
 
 func TestCheckoutPathTypeExternalRestore(t *testing.T) {
+	t.Parallel()
 	for _, directoryToFile := range []bool{false, true} {
 		name := "file-to-directory"
 		if directoryToFile {
@@ -302,6 +307,7 @@ func TestCheckoutPathTypeExternalRestore(t *testing.T) {
 }
 
 func TestCheckoutRestoreRewindProtectsIndependentCommit(t *testing.T) {
+	t.Parallel()
 	target := checkoutTestRepository(t)
 	before, err := ObserveCheckout(t.Context(), target)
 	if err != nil {
@@ -326,6 +332,7 @@ func TestCheckoutRestoreRewindProtectsIndependentCommit(t *testing.T) {
 }
 
 func TestCheckoutTransitionStagingPreservesAdjacentFilesystem(t *testing.T) {
+	t.Parallel()
 	destination := map[string]CheckoutFile{"mount/tree/old/leaf": {}, "mount/file": {}, "mount/stable/deep/leaf": {}}
 	incoming := map[string]CheckoutFile{"mount/tree": {}, "mount/file/new/leaf": {}, "mount/stable/deep/leaf": {}}
 	for _, test := range []struct{ path, parent string }{
@@ -348,6 +355,7 @@ func TestCheckoutTransitionStagingPreservesAdjacentFilesystem(t *testing.T) {
 }
 
 func TestCheckoutExternalRestoreEmptyTransitionDirectories(t *testing.T) {
+	t.Parallel()
 	target, before, incoming := checkoutPathTypeTransition(t, false)
 	capture, err := CaptureCheckout(t.Context(), target, t.TempDir())
 	if err != nil {
@@ -375,6 +383,7 @@ func TestCheckoutExternalRestoreEmptyTransitionDirectories(t *testing.T) {
 }
 
 func TestCheckoutPreflightPagesExcludeUnrelatedSiblings(t *testing.T) {
+	t.Parallel()
 	target := checkoutTestRepository(t)
 	for _, path := range []string{"src/part/selected", "src/part/sibling", "src/other/file", "src/blocker", "src/tree/nested/child", "src/[literal]", "src/l"} {
 		full := filepath.Join(target, filepath.FromSlash(path))
@@ -417,6 +426,7 @@ func TestCheckoutPreflightPagesExcludeUnrelatedSiblings(t *testing.T) {
 }
 
 func TestCheckoutPreflightManySiblingTransitions(t *testing.T) {
+	t.Parallel()
 	target := checkoutTestRepository(t)
 	var incoming []CheckoutFile
 	for i := 0; i < 128; i++ {
@@ -442,6 +452,7 @@ func TestCheckoutPreflightManySiblingTransitions(t *testing.T) {
 }
 
 func TestCheckoutTransactionRecoveryCaptureLifecycle(t *testing.T) {
+	t.Parallel()
 	for _, uncertain := range []bool{false, true} {
 		t.Run(fmt.Sprintf("uncertain=%t", uncertain), func(t *testing.T) {
 			target := checkoutTestRepository(t)
@@ -477,6 +488,7 @@ func TestCheckoutTransactionRecoveryCaptureLifecycle(t *testing.T) {
 }
 
 func TestCheckoutUnknownRecoveryDoesNotInstallBackup(t *testing.T) {
+	t.Parallel()
 	target, _, incoming := checkoutPathTypeTransition(t, true)
 	staging := t.TempDir()
 	capture, err := CaptureCheckout(t.Context(), target, staging)
@@ -507,6 +519,7 @@ func TestCheckoutUnknownRecoveryDoesNotInstallBackup(t *testing.T) {
 }
 
 func TestCheckoutTransitionRollbackWithExistingIncomingLeaf(t *testing.T) {
+	t.Parallel()
 	for _, path := range []string{"file.txt", "outer/file.txt"} {
 		for _, directoryToFile := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/directory-to-file=%t", path, directoryToFile), func(t *testing.T) {
@@ -556,6 +569,7 @@ func TestCheckoutTransitionRollbackWithExistingIncomingLeaf(t *testing.T) {
 }
 
 func TestCheckoutAbsentDirectoryReplacement(t *testing.T) {
+	t.Parallel()
 	for _, path := range []string{"file.txt", "outer/file.txt"} {
 		for _, rollback := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/rollback=%t", path, rollback), func(t *testing.T) {
@@ -626,6 +640,7 @@ func TestCheckoutAbsentDirectoryReplacement(t *testing.T) {
 }
 
 func TestCheckoutExternalRestoreAbsentReplacement(t *testing.T) {
+	t.Parallel()
 	for _, empty := range []bool{false, true} {
 		t.Run(fmt.Sprintf("incoming-leaves-gone=%t", empty), func(t *testing.T) {
 			target, _, incoming := checkoutPathTypeTransition(t, false)
@@ -665,6 +680,7 @@ func TestCheckoutExternalRestoreAbsentReplacement(t *testing.T) {
 }
 
 func TestCheckoutUntrackedChildReplacesTrackedSymlink(t *testing.T) {
+	t.Parallel()
 	for _, scenario := range []string{"tracked", "local-ignore", "untracked-symlink"} {
 		t.Run(scenario, func(t *testing.T) {
 			source := checkoutTestRepository(t)
@@ -744,6 +760,7 @@ func TestCheckoutUntrackedChildReplacesTrackedSymlink(t *testing.T) {
 }
 
 func TestCheckoutTransitionWithAbsentTrackedDescendants(t *testing.T) {
+	t.Parallel()
 	for _, rollback := range []bool{false, true} {
 		t.Run(fmt.Sprintf("rollback=%t", rollback), func(t *testing.T) {
 			target, _, incoming := checkoutPathTypeTransition(t, true)
@@ -837,51 +854,54 @@ func TestCheckoutExternalRecoveryPreservesChangedLeaf(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer root.Close()
-			writeCheckoutFile(t, filepath.Join(root.Name(), "incoming"), "incoming", 0o600)
-			expected, _, err := checkoutFileOnRoot(root, "incoming")
+			if err = root.Mkdir("incoming", 0o755); err != nil {
+				t.Fatal(err)
+			}
+			writeCheckoutFile(t, filepath.Join(root.Name(), "incoming/child"), "incoming/child", 0o600)
+			expected, _, err := checkoutFileOnRoot(root, "incoming/child")
 			if err != nil {
 				t.Fatal(err)
 			}
 			// Replace the leaf after the external-restore validation, before removal.
 			if kind != "unchanged" {
-				if err = root.Remove("incoming"); err != nil {
+				if err = root.Remove("incoming/child"); err != nil {
 					t.Fatal(err)
 				}
 				if kind == "symlink" {
-					err = root.Symlink("private-target", "incoming")
+					err = root.Symlink("private-target", "incoming/child")
 				} else {
-					err = os.WriteFile(filepath.Join(root.Name(), "incoming"), []byte("concurrent edit"), 0o600)
+					err = os.WriteFile(filepath.Join(root.Name(), "incoming/child"), []byte("concurrent edit"), 0o600)
 				}
 				if err != nil {
 					t.Fatal(err)
 				}
 			}
-			info, err := root.Lstat("incoming")
+			info, err := root.Lstat("incoming/child")
 			if err != nil {
 				t.Fatal(err)
 			}
-			changed, _, err := checkoutFileOnRoot(root, "incoming")
+			changed, _, err := checkoutFileOnRoot(root, "incoming/child")
 			if err != nil {
 				t.Fatal(err)
 			}
 			prepared := preparedCheckoutFiles{root: root}
-			err = prepared.removeRecoveryFile("incoming", expected)
+			err = prepared.removeRecoveryFile("incoming/child", expected)
 			if kind == "unchanged" {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if _, err = root.Lstat("incoming"); !os.IsNotExist(err) {
+				if _, err = root.Lstat("incoming/child"); !os.IsNotExist(err) {
 					t.Fatal("expected incoming leaf remains")
 				}
 			} else {
 				if ErrorCode(err) != CodeConflict {
 					t.Fatalf("recovery deletion = %v", err)
 				}
-				after, err := root.Lstat("incoming")
+				after, err := root.Lstat("incoming/child")
 				if err != nil || !os.SameFile(info, after) {
 					t.Fatal("concurrent identity lost")
 				}
-				current, present, err := checkoutFileOnRoot(root, "incoming")
+				current, present, err := checkoutFileOnRoot(root, "incoming/child")
 				if err != nil || !present || !checkoutFileContentEqual(current, changed) {
 					t.Fatal("concurrent content lost")
 				}
@@ -927,5 +947,23 @@ func TestCheckoutIgnorePageExcludesUnrelatedRules(t *testing.T) {
 		if leaf == "src/blocker/new" && !slices.Contains(output, "src/blocker") {
 			t.Fatal("page omitted non-directory blocker")
 		}
+	}
+}
+
+func TestCheckoutRollbackAbsentMarkerPreservesUnexpectedLeaf(t *testing.T) {
+	t.Parallel()
+	root, err := os.OpenRoot(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	writeCheckoutFile(t, filepath.Join(root.Name(), "absent"), "independent", 0o600)
+	prepared := preparedCheckoutFiles{root: root, mutated: true, entries: []preparedCheckoutFile{{path: "absent", absent: true}}}
+	if err = prepared.Rollback(); ErrorCode(err) != CodeConflict {
+		t.Fatalf("absent marker rollback = %v", err)
+	}
+	contents, err := os.ReadFile(filepath.Join(root.Name(), "absent"))
+	if err != nil || string(contents) != "independent" {
+		t.Fatal("absent marker deleted independent leaf")
 	}
 }
