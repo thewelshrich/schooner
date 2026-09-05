@@ -324,3 +324,102 @@ func TestCheckoutDirectoryRemovalRejectsConcurrentChmod(t *testing.T) {
 		t.Fatal("concurrent chmod refusal mutated directory")
 	}
 }
+
+func TestCheckoutTransitionRejectsDirectoryNodump(t *testing.T) {
+	for _, late := range []bool{false, true} {
+		t.Run(fmt.Sprintf("after-preparation=%t", late), func(t *testing.T) {
+			target, before, incoming := checkoutPathTypeTransition(t, true)
+			root, err := os.OpenRoot(target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer root.Close()
+			var prepared *preparedCheckoutFiles
+			if late {
+				prepared, err = prepareCheckoutFiles(root, before, incoming)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer prepared.Release()
+			}
+			directory, err := root.Open("file.txt/nested")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer directory.Close()
+			installCheckoutTestNodump(t, directory)
+			if late {
+				err = prepared.Apply()
+			} else {
+				prepared, err = prepareCheckoutFiles(root, before, incoming)
+			}
+			if prepared != nil {
+				defer prepared.Release()
+			}
+			if ErrorCode(err) != CodeConflict || errors.Unwrap(err) == nil || !strings.Contains(errors.Unwrap(err).Error(), "inode flags") {
+				t.Fatalf("NODUMP refusal = %v", err)
+			}
+			if late {
+				if err = prepared.Rollback(); err != nil {
+					t.Fatal(err)
+				}
+				prepared.Release()
+			}
+			after, err := ObserveCheckout(t.Context(), target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if after.RevalidationDigest != before.RevalidationDigest {
+				t.Fatal("original checkout not preserved")
+			}
+			if err = rejectCheckoutDirectoryFlags(directory); err == nil {
+				t.Fatal("original NODUMP flag lost")
+			}
+		})
+	}
+}
+
+func TestCheckoutRestoredDirectoryRejectsNodump(t *testing.T) {
+	root, err := os.OpenRoot(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	if err = root.Mkdir("directory", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	originalInfo, err := root.Lstat("directory")
+	if err != nil {
+		t.Fatal(err)
+	}
+	original, err := checkCheckoutDirectoryPermissions(root, "directory", originalInfo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = root.Remove("directory"); err != nil {
+		t.Fatal(err)
+	}
+	if err = root.Mkdir("directory", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	recreated, err := root.Lstat("directory")
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory, err := root.Open("directory")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer directory.Close()
+	installCheckoutTestNodump(t, directory)
+	if err = restoreCheckoutDirectoryMetadata(root, "directory", recreated, original); ErrorCode(err) != CodeOutcomeUnknown {
+		t.Fatalf("restored NODUMP refusal = %v", err)
+	}
+	if err = rejectCheckoutDirectoryFlags(directory); err == nil {
+		t.Fatal("restoration silently removed NODUMP")
+	}
+	directory.Close()
+	if err = rejectCheckoutDirectoryFlags(directory); err == nil {
+		t.Fatal("failed flag inspection accepted")
+	}
+}

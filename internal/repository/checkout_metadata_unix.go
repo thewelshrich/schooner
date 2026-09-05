@@ -100,6 +100,9 @@ func checkCheckoutDirectoryPermissions(root *os.Root, path string, expected os.F
 // Only Darwin creation provenance may survive automatically. Retain and compare
 // presence and bytes; never write it or accept any other extended attribute.
 func checkoutDirectoryExtendedMetadata(directory *os.File) (metadata checkoutDirectoryMetadata, err error) {
+	if err = rejectCheckoutDirectoryFlags(directory); err != nil {
+		return metadata, err
+	}
 	size, err := unix.Flistxattr(int(directory.Fd()), nil)
 	if err != nil {
 		return metadata, err

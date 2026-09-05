@@ -24,3 +24,14 @@ func rejectCheckoutDirectoryACL(directory *os.File) error {
 	}
 	return nil
 }
+
+func rejectCheckoutDirectoryFlags(directory *os.File) error {
+	var stat unix.Stat_t
+	if err := unix.Fstat(int(directory.Fd()), &stat); err != nil {
+		return err
+	}
+	if stat.Flags != 0 {
+		return fmt.Errorf("directory has unsupported inode flags")
+	}
+	return nil
+}

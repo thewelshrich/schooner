@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"golang.org/x/sys/unix"
 	"os"
 	"os/exec"
 	"testing"
@@ -68,5 +69,19 @@ func TestCheckoutProvenanceMismatchPreservesBackup(t *testing.T) {
 				t.Fatalf("retry with original expectation: %v", err)
 			}
 		})
+	}
+}
+
+func installCheckoutTestNodump(t *testing.T, directory *os.File) {
+	t.Helper()
+	var stat unix.Stat_t
+	if err := unix.Fstat(int(directory.Fd()), &stat); err != nil {
+		t.Fatal(err)
+	}
+	if err := unix.Fchflags(int(directory.Fd()), int(stat.Flags|unix.UF_NODUMP)); err != nil {
+		t.Fatal(err)
+	}
+	if err := unix.Fstat(int(directory.Fd()), &stat); err != nil || stat.Flags&unix.UF_NODUMP == 0 {
+		t.Fatalf("NODUMP fixture was not applied: %v", err)
 	}
 }
