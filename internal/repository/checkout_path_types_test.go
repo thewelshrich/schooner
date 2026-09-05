@@ -3,6 +3,7 @@ package repository
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 )
 
@@ -336,5 +337,74 @@ func TestCheckoutTransitionRollbackPreservesDirectoryMode(t *testing.T) {
 		if got := info.Mode() & (os.ModePerm | os.ModeSetuid | os.ModeSetgid | os.ModeSticky); got != mode {
 			t.Fatalf("restored directory %q mode = %v, want %v", path, got, mode)
 		}
+	}
+}
+
+func TestCheckoutExternalRestoreEmptyTransitionDirectories(t *testing.T) {
+	target, before, incoming := checkoutPathTypeTransition(t, false)
+	capture, err := CaptureCheckout(t.Context(), target, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer capture.Release()
+	backup, err := ExtractCheckoutPayload(capture.PayloadPath, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backup.Release()
+	if _, err = ApplyCheckoutIfUnchanged(t.Context(), target, incoming, before.RevalidationDigest); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.Remove(filepath.Join(target, "file.txt", "nested", "child")); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := RestoreCheckoutAfterFailedApply(t.Context(), target, backup, incoming)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored.RevalidationDigest != before.RevalidationDigest {
+		t.Fatal("empty-directory recovery did not restore the backup")
+	}
+}
+
+func TestCheckoutPreflightPagesExcludeUnrelatedSiblings(t *testing.T) {
+	target := checkoutTestRepository(t)
+	for _, path := range []string{"src/part/selected", "src/part/sibling", "src/other/file", "src/blocker", "src/tree/nested/child", "src/[literal]", "src/l"} {
+		full := filepath.Join(target, filepath.FromSlash(path))
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeCheckoutFile(t, full, "tracked\n", 0o644)
+	}
+	runCheckoutGit(t, "-C", target, "add", "src")
+	root, err := os.OpenRoot(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	for _, test := range []struct {
+		path string
+		want []string
+	}{
+		{"src/part/selected", []string{"src/part/selected"}},
+		{"src/blocker/child", []string{"src/blocker"}},
+		{"src/tree", []string{"src/tree/nested/child"}},
+		{"src/[literal]", []string{"src/[literal]"}},
+		{"src/new/child", nil},
+	} {
+		t.Run(test.path, func(t *testing.T) {
+			page := []CheckoutFile{{Path: test.path, Kind: "file", Tracked: true}}
+			paths, err := checkoutPreflightPaths(root, page)
+			if err != nil {
+				t.Fatal(err)
+			}
+			args := append([]string{"-C", target, "--literal-pathspecs", "ls-files", "-z", "--cached", "--"}, paths...)
+			if got := parseNULPaths(runCheckoutGit(t, args...)); !slices.Equal(got, test.want) {
+				t.Fatalf("page index paths = %q, want %q", got, test.want)
+			}
+			if _, err = PreflightCheckoutFiles(t.Context(), target, page); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }

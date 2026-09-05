@@ -588,7 +588,13 @@ func RestoreCheckoutAfterFailedApply(ctx context.Context, target string, backup,
 		return CheckoutState{}, &Error{Code: CodeConflict, Message: fmt.Sprintf("destination path %q changed independently while workspace application was being rolled back", path)}
 	}
 
-	directories, err := pinReplacedCheckoutDirectories(root, checkoutFileMap(currentState.Files), backupFiles)
+	// Expected incoming chains may remain as empty directories after their
+	// leaves have already been removed by an interrupted inner rollback.
+	recoveryFiles := checkoutFileMap(currentState.Files)
+	for path, entry := range incomingFiles {
+		recoveryFiles[path] = entry
+	}
+	directories, err := pinReplacedCheckoutDirectories(root, recoveryFiles, backupFiles)
 	if err != nil {
 		return CheckoutState{}, err
 	}
@@ -758,13 +764,19 @@ func pinReplacedCheckoutDirectories(root *os.Root, destinationFiles, incomingFil
 			if _, replaced := incomingFiles[parent]; !replaced {
 				continue
 			}
-			for _, dir := range parents {
+			// Inspect from the outside in, without following a replaced file
+			// or symlink. Recovery may already have removed part of the chain.
+			for i := len(parents) - 1; i >= 0; i-- {
+				dir := parents[i]
 				info, err := root.Lstat(filepath.FromSlash(dir))
+				if errors.Is(err, os.ErrNotExist) {
+					break
+				}
 				if err != nil {
 					return nil, err
 				}
 				if !info.IsDir() {
-					return nil, &Error{Code: CodeConflict, Message: "destination directory changed before staging"}
+					break
 				}
 				directories[dir] = info
 			}
@@ -1605,12 +1617,16 @@ func PreflightCheckoutFiles(ctx context.Context, target string, incomingFiles []
 	if err := preflightIncomingGitSemantics(ctx, target, incomingFiles); err != nil {
 		return CheckoutComparison{}, err
 	}
-	arguments := []string{"ls-files", "-z", "--cached"}
-	for _, incoming := range incomingFiles {
-		if err := validateCheckoutPath(incoming.Path); err != nil {
-			return CheckoutComparison{}, err
-		}
+	root, err := os.OpenRoot(target)
+	if err != nil {
+		return CheckoutComparison{}, &Error{Code: CodeConflict, Message: "destination Worktree could not be opened safely for preflight", Cause: err}
 	}
+	defer root.Close()
+	paths, err := checkoutPreflightPaths(root, incomingFiles)
+	if err != nil {
+		return CheckoutComparison{}, err
+	}
+	arguments := append([]string{"--literal-pathspecs", "ls-files", "-z", "--cached", "--"}, paths...)
 	trackedOutput, err := git(ctx, commandRunner{}, target, arguments...)
 	if err != nil {
 		return CheckoutComparison{}, err
@@ -1619,11 +1635,6 @@ func PreflightCheckoutFiles(ctx context.Context, target string, incomingFiles []
 	for _, path := range parseNULPaths(trackedOutput) {
 		tracked[path] = true
 	}
-	root, err := os.OpenRoot(target)
-	if err != nil {
-		return CheckoutComparison{}, &Error{Code: CodeConflict, Message: "destination Worktree could not be opened safely for preflight", Cause: err}
-	}
-	defer root.Close()
 	comparison := CheckoutComparison{}
 	for _, incoming := range incomingFiles {
 		if incoming.Kind == "absent" {
@@ -1652,6 +1663,42 @@ func PreflightCheckoutFiles(ctx context.Context, target string, incomingFiles []
 		}
 	}
 	return comparison, nil
+}
+
+// checkoutPreflightPaths keeps each index query scoped to its manifest page.
+// A directory page path includes its tracked descendants; ancestor directories
+// must not be queried, since their unrelated children belong to other pages.
+func checkoutPreflightPaths(root *os.Root, incomingFiles []CheckoutFile) ([]string, error) {
+	var paths []string
+	seen := make(map[string]bool)
+	add := func(path string) {
+		if !seen[path] {
+			paths = append(paths, path)
+			seen[path] = true
+		}
+	}
+	for _, incoming := range incomingFiles {
+		if err := validateCheckoutPath(incoming.Path); err != nil {
+			return nil, err
+		}
+		add(incoming.Path)
+		parts := strings.Split(incoming.Path, "/")
+		for i := 1; i < len(parts); i++ {
+			parent := strings.Join(parts[:i], "/")
+			info, err := root.Lstat(filepath.FromSlash(parent))
+			if errors.Is(err, os.ErrNotExist) {
+				break
+			}
+			if err != nil {
+				return nil, err
+			}
+			if !info.IsDir() {
+				add(parent)
+				break
+			}
+		}
+	}
+	return paths, nil
 }
 
 func preflightIncomingGitSemantics(ctx context.Context, target string, incomingFiles []CheckoutFile) error {
