@@ -891,11 +891,11 @@ func (prepared *preparedCheckoutFiles) removeReplacedDirectories(path string) er
 		if !checkoutDirectoryProvenanceEqual(metadata, prepared.removedDirs[dir]) {
 			return &Error{Code: CodeOutcomeUnknown, Message: fmt.Sprintf("directory %q provenance changed during workspace application", dir)}
 		}
-		// Remove only an empty directory; any concurrent file blocks replacement.
-		if err = prepared.root.Remove(filepath.FromSlash(dir)); err != nil {
-			return &Error{Code: CodeConflict, Message: fmt.Sprintf("destination directory %q is no longer empty", dir), Cause: err}
+		mutated, err := removeCheckoutDirectory(prepared.root, filepath.FromSlash(dir), prepared.removedDirs[dir], true)
+		prepared.mutated = prepared.mutated || mutated
+		if err != nil {
+			return err
 		}
-		prepared.mutated = true
 	}
 	return nil
 }
@@ -917,6 +917,7 @@ type preparedCheckoutFiles struct {
 	root              *os.Root
 	entries           []preparedCheckoutFile
 	createdDirs       []string
+	createdDirInfo    map[string]os.FileInfo
 	removedDirs       map[string]checkoutDirectoryMetadata
 	directoryRemovals map[string][]string
 	recreatedDirs     map[string]os.FileInfo
@@ -989,6 +990,9 @@ func prepareCheckoutFiles(root *os.Root, destination CheckoutState, payload Extr
 			record.incoming = &copy
 			dirs, err := ensureCheckoutDestinationDirectories(root, record.stagingBase)
 			prepared.createdDirs = append(prepared.createdDirs, dirs...)
+			if pinErr := prepared.pinCreatedDirectories(dirs); pinErr != nil {
+				return nil, pinErr
+			}
 			if err != nil {
 				return nil, err
 			}
@@ -1000,6 +1004,23 @@ func prepareCheckoutFiles(root *os.Root, destination CheckoutState, payload Extr
 	}
 	failed = false
 	return prepared, nil
+}
+
+func (prepared *preparedCheckoutFiles) pinCreatedDirectories(paths []string) error {
+	if prepared.createdDirInfo == nil {
+		prepared.createdDirInfo = make(map[string]os.FileInfo)
+	}
+	for _, path := range paths {
+		info, err := prepared.root.Lstat(path)
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() {
+			return &Error{Code: CodeConflict, Message: "created directory changed independently"}
+		}
+		prepared.createdDirInfo[path] = info
+	}
+	return nil
 }
 
 func ensureCheckoutDestinationDirectories(root *os.Root, relative string) ([]string, error) {
@@ -1044,6 +1065,9 @@ func (prepared *preparedCheckoutFiles) Apply() error {
 			prepared.createdDirs = append(prepared.createdDirs, dirs...)
 			if len(dirs) != 0 {
 				prepared.mutated = true
+			}
+			if pinErr := prepared.pinCreatedDirectories(dirs); pinErr != nil {
+				return pinErr
 			}
 			if err != nil {
 				return err
@@ -1222,8 +1246,10 @@ func (prepared *preparedCheckoutFiles) Rollback() (rollbackErr error) {
 		}
 		// Incoming children have already been removed in reverse apply order.
 		for _, dir := range createdDirRemovals[record.path] {
-			if err = prepared.root.Remove(dir); err != nil && !errors.Is(err, os.ErrNotExist) {
-				return err
+			changed, removeErr := removeCheckoutDirectory(prepared.root, dir, checkoutDirectoryMetadata{info: prepared.createdDirInfo[dir]}, false)
+			prepared.mutated = prepared.mutated || changed
+			if removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+				return removeErr
 			}
 		}
 		dirs, err := ensureCheckoutDestinationDirectories(prepared.root, record.path)
@@ -1349,9 +1375,15 @@ func (prepared *preparedCheckoutFiles) Release() {
 	}
 	sort.Slice(prepared.createdDirs, func(i, j int) bool { return len(prepared.createdDirs[i]) > len(prepared.createdDirs[j]) })
 	for _, directory := range prepared.createdDirs {
-		// Rollback may already have restored a file at this directory path.
-		if info, err := prepared.root.Lstat(directory); err == nil && info.IsDir() {
-			_ = prepared.root.Remove(directory)
+		opened, err := prepared.root.OpenFile(directory, os.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW, 0)
+		if err != nil {
+			continue
+		}
+		info, statErr := opened.Stat()
+		entries, readErr := opened.ReadDir(1)
+		opened.Close()
+		if statErr == nil && os.SameFile(info, prepared.createdDirInfo[directory]) && len(entries) == 0 && errors.Is(readErr, io.EOF) {
+			_, _ = removeCheckoutDirectory(prepared.root, directory, checkoutDirectoryMetadata{info: prepared.createdDirInfo[directory]}, false)
 		}
 	}
 }

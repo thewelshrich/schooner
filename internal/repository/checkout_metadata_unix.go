@@ -86,6 +86,10 @@ func checkCheckoutDirectoryPermissions(root *os.Root, path string, expected os.F
 		return metadata, err
 	}
 	defer directory.Close()
+	return inspectCheckoutDirectoryPermissions(directory, expected)
+}
+
+func inspectCheckoutDirectoryPermissions(directory *os.File, expected os.FileInfo) (metadata checkoutDirectoryMetadata, err error) {
 	info, err := directory.Stat()
 	if err != nil {
 		return metadata, err
