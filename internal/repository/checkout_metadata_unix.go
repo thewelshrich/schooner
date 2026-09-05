@@ -157,7 +157,12 @@ func checkoutDirectoryProvenanceEqual(left, right checkoutDirectoryMetadata) boo
 // Install through the still-open verified parent. Keep the original backup until
 // the root-visible ancestry is revalidated, so a moved parent cannot consume it.
 func (prepared *preparedCheckoutFiles) restoreBackupAt(record *preparedCheckoutFile, parent *os.File, ancestors []string) error {
-	source, err := prepared.root.OpenFile(filepath.Dir(record.backupTemp), os.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW, 0)
+	sourceRoot, err := prepared.root.OpenRoot(filepath.Dir(record.backupTemp))
+	if err != nil {
+		return err
+	}
+	defer sourceRoot.Close()
+	source, err := sourceRoot.Open(".")
 	if err != nil {
 		return err
 	}
@@ -171,6 +176,12 @@ func (prepared *preparedCheckoutFiles) restoreBackupAt(record *preparedCheckoutF
 		return err
 	}
 	defer unix.Unlinkat(int(source.Fd()), name, 0)
+	linkedInfo, statErr := sourceRoot.Lstat(name)
+	linked, present, inspectErr := checkoutFileOnRoot(sourceRoot, name)
+	if statErr != nil || inspectErr != nil || !present || record.previous == nil || record.backupInfo == nil || !os.SameFile(linkedInfo, record.backupInfo) || !checkoutFileContentEqual(linked, *record.previous) {
+		record.preserveBackup = true
+		return &Error{Code: CodeOutcomeUnknown, Message: fmt.Sprintf("rollback material for destination path %q changed before installation; recovery backup preserved at %q", record.path, record.backupTemp)}
+	}
 	if err = renameNoReplaceAt(source, name, parent, filepath.Base(record.path)); err != nil {
 		return err
 	}

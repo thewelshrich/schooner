@@ -628,7 +628,11 @@ func RestoreCheckoutAfterFailedApply(ctx context.Context, target string, backup,
 	for path, entry := range incomingFiles {
 		recoveryFiles[path] = entry
 	}
-	directories, err := pinReplacedCheckoutDirectories(root, recoveryFiles, backupFiles)
+	replacementRoots := checkoutFileMap(backup.State.Files)
+	for _, path := range backup.State.AbsentPaths {
+		replacementRoots[path] = CheckoutFile{Path: path}
+	}
+	directories, err := pinReplacedCheckoutDirectories(root, recoveryFiles, replacementRoots)
 	if err != nil {
 		return CheckoutState{}, err
 	}
@@ -653,7 +657,7 @@ func RestoreCheckoutAfterFailedApply(ctx context.Context, target string, backup,
 		}
 	}
 
-	for path := range backupFiles {
+	for path := range replacementRoots {
 		if err = cleanup.removeReplacedDirectories(path); err != nil {
 			return CheckoutState{}, err
 		}
@@ -907,6 +911,8 @@ type preparedCheckoutFile struct {
 	previous            *CheckoutFile
 	incomingTemp        string
 	backupTemp          string
+	backupInfo          os.FileInfo
+	absent              bool
 	displacedTemp       string
 	preserveBackup      bool
 	preserveDisplaced   bool
@@ -927,8 +933,12 @@ type preparedCheckoutFiles struct {
 func prepareCheckoutFiles(root *os.Root, destination CheckoutState, payload ExtractedCheckout) (*preparedCheckoutFiles, error) {
 	destinationFiles := checkoutFileMap(destination.Files)
 	incomingFiles := checkoutFileMap(payload.State.Files)
+	replacementRoots := checkoutFileMap(payload.State.Files)
+	for _, path := range payload.State.AbsentPaths {
+		replacementRoots[path] = CheckoutFile{Path: path}
+	}
 	paths := make(map[string]struct{}, len(payload.State.Files)+len(destination.Files))
-	for path := range incomingFiles {
+	for path := range replacementRoots {
 		paths[path] = struct{}{}
 	}
 	for _, entry := range destination.Files {
@@ -944,8 +954,8 @@ func prepareCheckoutFiles(root *os.Root, destination CheckoutState, payload Extr
 	}
 	// Delete outgoing leaves before creating their replacements.
 	sort.Slice(ordered, func(i, j int) bool {
-		_, left := incomingFiles[ordered[i]]
-		_, right := incomingFiles[ordered[j]]
+		_, left := replacementRoots[ordered[i]]
+		_, right := replacementRoots[ordered[j]]
 		if left != right {
 			return !left
 		}
@@ -959,13 +969,16 @@ func prepareCheckoutFiles(root *os.Root, destination CheckoutState, payload Extr
 		}
 	}()
 	var err error
-	prepared.removedDirs, err = pinReplacedCheckoutDirectories(root, destinationFiles, incomingFiles)
+	prepared.removedDirs, err = pinReplacedCheckoutDirectories(root, destinationFiles, replacementRoots)
 	if err != nil {
 		return nil, err
 	}
 	for _, path := range ordered {
-		prepared.entries = append(prepared.entries, preparedCheckoutFile{path: path, stagingBase: checkoutStagingBase(path, destinationFiles, incomingFiles)})
+		prepared.entries = append(prepared.entries, preparedCheckoutFile{path: path, stagingBase: checkoutStagingBase(path, destinationFiles, replacementRoots)})
 		record := &prepared.entries[len(prepared.entries)-1]
+		_, replacement := replacementRoots[path]
+		_, incoming := incomingFiles[path]
+		record.absent = replacement && !incoming
 		if value, ok := destinationFiles[path]; ok {
 			copy := value
 			record.previous = &copy
@@ -984,6 +997,10 @@ func prepareCheckoutFiles(root *os.Root, destination CheckoutState, payload Extr
 				return nil, &Error{Code: CodeUnsupported, Message: fmt.Sprintf("destination path %q cannot be protected for rollback", path), Cause: err}
 			}
 			record.backupTemp = backup
+			record.backupInfo, err = root.Lstat(backup)
+			if err != nil {
+				return nil, err
+			}
 		}
 		if value, ok := incomingFiles[path]; ok {
 			copy := value
@@ -1057,10 +1074,12 @@ func ensureCheckoutDestinationDirectories(root *os.Root, relative string) ([]str
 func (prepared *preparedCheckoutFiles) Apply() error {
 	for index := range prepared.entries {
 		record := &prepared.entries[index]
-		if record.incoming != nil {
+		if record.incoming != nil || record.absent {
 			if err := prepared.removeReplacedDirectories(record.path); err != nil {
 				return err
 			}
+		}
+		if record.incoming != nil {
 			dirs, err := ensureCheckoutDestinationDirectories(prepared.root, record.path)
 			prepared.createdDirs = append(prepared.createdDirs, dirs...)
 			if len(dirs) != 0 {
@@ -1749,7 +1768,7 @@ func PreflightCheckoutApplication(ctx context.Context, target string, destinatio
 		}
 	}
 	for _, path := range incomingAbsent {
-		_, present, statErr := checkoutFileForTransition(root, path, tracked, managedDirectories)
+		_, present, statErr := checkoutFileForTransitionPreflight(root, path, tracked, managedDirectories, true)
 		if statErr != nil {
 			return statErr
 		}
@@ -1797,7 +1816,7 @@ func PreflightCheckoutFiles(ctx context.Context, target string, incomingFiles []
 	comparison := CheckoutComparison{}
 	for _, incoming := range incomingFiles {
 		if incoming.Kind == "absent" {
-			_, present, statErr := checkoutFileForTransition(root, incoming.Path, tracked, managedDirectories)
+			_, present, statErr := checkoutFileForTransitionPreflight(root, incoming.Path, tracked, managedDirectories, true)
 			if statErr != nil {
 				return CheckoutComparison{}, statErr
 			}

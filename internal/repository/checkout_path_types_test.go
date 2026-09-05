@@ -554,3 +554,112 @@ func TestCheckoutTransitionRollbackWithExistingIncomingLeaf(t *testing.T) {
 		}
 	}
 }
+
+func TestCheckoutAbsentDirectoryReplacement(t *testing.T) {
+	for _, path := range []string{"file.txt", "outer/file.txt"} {
+		for _, rollback := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/rollback=%t", path, rollback), func(t *testing.T) {
+				target, before, incoming := checkoutPathTypeTransitionAt(t, true, path)
+				if err := os.Remove(filepath.Join(incoming.State.Worktree, path)); err != nil {
+					t.Fatal(err)
+				}
+				capture, err := CaptureCheckout(t.Context(), incoming.State.Worktree, t.TempDir())
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer capture.Release()
+				absent, err := ExtractCheckoutPayload(capture.PayloadPath, t.TempDir())
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer absent.Release()
+				if !slices.Contains(absent.State.AbsentPaths, path) {
+					t.Fatal("fixture missing absent leaf")
+				}
+				if rollback {
+					root, err := os.OpenRoot(target)
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer root.Close()
+					prepared, err := prepareCheckoutFiles(root, before, absent)
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer prepared.Release()
+					if err = prepared.Apply(); err != nil {
+						t.Fatal(err)
+					}
+					if _, err = root.Lstat(path); !os.IsNotExist(err) {
+						t.Fatalf("absent replacement remains: %v", err)
+					}
+					if err = prepared.Rollback(); err != nil {
+						t.Fatal(err)
+					}
+					prepared.Release()
+					restored, err := ObserveCheckout(t.Context(), target)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if restored.Digest != before.Digest {
+						t.Fatal("absent transition rollback changed checkout")
+					}
+				} else {
+					applied, err := ApplyCheckoutIfUnchanged(t.Context(), target, absent, before.RevalidationDigest)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if _, err = os.Lstat(filepath.Join(target, path)); !os.IsNotExist(err) {
+						t.Fatalf("absent replacement remains: %v", err)
+					}
+					restored, err := ApplyCheckoutIfUnchanged(t.Context(), target, incoming, applied.RevalidationDigest)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if restored.Digest != incoming.State.Digest {
+						t.Fatal("subsequent transfer did not restore leaf")
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestCheckoutExternalRestoreAbsentReplacement(t *testing.T) {
+	for _, empty := range []bool{false, true} {
+		t.Run(fmt.Sprintf("incoming-leaves-gone=%t", empty), func(t *testing.T) {
+			target, _, incoming := checkoutPathTypeTransition(t, false)
+			if err := os.Remove(filepath.Join(target, "file.txt")); err != nil {
+				t.Fatal(err)
+			}
+			capture, err := CaptureCheckout(t.Context(), target, t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer capture.Release()
+			backup, err := ExtractCheckoutPayload(capture.PayloadPath, t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer backup.Release()
+			if _, err = ApplyCheckoutIfUnchanged(t.Context(), target, incoming, backup.State.RevalidationDigest); err != nil {
+				t.Fatal(err)
+			}
+			if empty {
+				if err = os.Remove(filepath.Join(target, "file.txt/nested/child")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			restored, err := RestoreCheckoutAfterFailedApply(t.Context(), target, backup, incoming)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if restored.Digest != backup.State.Digest {
+				t.Fatal("external restore changed absent checkout")
+			}
+			if _, err = os.Lstat(filepath.Join(target, "file.txt")); !os.IsNotExist(err) {
+				t.Fatalf("external restore left directory: %v", err)
+			}
+		})
+	}
+}

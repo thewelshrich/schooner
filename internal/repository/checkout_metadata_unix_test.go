@@ -492,7 +492,15 @@ func TestCheckoutRollbackPinnedParentSwap(t *testing.T) {
 		}
 	}
 	prepared := preparedCheckoutFiles{root: root, recreatedDirs: map[string]os.FileInfo{"private/nested": recreated}}
-	record := preparedCheckoutFile{path: "private/nested/secret", backupTemp: "backup"}
+	previous, _, err := checkoutFileOnRoot(root, "backup")
+	if err != nil {
+		t.Fatal(err)
+	}
+	backupInfo, err := root.Lstat("backup")
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := preparedCheckoutFile{path: "private/nested/secret", backupTemp: "backup", previous: &previous, backupInfo: backupInfo}
 	if err = prepared.restoreBackupAt(&record, parent, []string{"private/nested"}); ErrorCode(err) != CodeOutcomeUnknown {
 		t.Fatalf("parent swap result = %v", err)
 	}
@@ -519,5 +527,75 @@ func assertCheckoutMetadataPreflightConflict(t *testing.T, target string, before
 	}
 	if err := PreflightCheckoutApplication(t.Context(), target, before, incoming.State.Files, incoming.State.AbsentPaths); ErrorCode(err) != CodeConflict {
 		t.Fatalf("full metadata preflight = %v", err)
+	}
+	var absent []string
+	var absentPage []CheckoutFile
+	for _, entry := range incoming.State.Files {
+		absent = append(absent, entry.Path)
+		absentPage = append(absentPage, CheckoutFile{Path: entry.Path, Kind: "absent"})
+	}
+	if _, err := PreflightCheckoutFiles(t.Context(), target, absentPage); ErrorCode(err) != CodeConflict {
+		t.Fatalf("paged absent metadata preflight = %v", err)
+	}
+	if err := PreflightCheckoutApplication(t.Context(), target, before, nil, absent); ErrorCode(err) != CodeConflict {
+		t.Fatalf("absent metadata preflight = %v", err)
+	}
+}
+
+func TestCheckoutRollbackRejectsSwappedBackupBeforeInstall(t *testing.T) {
+	for _, variant := range []string{"file", "symlink", "same-content", "in-place"} {
+		t.Run(variant, func(t *testing.T) {
+			root, err := os.OpenRoot(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer root.Close()
+			writeCheckoutFile(t, filepath.Join(root.Name(), "backup"), "private original", 0o600)
+			previous, _, err := checkoutFileOnRoot(root, "backup")
+			if err != nil {
+				t.Fatal(err)
+			}
+			info, err := root.Lstat("backup")
+			if err != nil {
+				t.Fatal(err)
+			}
+			record := preparedCheckoutFile{path: "restored", backupTemp: "backup", previous: &previous, backupInfo: info}
+			// Model the swap after Rollback's initial validation, before Linkat.
+			if variant != "in-place" {
+				if err = root.Rename("backup", "original"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if variant == "symlink" {
+				err = root.Symlink("original", "backup")
+			} else {
+				content := "unrelated replacement"
+				if variant == "same-content" {
+					content = "private original"
+				}
+				err = os.WriteFile(filepath.Join(root.Name(), "backup"), []byte(content), 0o600)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			parent, err := root.Open(".")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer parent.Close()
+			prepared := preparedCheckoutFiles{root: root}
+			if err = prepared.restoreBackupAt(&record, parent, nil); ErrorCode(err) != CodeOutcomeUnknown {
+				t.Fatalf("restore = %v", err)
+			}
+			if _, err = root.Lstat("restored"); !os.IsNotExist(err) {
+				t.Fatalf("changed backup installed: %v", err)
+			}
+			if !record.preserveBackup {
+				t.Fatal("backup not retained")
+			}
+			if _, err = root.Lstat("backup"); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }
