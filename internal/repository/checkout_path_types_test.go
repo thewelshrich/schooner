@@ -209,3 +209,132 @@ func TestCheckoutPathTypeTransitionPreservesConcurrentFile(t *testing.T) {
 		}
 	}
 }
+
+func TestCheckoutPathTypeExternalRestore(t *testing.T) {
+	for _, directoryToFile := range []bool{false, true} {
+		name := "file-to-directory"
+		if directoryToFile {
+			name = "directory-to-file"
+		}
+		t.Run(name, func(t *testing.T) {
+			target, before, incoming := checkoutPathTypeTransition(t, directoryToFile)
+			capture, err := CaptureCheckout(t.Context(), target, t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer capture.Release()
+			backup, err := ExtractCheckoutPayload(capture.PayloadPath, t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer backup.Release()
+			if _, err = ApplyCheckoutIfUnchanged(t.Context(), target, incoming, before.RevalidationDigest); err != nil {
+				t.Fatal(err)
+			}
+			restored, err := RestoreCheckoutAfterFailedApply(t.Context(), target, backup, incoming)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if restored.RevalidationDigest != before.RevalidationDigest {
+				t.Fatalf("restored digest = %s, want %s", restored.RevalidationDigest, before.RevalidationDigest)
+			}
+		})
+	}
+}
+
+func TestCheckoutRestoreRewindProtectsIndependentCommit(t *testing.T) {
+	target := checkoutTestRepository(t)
+	before, err := ObserveCheckout(t.Context(), target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeCheckoutFile(t, filepath.Join(target, "file.txt"), "independent commit\n", 0o644)
+	runCheckoutGit(t, "-C", target, "commit", "-am", "independent")
+	independent, err := ObserveCheckout(t.Context(), target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = updateCheckoutHEADWithBranchRewind(t.Context(), target, before, before.HEAD); ErrorCode(err) != CodeConflict {
+		t.Fatalf("stale rewind error = %v", err)
+	}
+	after, err := ObserveCheckout(t.Context(), target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.RevalidationDigest != independent.RevalidationDigest {
+		t.Fatal("rewind overwrote independent commit")
+	}
+}
+
+func TestCheckoutTransitionStagingPreservesAdjacentFilesystem(t *testing.T) {
+	destination := map[string]CheckoutFile{"mount/tree/old/leaf": {}, "mount/file": {}, "mount/stable/deep/leaf": {}}
+	incoming := map[string]CheckoutFile{"mount/tree": {}, "mount/file/new/leaf": {}, "mount/stable/deep/leaf": {}}
+	for _, test := range []struct{ path, parent string }{
+		{"mount/stable/deep/leaf", "mount/stable/deep"},
+		{"mount/tree/old/leaf", "mount"},
+		{"mount/tree", "mount"},
+		{"mount/file", "mount"},
+		{"mount/file/new/leaf", "mount"},
+	} {
+		t.Run(test.path, func(t *testing.T) {
+			path, err := checkoutTemporaryPath(checkoutStagingBase(test.path, destination, incoming))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if parent := filepath.ToSlash(filepath.Dir(path)); parent != test.parent {
+				t.Fatalf("temporary parent = %q, want %q", parent, test.parent)
+			}
+		})
+	}
+}
+
+func TestCheckoutTransitionRollbackPreservesDirectoryMode(t *testing.T) {
+	target, before, incoming := checkoutPathTypeTransition(t, true)
+	mode := os.FileMode(0o755) | os.ModeSetgid | os.ModeSticky
+	// macOS inherits a temporary directory's group; use our own group so
+	// chmod can retain setgid both before replacement and after recreation.
+	if err := os.Chown(target, -1, os.Getgid()); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"file.txt", "file.txt/nested"} {
+		if err := os.Chown(filepath.Join(target, filepath.FromSlash(path)), -1, os.Getgid()); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(filepath.Join(target, filepath.FromSlash(path)), mode); err != nil {
+			t.Fatal(err)
+		}
+		info, err := os.Lstat(filepath.Join(target, filepath.FromSlash(path)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.Mode() & (os.ModePerm | os.ModeSetuid | os.ModeSetgid | os.ModeSticky); got != mode {
+			t.Fatalf("initial directory mode = %v, want %v", got, mode)
+		}
+	}
+	root, err := os.OpenRoot(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	prepared, err := prepareCheckoutFiles(root, before, incoming)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer prepared.Release()
+	if err = prepared.Apply(); err != nil {
+		t.Fatal(err)
+	}
+	if err = prepared.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	prepared.Release()
+	for _, path := range []string{"file.txt", "file.txt/nested"} {
+		info, err := root.Lstat(filepath.FromSlash(path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.Mode() & (os.ModePerm | os.ModeSetuid | os.ModeSetgid | os.ModeSticky); got != mode {
+			t.Fatalf("restored directory %q mode = %v, want %v", path, got, mode)
+		}
+	}
+}

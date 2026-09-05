@@ -164,7 +164,7 @@ func prepareCheckoutIndex(ctx context.Context, target string, payload ExtractedC
 	if copyErr != nil {
 		return nil, copyErr
 	}
-	backupName, err := checkoutTemporaryPath()
+	backupName, err := checkoutTemporaryPath(prepared.indexName)
 	if err != nil {
 		return nil, err
 	}
@@ -588,6 +588,12 @@ func RestoreCheckoutAfterFailedApply(ctx context.Context, target string, backup,
 		return CheckoutState{}, &Error{Code: CodeConflict, Message: fmt.Sprintf("destination path %q changed independently while workspace application was being rolled back", path)}
 	}
 
+	directories, err := pinReplacedCheckoutDirectories(root, checkoutFileMap(currentState.Files), backupFiles)
+	if err != nil {
+		return CheckoutState{}, err
+	}
+	cleanup := preparedCheckoutFiles{root: root, removedDirs: directories}
+
 	for _, path := range ordered {
 		if _, existed := backupFiles[path]; existed {
 			continue
@@ -607,11 +613,26 @@ func RestoreCheckoutAfterFailedApply(ctx context.Context, target string, backup,
 		}
 	}
 
+	for path := range backupFiles {
+		if err = cleanup.removeReplacedDirectories(path); err != nil {
+			return CheckoutState{}, err
+		}
+	}
+
 	current, err := ObserveCheckout(ctx, target)
 	if err != nil {
 		return CheckoutState{}, err
 	}
-	return ApplyCheckoutIfUnchanged(ctx, target, backup, current.RevalidationDigest)
+	if !checkoutHeadEqual(current, currentState) || !checkoutIndexEqual(current, currentState) {
+		return CheckoutState{}, &Error{Code: CodeConflict, Message: "destination Git HEAD or index changed during workspace rollback"}
+	}
+	// Rewind only the currently checked-out, known operation branch. A different
+	// backup branch still receives the ordinary independent-history check.
+	rewindBranch := ""
+	if !current.Detached && current.Branch == backup.State.Branch {
+		rewindBranch = current.Branch
+	}
+	return applyCheckout(ctx, filepath.Dir(target), target, backup, current.RevalidationDigest, rewindBranch)
 }
 
 func checkoutHeadEqual(left, right CheckoutState) bool {
@@ -699,6 +720,18 @@ func checkoutFileForTransition(root *os.Root, relative string, tracked map[strin
 	if err != nil || !info.IsDir() {
 		return checkoutFileOnRoot(root, relative)
 	}
+	directories := make(map[string]bool)
+	for leaf, managed := range tracked {
+		if !managed {
+			continue
+		}
+		for parent := filepath.ToSlash(filepath.Dir(leaf)); parent != "."; parent = filepath.ToSlash(filepath.Dir(parent)) {
+			if directories[parent] {
+				break
+			}
+			directories[parent] = true
+		}
+	}
 	err = fs.WalkDir(root.FS(), relative, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -706,16 +739,39 @@ func checkoutFileForTransition(root *os.Root, relative string, tracked map[strin
 		if !entry.IsDir() && tracked[path] {
 			return nil
 		}
-		if entry.IsDir() {
-			for leaf, managed := range tracked {
-				if managed && strings.HasPrefix(leaf, path+"/") {
-					return nil
-				}
-			}
+		if entry.IsDir() && directories[path] {
+			return nil
 		}
 		return &Error{Code: CodeConflict, Message: fmt.Sprintf("ignored destination path %q collides with the incoming workspace", path)}
 	})
 	return CheckoutFile{}, false, err
+}
+
+// pinReplacedCheckoutDirectories records the directory identities that an
+// incoming leaf replaces, before outgoing files are removed.
+func pinReplacedCheckoutDirectories(root *os.Root, destinationFiles, incomingFiles map[string]CheckoutFile) (map[string]os.FileInfo, error) {
+	directories := make(map[string]os.FileInfo)
+	for oldPath := range destinationFiles {
+		var parents []string
+		for parent := filepath.ToSlash(filepath.Dir(oldPath)); parent != "."; parent = filepath.ToSlash(filepath.Dir(parent)) {
+			parents = append(parents, parent)
+			if _, replaced := incomingFiles[parent]; !replaced {
+				continue
+			}
+			for _, dir := range parents {
+				info, err := root.Lstat(filepath.FromSlash(dir))
+				if err != nil {
+					return nil, err
+				}
+				if !info.IsDir() {
+					return nil, &Error{Code: CodeConflict, Message: "destination directory changed before staging"}
+				}
+				directories[dir] = info
+			}
+			break
+		}
+	}
+	return directories, nil
 }
 
 func (prepared *preparedCheckoutFiles) removeReplacedDirectories(path string) error {
@@ -742,6 +798,7 @@ func (prepared *preparedCheckoutFiles) removeReplacedDirectories(path string) er
 
 type preparedCheckoutFile struct {
 	path                string
+	stagingBase         string
 	incoming            *CheckoutFile
 	previous            *CheckoutFile
 	incomingTemp        string
@@ -787,37 +844,20 @@ func prepareCheckoutFiles(root *os.Root, destination CheckoutState, payload Extr
 		}
 		return ordered[i] < ordered[j]
 	})
-	prepared := &preparedCheckoutFiles{root: root, entries: make([]preparedCheckoutFile, 0, len(ordered)), removedDirs: make(map[string]os.FileInfo)}
+	prepared := &preparedCheckoutFiles{root: root, entries: make([]preparedCheckoutFile, 0, len(ordered))}
 	failed := true
 	defer func() {
 		if failed {
 			prepared.Release()
 		}
 	}()
-	// Pin outgoing directories once. Incoming and backup files are staged at
-	// the root so directories can become empty without losing recovery material.
-	for oldPath := range destinationFiles {
-		var parents []string
-		for parent := filepath.ToSlash(filepath.Dir(oldPath)); parent != "."; parent = filepath.ToSlash(filepath.Dir(parent)) {
-			parents = append(parents, parent)
-			if _, replaced := incomingFiles[parent]; !replaced {
-				continue
-			}
-			for _, dir := range parents {
-				info, err := root.Lstat(filepath.FromSlash(dir))
-				if err != nil {
-					return nil, err
-				}
-				if !info.IsDir() {
-					return nil, &Error{Code: CodeConflict, Message: "destination directory changed before staging"}
-				}
-				prepared.removedDirs[dir] = info
-			}
-			break
-		}
+	var err error
+	prepared.removedDirs, err = pinReplacedCheckoutDirectories(root, destinationFiles, incomingFiles)
+	if err != nil {
+		return nil, err
 	}
 	for _, path := range ordered {
-		prepared.entries = append(prepared.entries, preparedCheckoutFile{path: path})
+		prepared.entries = append(prepared.entries, preparedCheckoutFile{path: path, stagingBase: checkoutStagingBase(path, destinationFiles, incomingFiles)})
 		record := &prepared.entries[len(prepared.entries)-1]
 		if value, ok := destinationFiles[path]; ok {
 			copy := value
@@ -829,7 +869,7 @@ func prepareCheckoutFiles(root *os.Root, destination CheckoutState, payload Extr
 			if !present || !checkoutFileContentEqual(current, value) {
 				return nil, &Error{Code: CodeConflict, Message: fmt.Sprintf("destination path %q changed before workspace files were staged", path)}
 			}
-			backup, err := checkoutTemporaryPath()
+			backup, err := checkoutTemporaryPath(record.stagingBase)
 			if err != nil {
 				return nil, err
 			}
@@ -841,8 +881,12 @@ func prepareCheckoutFiles(root *os.Root, destination CheckoutState, payload Extr
 		if value, ok := incomingFiles[path]; ok {
 			copy := value
 			record.incoming = &copy
-			var err error
-			record.incomingTemp, err = stageCheckoutEntry(root, filepath.Join(payload.Directory, "files"), value)
+			dirs, err := ensureCheckoutDestinationDirectories(root, record.stagingBase)
+			prepared.createdDirs = append(prepared.createdDirs, dirs...)
+			if err != nil {
+				return nil, err
+			}
+			record.incomingTemp, err = stageCheckoutEntryBeside(root, filepath.Join(payload.Directory, "files"), value, record.stagingBase)
 			if err != nil {
 				return nil, err
 			}
@@ -946,7 +990,7 @@ func (prepared *preparedCheckoutFiles) Apply() error {
 }
 
 func (prepared *preparedCheckoutFiles) displaceAndVerify(record *preparedCheckoutFile) error {
-	displaced, err := checkoutTemporaryPath()
+	displaced, err := checkoutTemporaryPath(record.stagingBase)
 	if err != nil {
 		return err
 	}
@@ -1083,7 +1127,7 @@ func (prepared *preparedCheckoutFiles) Rollback() (rollbackErr error) {
 		}
 		for _, dir := range dirs {
 			if info := prepared.removedDirs[filepath.ToSlash(dir)]; info != nil {
-				if err = prepared.root.Chmod(dir, info.Mode().Perm()); err != nil {
+				if err = prepared.root.Chmod(dir, info.Mode()&(os.ModePerm|os.ModeSetuid|os.ModeSetgid|os.ModeSticky)); err != nil {
 					return err
 				}
 			}
@@ -1179,7 +1223,7 @@ func checkoutFileContentEqual(left, right CheckoutFile) bool {
 	return left.Path != "" && right.Path != "" && left.Kind == right.Kind && left.Executable == right.Executable && left.Size == right.Size && left.SHA256 == right.SHA256
 }
 
-func applyCheckout(ctx context.Context, root, target string, payload ExtractedCheckout, expectedDigest, operationCreatedBranch string) (CheckoutState, error) {
+func applyCheckout(ctx context.Context, root, target string, payload ExtractedCheckout, expectedDigest, rewindBranch string) (CheckoutState, error) {
 	if !filepath.IsAbs(target) || filepath.Clean(target) != target {
 		return CheckoutState{}, &Error{Code: CodeInvalidInput, Message: "destination Worktree path must be canonical and absolute"}
 	}
@@ -1207,7 +1251,7 @@ func applyCheckout(ctx context.Context, root, target string, payload ExtractedCh
 	} else if err != nil {
 		return CheckoutState{}, err
 	}
-	return applyExistingCheckout(ctx, target, payload, expectedDigest, operationCreatedBranch)
+	return applyExistingCheckout(ctx, target, payload, expectedDigest, rewindBranch)
 }
 
 func createCheckout(ctx context.Context, root, target string, payload ExtractedCheckout) (CheckoutState, error) {
@@ -1324,7 +1368,7 @@ func initializeCheckoutHEAD(ctx context.Context, target string, state CheckoutSt
 	return &checkoutHEADUpdate{target: target, newHEAD: state.HEAD, headChanged: true}, nil
 }
 
-func applyExistingCheckout(ctx context.Context, target string, payload ExtractedCheckout, expectedDigest, operationCreatedBranch string) (CheckoutState, error) {
+func applyExistingCheckout(ctx context.Context, target string, payload ExtractedCheckout, expectedDigest, rewindBranch string) (CheckoutState, error) {
 	destination, err := ObserveCheckout(ctx, target)
 	if err != nil {
 		return CheckoutState{}, err
@@ -1357,8 +1401,8 @@ func applyExistingCheckout(ctx context.Context, target string, payload Extracted
 	if err = incarnation.Validate(ctx, target); err != nil {
 		return CheckoutState{}, err
 	}
-	allowCreatedBranchRewind := operationCreatedBranch != "" && !payload.State.Detached && payload.State.Branch == operationCreatedBranch
-	if !allowCreatedBranchRewind {
+	allowBranchRewind := rewindBranch != "" && !payload.State.Detached && payload.State.Branch == rewindBranch
+	if !allowBranchRewind {
 		if err = validateIncomingBranch(ctx, target, payload.State); err != nil {
 			return CheckoutState{}, err
 		}
@@ -1433,7 +1477,11 @@ func applyExistingCheckout(ctx context.Context, target string, payload Extracted
 	if err = incarnation.Validate(ctx, target); err != nil {
 		return CheckoutState{}, applyFailure(err)
 	}
-	headUpdate, err = updateCheckoutHEADWithBranchRewind(ctx, target, payload.State, allowCreatedBranchRewind)
+	rewindHEAD := ""
+	if allowBranchRewind {
+		rewindHEAD = destination.HEAD
+	}
+	headUpdate, err = updateCheckoutHEADWithBranchRewind(ctx, target, payload.State, rewindHEAD)
 	if err != nil {
 		return CheckoutState{}, applyFailure(err)
 	}
@@ -1847,15 +1895,15 @@ func (update *checkoutHEADUpdate) Restore(ctx context.Context) error {
 }
 
 func updateCheckoutHEAD(ctx context.Context, target string, state CheckoutState) (*checkoutHEADUpdate, error) {
-	return updateCheckoutHEADWithBranchRewind(ctx, target, state, false)
+	return updateCheckoutHEADWithBranchRewind(ctx, target, state, "")
 }
 
-func updateCheckoutHEADWithBranchRewind(ctx context.Context, target string, state CheckoutState, allowBranchRewind bool) (*checkoutHEADUpdate, error) {
+func updateCheckoutHEADWithBranchRewind(ctx context.Context, target string, state CheckoutState, rewindHEAD string) (*checkoutHEADUpdate, error) {
 	incarnation, err := captureCheckoutIncarnation(ctx, target)
 	if err != nil {
 		return nil, err
 	}
-	update, updateErr := updateCheckoutHEADWithRunnerOption(ctx, commandRunner{}, target, state, allowBranchRewind)
+	update, updateErr := updateCheckoutHEADWithRunnerOption(ctx, commandRunner{}, target, state, rewindHEAD)
 	if update != nil {
 		update.incarnation = incarnation
 	}
@@ -1863,10 +1911,10 @@ func updateCheckoutHEADWithBranchRewind(ctx context.Context, target string, stat
 }
 
 func updateCheckoutHEADWithRunner(ctx context.Context, commands runner, target string, state CheckoutState) (*checkoutHEADUpdate, error) {
-	return updateCheckoutHEADWithRunnerOption(ctx, commands, target, state, false)
+	return updateCheckoutHEADWithRunnerOption(ctx, commands, target, state, "")
 }
 
-func updateCheckoutHEADWithRunnerOption(ctx context.Context, commands runner, target string, state CheckoutState, allowBranchRewind bool) (*checkoutHEADUpdate, error) {
+func updateCheckoutHEADWithRunnerOption(ctx context.Context, commands runner, target string, state CheckoutState, rewindHEAD string) (*checkoutHEADUpdate, error) {
 	oldRef, oldHEAD, err := inspectCheckoutHEAD(ctx, commands, target)
 	if err != nil {
 		return nil, err
@@ -1894,7 +1942,10 @@ func updateCheckoutHEADWithRunnerOption(ctx context.Context, commands runner, ta
 	}
 	update.oldIncomingRef = currentRef
 	update.incomingRefExisted = exists
-	if exists && !allowBranchRewind {
+	if rewindHEAD != "" && (!exists || currentRef != rewindHEAD || oldHEAD != rewindHEAD || oldRef != ref) {
+		return nil, &Error{Code: CodeConflict, Message: "destination branch changed before workspace rollback or seed rewind"}
+	}
+	if exists && rewindHEAD == "" {
 		if _, err = git(ctx, commands, target, "merge-base", "--is-ancestor", currentRef, state.HEAD); err != nil {
 			return nil, &Error{Code: CodeConflict, Message: fmt.Sprintf("destination branch %q contains commits not reachable from the source", state.Branch)}
 		}
@@ -2033,8 +2084,12 @@ func installCheckoutEntryAt(root *os.Root, sourceRoot string, entry CheckoutFile
 }
 
 func stageCheckoutEntry(root *os.Root, sourceRoot string, entry CheckoutFile) (string, error) {
+	return stageCheckoutEntryBeside(root, sourceRoot, entry, entry.Path)
+}
+
+func stageCheckoutEntryBeside(root *os.Root, sourceRoot string, entry CheckoutFile, beside string) (string, error) {
 	source := filepath.Join(sourceRoot, filepath.FromSlash(entry.Path))
-	temporaryPath, err := checkoutTemporaryPath()
+	temporaryPath, err := checkoutTemporaryPath(beside)
 	if err != nil {
 		return "", err
 	}
@@ -2093,12 +2148,26 @@ func stageCheckoutEntry(root *os.Root, sourceRoot string, entry CheckoutFile) (s
 	return temporaryPath, nil
 }
 
-func checkoutTemporaryPath() (string, error) {
+// checkoutStagingBase keeps temporary files adjacent to ordinary paths, and
+// outside the highest file/directory replacement that contains a path.
+func checkoutStagingBase(relative string, destination, incoming map[string]CheckoutFile) string {
+	base := relative
+	for parent := filepath.ToSlash(filepath.Dir(relative)); parent != "."; parent = filepath.ToSlash(filepath.Dir(parent)) {
+		_, oldLeaf := destination[parent]
+		_, newLeaf := incoming[parent]
+		if oldLeaf || newLeaf {
+			base = parent
+		}
+	}
+	return base
+}
+
+func checkoutTemporaryPath(relative string) (string, error) {
 	random := make([]byte, 16)
 	if _, err := rand.Read(random); err != nil {
 		return "", err
 	}
-	return ".schooner-file-" + hex.EncodeToString(random), nil
+	return filepath.Join(filepath.Dir(filepath.FromSlash(relative)), ".schooner-file-"+hex.EncodeToString(random)), nil
 }
 
 func promoteCheckoutEntry(root *os.Root, destination, temporaryPath, relative string, previous *CheckoutFile) error {
