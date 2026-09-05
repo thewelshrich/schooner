@@ -491,7 +491,8 @@ type CheckoutTransactionOptions struct {
 // ApplyCheckoutTransaction applies an extracted checkout to an existing
 // Worktree while holding Schooner's mutation lock. It reserves a complete
 // rollback capture before application and restores it after any failure that
-// reached destination mutation.
+// reached destination mutation. Uncertain recovery retains the capture for
+// manual recovery rather than deleting the remaining backup.
 func ApplyCheckoutTransaction(ctx context.Context, target string, payload ExtractedCheckout, options CheckoutTransactionOptions) (CheckoutState, error) {
 	if options.ExpectedStateDigest == "" || options.LockStateDirectory == "" || options.StagingDirectory == "" {
 		return CheckoutState{}, &Error{Code: CodeInvalidInput, Message: "workspace transaction is not configured"}
@@ -513,7 +514,12 @@ func ApplyCheckoutTransaction(ctx context.Context, target string, payload Extrac
 	if err != nil {
 		return CheckoutState{}, err
 	}
-	defer backup.Release()
+	releaseBackup := true
+	defer func() {
+		if releaseBackup {
+			backup.Release()
+		}
+	}()
 	current, err = ObserveCheckout(ctx, target)
 	if err != nil {
 		return CheckoutState{}, err
@@ -531,15 +537,23 @@ func ApplyCheckoutTransaction(ctx context.Context, target string, payload Extrac
 	if err == nil || !CheckoutMutationStarted(err) {
 		return applied, err
 	}
-	restore, restoreErr := ExtractCheckoutPayload(backup.PayloadPath, options.StagingDirectory)
+	releaseBackup = false // Recovery owns the capture and retains it on uncertainty.
+	return restoreCheckoutTransaction(ctx, target, backup, payload, options.StagingDirectory, err)
+}
+
+func restoreCheckoutTransaction(ctx context.Context, target string, backup CheckoutCapture, incoming ExtractedCheckout, stagingDirectory string, applyErr error) (CheckoutState, error) {
+	restore, restoreErr := ExtractCheckoutPayload(backup.PayloadPath, stagingDirectory)
 	if restoreErr == nil {
-		_, restoreErr = RestoreCheckoutAfterFailedApply(context.WithoutCancel(ctx), target, restore, payload)
-		restore.Release()
+		_, restoreErr = RestoreCheckoutAfterFailedApply(context.WithoutCancel(ctx), target, restore, incoming)
+		if restoreErr == nil {
+			restore.Release()
+		}
 	}
-	if restoreErr != nil {
-		return CheckoutState{}, &Error{Code: CodeOutcomeUnknown, Message: "workspace application failed and the previous destination state could not be restored", Cause: errors.Join(err, restoreErr)}
+	if restoreErr != nil || ErrorCode(applyErr) == CodeOutcomeUnknown {
+		return CheckoutState{}, &Error{Code: CodeOutcomeUnknown, Message: fmt.Sprintf("workspace recovery remains incomplete; captured backup preserved at %q for manual recovery", backup.PayloadPath), Cause: errors.Join(applyErr, restoreErr)}
 	}
-	return CheckoutState{}, err
+	backup.Release()
+	return CheckoutState{}, applyErr
 }
 
 // RestoreCheckoutAfterFailedApply restores a captured destination after an
@@ -587,6 +601,24 @@ func RestoreCheckoutAfterFailedApply(ctx context.Context, target string, backup,
 			continue
 		}
 		return CheckoutState{}, &Error{Code: CodeConflict, Message: fmt.Sprintf("destination path %q changed independently while workspace application was being rolled back", path)}
+	}
+
+	// The capture records leaves, not directory ownership or permissions.
+	// Refuse before deleting anything if applying the backup would invent them.
+	backupPaths := make(map[string]bool, len(backupFiles))
+	for path := range backupFiles {
+		backupPaths[path] = true
+	}
+	var backupDirectories []string
+	for path := range checkoutManagedDirectories(backupPaths) {
+		backupDirectories = append(backupDirectories, path)
+	}
+	sort.Strings(backupDirectories) // Parents first, so symlinks are never followed.
+	for _, path := range backupDirectories {
+		info, err := root.Lstat(filepath.FromSlash(path))
+		if err != nil || !info.IsDir() {
+			return CheckoutState{}, &Error{Code: CodeOutcomeUnknown, Message: fmt.Sprintf("cannot recreate directory %q: original directory metadata was not captured; backup preserved at %q for manual recovery", path, backup.Directory), Cause: err}
+		}
 	}
 
 	// Expected incoming chains may remain as empty directories after their

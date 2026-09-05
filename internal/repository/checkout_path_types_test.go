@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -233,7 +234,46 @@ func TestCheckoutPathTypeExternalRestore(t *testing.T) {
 			if _, err = ApplyCheckoutIfUnchanged(t.Context(), target, incoming, before.RevalidationDigest); err != nil {
 				t.Fatal(err)
 			}
+			applied, err := ObserveCheckout(t.Context(), target)
+			if err != nil {
+				t.Fatal(err)
+			}
 			restored, err := RestoreCheckoutAfterFailedApply(t.Context(), target, backup, incoming)
+			if directoryToFile {
+				if ErrorCode(err) != CodeOutcomeUnknown || !strings.Contains(err.Error(), "directory metadata was not captured") || !strings.Contains(err.Error(), "manual recovery") {
+					t.Fatalf("missing metadata error = %v", err)
+				}
+				if _, err = os.Stat(filepath.Join(backup.Directory, "files", "file.txt", "nested", "child")); err != nil {
+					t.Fatalf("extracted backup lost: %v", err)
+				}
+				after, err := ObserveCheckout(t.Context(), target)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if after.RevalidationDigest != applied.RevalidationDigest {
+					t.Fatal("refused restore mutated the destination")
+				}
+				_, err = restoreCheckoutTransaction(t.Context(), target, capture, incoming, t.TempDir(), &Error{Code: CodeConflict, Message: "interrupted application"})
+				if ErrorCode(err) != CodeOutcomeUnknown || !strings.Contains(err.Error(), capture.PayloadPath) {
+					t.Fatalf("retained capture guidance = %v", err)
+				}
+				retained, err := ExtractCheckoutPayload(capture.PayloadPath, t.TempDir())
+				if err != nil {
+					t.Fatalf("captured backup was not retained: %v", err)
+				}
+				defer retained.Release()
+				if retained.State.Digest != before.Digest {
+					t.Fatal("retained capture is not the original backup")
+				}
+				after, err = ObserveCheckout(t.Context(), target)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if after.RevalidationDigest != applied.RevalidationDigest {
+					t.Fatal("failed transaction recovery mutated the destination")
+				}
+				return
+			}
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -381,5 +421,40 @@ func TestCheckoutPreflightManySiblingTransitions(t *testing.T) {
 	writeCheckoutFile(t, filepath.Join(target, "sibling-127", "ignored.env"), "preserve\n", 0o644)
 	if err = PreflightCheckoutApplication(t.Context(), target, destination, incoming, nil); ErrorCode(err) != CodeConflict {
 		t.Fatalf("bulk transition collision error = %v", err)
+	}
+}
+
+func TestCheckoutTransactionRecoveryCaptureLifecycle(t *testing.T) {
+	for _, uncertain := range []bool{false, true} {
+		t.Run(fmt.Sprintf("uncertain=%t", uncertain), func(t *testing.T) {
+			target := checkoutTestRepository(t)
+			staging := t.TempDir()
+			capture, err := CaptureCheckout(t.Context(), target, staging)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer capture.Release()
+			incoming, err := ExtractCheckoutPayload(capture.PayloadPath, staging)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer incoming.Release()
+			code := CodeConflict
+			if uncertain {
+				code = CodeOutcomeUnknown
+			}
+			_, err = restoreCheckoutTransaction(t.Context(), target, capture, incoming, staging, &Error{Code: code, Message: "application failed"})
+			if ErrorCode(err) != code {
+				t.Fatalf("recovery error = %v, want %s", err, code)
+			}
+			_, statErr := os.Stat(capture.PayloadPath)
+			if uncertain {
+				if statErr != nil || !strings.Contains(err.Error(), capture.PayloadPath) {
+					t.Fatalf("uncertain recovery lost backup or guidance: %v, %v", err, statErr)
+				}
+			} else if !os.IsNotExist(statErr) {
+				t.Fatalf("completed rollback did not release capture: %v", statErr)
+			}
+		})
 	}
 }
