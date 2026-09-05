@@ -246,7 +246,7 @@ func TestInstallScriptKeepsPackageOutputOffStdout(t *testing.T) {
 	stub := `#!/bin/sh
 printf 'package progress: %s\n' "$*"
 case " $* " in
-  *" $SCHOONER_TEST_APT_FAILURE "*) exit 100 ;;
+  *" $SCHOONER_TEST_APT_FAILURE "*) printf 'E: package operation failed\n' >&2; exit 100 ;;
 esac
 exit 0
 `
@@ -277,12 +277,20 @@ exit 0
 			if string(stdout) != wantStdout {
 				t.Fatalf("stdout = %q, want %q", stdout, wantStdout)
 			}
-			wantProgress := 2
-			if step == "update" {
-				wantProgress = 1
+			wantStderr := ""
+			if step != "none" {
+				wantStderr = "E: package operation failed\n"
 			}
-			if got := strings.Count(stderr.String(), "package progress:"); got != wantProgress {
-				t.Fatalf("stderr = %q, want %d package diagnostics", &stderr, wantProgress)
+			if stderr.String() != wantStderr {
+				t.Fatalf("stderr = %q, want %q", &stderr, wantStderr)
+			}
+			err = New(testSSHExecutable(t), nil).InstallTools(t.Context(), box.Connection{Destination: "test-host"}, []string{"git", "tmux"})
+			if step == "none" {
+				if err != nil {
+					t.Fatalf("InstallTools: %v", err)
+				}
+			} else if box.ErrorCode(err) != "remote_operation_failed" || !strings.Contains(err.Error(), strings.TrimSpace(wantStderr)) {
+				t.Fatalf("InstallTools error = %v, want native apt diagnostic", err)
 			}
 		})
 	}
