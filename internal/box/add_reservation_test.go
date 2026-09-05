@@ -5,6 +5,7 @@ import (
 	"errors"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/thewelshrich/schooner/internal/box"
 	"github.com/thewelshrich/schooner/internal/inventory/sqlite"
@@ -82,6 +83,42 @@ func TestAddReservesNameBeforeConcurrentMutation(t *testing.T) {
 	}
 }
 
+func TestAddRejectsNameCompletedDuringPreflight(t *testing.T) {
+	store := reservationStore(t)
+	now := time.Now().UTC()
+	winner := box.AddOperation{Name: "work", SSHDestination: "winner", WorktreeRoot: box.DefaultWorktreeRoot, UpdatedAt: now}
+	runtime := &reservationRuntime{
+		resolve: func() {
+			// The competing add commits after this invocation's initial name lookup.
+			if err := store.BeginAdd(t.Context(), winner); err != nil {
+				t.Fatal(err)
+			}
+			record := box.Record{ID: "winner", Name: winner.Name, Acquisition: "adopted", SSHDestination: winner.SSHDestination, RemoteIdentity: "winner-identity", WorktreeRoot: "/home/alice/schooner", CreatedAt: now, UpdatedAt: now}
+			if err := store.CompleteAdd(t.Context(), winner, record, box.Observation{BoxID: record.ID, ObservedAt: now}); err != nil {
+				t.Fatal(err)
+			}
+		},
+		ensureIdentity: func() error {
+			t.Fatal("losing add mutated a different machine")
+			return nil
+		},
+	}
+	if _, err := box.New(runtime, store).Add(t.Context(), box.AddRequest{Name: "work", SSHDestination: "loser"}); box.ErrorCode(err) != "conflict" {
+		t.Fatalf("add after competing completion: %v", err)
+	}
+	// A registered name stays unavailable until its Box is removed.
+	winner.SSHDestination = "replacement"
+	if err := store.BeginAdd(t.Context(), winner); box.ErrorCode(err) != "conflict" {
+		t.Fatalf("reservation for registered name: %v", err)
+	}
+	if _, err := store.Remove(t.Context(), "work"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.BeginAdd(t.Context(), winner); err != nil {
+		t.Fatalf("reuse removed name: %v", err)
+	}
+}
+
 func reservationStore(t *testing.T) *sqlite.Store {
 	t.Helper()
 	store, err := sqlite.Open(t.Context(), filepath.Join(t.TempDir(), "state.db"))
@@ -95,6 +132,7 @@ func reservationStore(t *testing.T) *sqlite.Store {
 // Embedding the interface makes any unexpected operation beyond identity fail.
 type reservationRuntime struct {
 	box.Runtime
+	resolve        func()
 	resolveErr     error
 	inspectErr     error
 	unsupported    bool
@@ -102,6 +140,9 @@ type reservationRuntime struct {
 }
 
 func (r *reservationRuntime) Resolve(context.Context, box.Connection) error {
+	if r.resolve != nil {
+		r.resolve()
+	}
 	return r.resolveErr
 }
 
