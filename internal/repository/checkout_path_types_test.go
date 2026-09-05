@@ -663,3 +663,82 @@ func TestCheckoutExternalRestoreAbsentReplacement(t *testing.T) {
 		})
 	}
 }
+
+func TestCheckoutUntrackedChildReplacesTrackedSymlink(t *testing.T) {
+	for _, scenario := range []string{"tracked", "local-ignore", "untracked-symlink"} {
+		t.Run(scenario, func(t *testing.T) {
+			source := checkoutTestRepository(t)
+			external := t.TempDir()
+			writeCheckoutFile(t, filepath.Join(external, ".gitignore"), "*\n", 0o600)
+			runCheckoutGit(t, "-C", source, "rm", "file.txt")
+			if err := os.Mkdir(filepath.Join(source, "parent"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(external, filepath.Join(source, "parent/link")); err != nil {
+				t.Fatal(err)
+			}
+			runCheckoutGit(t, "-C", source, "add", ".")
+			runCheckoutGit(t, "-C", source, "commit", "-m", "track symlink")
+			target := filepath.Join(t.TempDir(), "target")
+			runCheckoutGit(t, "clone", source, target)
+			target, err := filepath.EvalSymlinks(target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			runCheckoutGit(t, "-C", source, "rm", "parent/link")
+			if err = os.MkdirAll(filepath.Join(source, "parent/link/nested"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			writeCheckoutFile(t, filepath.Join(source, "parent/link/nested/child"), "incoming\n", 0o755)
+			if scenario == "local-ignore" {
+				writeCheckoutFile(t, filepath.Join(target, "parent/.gitignore"), "link/\n", 0o600)
+			}
+			if scenario == "untracked-symlink" {
+				runCheckoutGit(t, "-C", target, "rm", "--cached", "parent/link")
+			}
+			capture, err := CaptureCheckout(t.Context(), source, t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer capture.Release()
+			payload, err := ExtractCheckoutPayload(capture.PayloadPath, t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer payload.Release()
+			before, err := ObserveCheckout(t.Context(), target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			child := checkoutFileMap(payload.State.Files)["parent/link/nested/child"]
+			_, pageErr := PreflightCheckoutFiles(t.Context(), target, []CheckoutFile{child})
+			applied, applyErr := ApplyCheckoutIfUnchanged(t.Context(), target, payload, before.RevalidationDigest)
+			if scenario == "tracked" {
+				if pageErr != nil || applyErr != nil {
+					t.Fatalf("valid replacement rejected: page=%v apply=%v", pageErr, applyErr)
+				}
+				if applied.Digest != payload.State.Digest {
+					t.Fatal("applied checkout differs")
+				}
+			} else {
+				if pageErr == nil || applyErr == nil {
+					t.Fatalf("unsafe replacement accepted: page=%v apply=%v", pageErr, applyErr)
+				}
+				after, err := ObserveCheckout(t.Context(), target)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if after.RevalidationDigest != before.RevalidationDigest {
+					t.Fatal("rejected transfer mutated destination")
+				}
+			}
+			contents, err := os.ReadFile(filepath.Join(external, ".gitignore"))
+			if err != nil || string(contents) != "*\n" {
+				t.Fatal("external ignore changed")
+			}
+			if _, err = os.Lstat(filepath.Join(external, "nested")); !os.IsNotExist(err) {
+				t.Fatal("external symlink target modified")
+			}
+		})
+	}
+}

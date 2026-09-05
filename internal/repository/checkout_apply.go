@@ -1935,19 +1935,42 @@ func preflightIncomingGitSemantics(ctx context.Context, target string, incomingF
 // destinationIgnoreWorktree omits versioned ignore files while retaining local
 // .gitignore files. Git still reads the destination's config and info/exclude.
 func destinationIgnoreWorktree(ctx context.Context, target string, files []CheckoutFile) (string, error) {
-	trackedOutput, err := git(ctx, commandRunner{}, target, "ls-files", "-z", "--cached", "--", ".gitignore", ":(glob)**/.gitignore")
+	root, err := os.OpenRoot(target)
+	if err != nil {
+		return "", err
+	}
+	defer root.Close()
+	var untracked []CheckoutFile
+	leaves := make(map[string]bool)
+	for _, entry := range files {
+		if !entry.Tracked && entry.Kind != "absent" {
+			untracked = append(untracked, entry)
+			leaves[entry.Path] = true
+		}
+	}
+	paths, err := checkoutPreflightPaths(root, untracked)
+	if err != nil {
+		return "", err
+	}
+	arguments := []string{"ls-files", "-z", "--cached", "--", ".gitignore", ":(glob)**/.gitignore"}
+	blockers := make(map[string]bool)
+	for _, path := range paths {
+		if !leaves[path] {
+			blockers[path] = false
+			arguments = append(arguments, ":(literal)"+path)
+		}
+	}
+	trackedOutput, err := git(ctx, commandRunner{}, target, arguments...)
 	if err != nil {
 		return "", err
 	}
 	seen := make(map[string]bool)
 	for _, path := range parseNULPaths(trackedOutput) {
 		seen[path] = true
+		if _, candidate := blockers[path]; candidate {
+			blockers[path] = true
+		}
 	}
-	root, err := os.OpenRoot(target)
-	if err != nil {
-		return "", err
-	}
-	defer root.Close()
 	temporary, err := os.MkdirTemp("", "schooner-ignore-*")
 	if err != nil {
 		return "", err
@@ -1962,7 +1985,16 @@ func destinationIgnoreWorktree(ctx context.Context, target string, files []Check
 		if entry.Tracked || entry.Kind == "absent" {
 			continue
 		}
-		for directory := filepath.Dir(entry.Path); ; directory = filepath.Dir(directory) {
+		directory := filepath.Dir(entry.Path)
+		// A tracked non-directory ancestor is an outgoing leaf. Ignore files
+		// below it cannot belong to the destination; never follow its symlink.
+		for parent := directory; parent != "."; parent = filepath.Dir(parent) {
+			if blockers[parent] {
+				directory = filepath.Dir(parent)
+				break
+			}
+		}
+		for ; ; directory = filepath.Dir(directory) {
 			path := filepath.Join(directory, ".gitignore")
 			if !seen[path] {
 				seen[path] = true
