@@ -5,6 +5,7 @@ package repository
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -121,9 +122,11 @@ func TestCheckoutDirectoryMetadataRestoresSupplementaryGroup(t *testing.T) {
 	if recreated.Sys().(*syscall.Stat_t).Gid == uint32(group) {
 		t.Fatal("fixture did not change group")
 	}
-	if err = restoreCheckoutDirectoryMetadata(root, "shared", recreated, original); err != nil {
+	restoredDirectory, err := restoreCheckoutDirectoryMetadata(root, "shared", recreated, original)
+	if err != nil {
 		t.Fatal(err)
 	}
+	restoredDirectory.Close()
 	restored, err := root.Lstat("shared")
 	if err != nil {
 		t.Fatal(err)
@@ -208,6 +211,9 @@ func TestCheckoutTransitionRejectsDirectoryACL(t *testing.T) {
 				defer prepared.Release()
 			}
 			installCheckoutTestACL(t, filepath.Join(target, "file.txt", "nested"))
+			if !late {
+				assertCheckoutMetadataPreflightConflict(t, target, before, incoming)
+			}
 			if late {
 				err = prepared.removeReplacedDirectories("file.txt")
 			} else {
@@ -262,6 +268,9 @@ func TestCheckoutTransitionRejectsDirectoryXattr(t *testing.T) {
 			const name = "user.schooner-test"
 			if err = unix.Fsetxattr(int(directory.Fd()), name, []byte("keep"), 0); err != nil {
 				t.Fatal(err)
+			}
+			if !late {
+				assertCheckoutMetadataPreflightConflict(t, target, before, incoming)
 			}
 			if late {
 				err = prepared.Apply()
@@ -348,6 +357,9 @@ func TestCheckoutTransitionRejectsDirectoryNodump(t *testing.T) {
 			}
 			defer directory.Close()
 			installCheckoutTestNodump(t, directory)
+			if !late {
+				assertCheckoutMetadataPreflightConflict(t, target, before, incoming)
+			}
 			if late {
 				err = prepared.Apply()
 			} else {
@@ -412,7 +424,11 @@ func TestCheckoutRestoredDirectoryRejectsNodump(t *testing.T) {
 	}
 	defer directory.Close()
 	installCheckoutTestNodump(t, directory)
-	if err = restoreCheckoutDirectoryMetadata(root, "directory", recreated, original); ErrorCode(err) != CodeOutcomeUnknown {
+	restoredDirectory, err := restoreCheckoutDirectoryMetadata(root, "directory", recreated, original)
+	if restoredDirectory != nil {
+		restoredDirectory.Close()
+	}
+	if ErrorCode(err) != CodeOutcomeUnknown {
 		t.Fatalf("restored NODUMP refusal = %v", err)
 	}
 	if err = rejectCheckoutDirectoryFlags(directory); err == nil {
@@ -421,5 +437,87 @@ func TestCheckoutRestoredDirectoryRejectsNodump(t *testing.T) {
 	directory.Close()
 	if err = rejectCheckoutDirectoryFlags(directory); err == nil {
 		t.Fatal("failed flag inspection accepted")
+	}
+}
+
+func TestCheckoutRollbackPinnedParentSwap(t *testing.T) {
+	root, err := os.OpenRoot(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	for _, path := range []string{"private", "private/nested"} {
+		if err = root.Mkdir(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	originalInfo, err := root.Lstat("private/nested")
+	if err != nil {
+		t.Fatal(err)
+	}
+	original, err := checkCheckoutDirectoryPermissions(root, "private/nested", originalInfo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = root.Remove("private/nested"); err != nil {
+		t.Fatal(err)
+	}
+	if err = root.Mkdir("private/nested", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	recreated, err := root.Lstat("private/nested")
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent, err := restoreCheckoutDirectoryMetadata(root, "private/nested", recreated, original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer parent.Close()
+	backup, err := root.Create("backup")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = backup.WriteString("private backup"); err != nil {
+		t.Fatal(err)
+	}
+	backup.Close()
+	// Swap an ancestor after verification, before installing the backup.
+	if err = root.Rename("private", "moved"); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"private", "private/nested"} {
+		if err = root.Mkdir(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	prepared := preparedCheckoutFiles{root: root, recreatedDirs: map[string]os.FileInfo{"private/nested": recreated}}
+	record := preparedCheckoutFile{path: "private/nested/secret", backupTemp: "backup"}
+	if err = prepared.restoreBackupAt(&record, parent, []string{"private/nested"}); ErrorCode(err) != CodeOutcomeUnknown {
+		t.Fatalf("parent swap result = %v", err)
+	}
+	if _, err = root.Lstat("private/nested/secret"); !os.IsNotExist(err) {
+		t.Fatalf("backup reached replacement directory: %v", err)
+	}
+	for _, path := range []string{"backup", "moved/nested/secret"} {
+		file, err := root.Open(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, err := io.ReadAll(file)
+		file.Close()
+		if err != nil || string(data) != "private backup" {
+			t.Fatalf("recovery contents lost at %s", path)
+		}
+	}
+}
+
+func assertCheckoutMetadataPreflightConflict(t *testing.T, target string, before CheckoutState, incoming ExtractedCheckout) {
+	t.Helper()
+	if _, err := PreflightCheckoutFiles(t.Context(), target, incoming.State.Files); ErrorCode(err) != CodeConflict {
+		t.Fatalf("paged metadata preflight = %v", err)
+	}
+	if err := PreflightCheckoutApplication(t.Context(), target, before, incoming.State.Files, incoming.State.AbsentPaths); ErrorCode(err) != CodeConflict {
+		t.Fatalf("full metadata preflight = %v", err)
 	}
 }

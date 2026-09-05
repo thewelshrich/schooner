@@ -752,6 +752,10 @@ func checkoutManagedDirectories(tracked map[string]bool) map[string]bool {
 // only tracked leaves as an outgoing path shape, never as an ignored collision.
 // The ordinary reader remains strict for mutation and displacement verification.
 func checkoutFileForTransition(root *os.Root, relative string, tracked, directories map[string]bool) (CheckoutFile, bool, error) {
+	return checkoutFileForTransitionPreflight(root, relative, tracked, directories, false)
+}
+
+func checkoutFileForTransitionPreflight(root *os.Root, relative string, tracked, directories map[string]bool, metadata bool) (CheckoutFile, bool, error) {
 	if err := validateCheckoutPath(relative); err != nil {
 		return CheckoutFile{}, false, err
 	}
@@ -784,6 +788,14 @@ func checkoutFileForTransition(root *os.Root, relative string, tracked, director
 			return nil
 		}
 		if entry.IsDir() && directories[path] {
+			if metadata {
+				info, err := entry.Info()
+				if err != nil {
+					return err
+				}
+				_, err = checkCheckoutDirectoryPermissions(root, filepath.FromSlash(path), info)
+				return err
+			}
 			return nil
 		}
 		return &Error{Code: CodeConflict, Message: fmt.Sprintf("ignored destination path %q collides with the incoming workspace", path)}
@@ -1234,13 +1246,25 @@ func (prepared *preparedCheckoutFiles) Rollback() (rollbackErr error) {
 				parents = append(parents, dir)
 			}
 		}
+		var parent *os.File
 		for i := len(parents) - 1; i >= 0; i-- {
 			dir := parents[i]
-			if err = restoreCheckoutDirectoryMetadata(prepared.root, dir, prepared.recreatedDirs[dir], prepared.removedDirs[dir]); err != nil {
-				return err
+			opened, restoreErr := restoreCheckoutDirectoryMetadata(prepared.root, dir, prepared.recreatedDirs[dir], prepared.removedDirs[dir])
+			if parent != nil {
+				parent.Close()
 			}
+			if restoreErr != nil {
+				return restoreErr
+			}
+			parent = opened
 		}
-		if err = prepared.root.Rename(record.backupTemp, filepath.FromSlash(record.path)); err != nil {
+		if parent != nil {
+			err = prepared.restoreBackupAt(record, parent, parents)
+			parent.Close()
+		} else {
+			err = prepared.root.Rename(record.backupTemp, filepath.FromSlash(record.path))
+		}
+		if err != nil {
 			return err
 		}
 		record.backupTemp = ""
@@ -1685,7 +1709,7 @@ func PreflightCheckoutApplication(ctx context.Context, target string, destinatio
 	}
 	managedDirectories := checkoutManagedDirectories(tracked)
 	for _, incoming := range incomingFiles {
-		_, present, statErr := checkoutFileForTransition(root, incoming.Path, tracked, managedDirectories)
+		_, present, statErr := checkoutFileForTransitionPreflight(root, incoming.Path, tracked, managedDirectories, true)
 		if statErr == nil && present && !tracked[incoming.Path] {
 			return &Error{Code: CodeConflict, Message: fmt.Sprintf("ignored destination path %q collides with the incoming workspace", incoming.Path)}
 		} else if statErr != nil {
@@ -1750,7 +1774,7 @@ func PreflightCheckoutFiles(ctx context.Context, target string, incomingFiles []
 			}
 			continue
 		}
-		observed, present, statErr := checkoutFileForTransition(root, incoming.Path, tracked, managedDirectories)
+		observed, present, statErr := checkoutFileForTransitionPreflight(root, incoming.Path, tracked, managedDirectories, true)
 		if statErr != nil {
 			return CheckoutComparison{}, statErr
 		}

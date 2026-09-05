@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime"
 	"syscall"
 
@@ -14,57 +15,62 @@ import (
 
 // Restore ownership before permissions: chown can clear setuid/setgid bits.
 // Use the opened directory identity so a replacement cannot receive metadata.
-func restoreCheckoutDirectoryMetadata(root *os.Root, path string, recreated os.FileInfo, original checkoutDirectoryMetadata) (result error) {
+// The caller owns the returned handle and keeps it open through backup installation.
+func restoreCheckoutDirectoryMetadata(root *os.Root, path string, recreated os.FileInfo, original checkoutDirectoryMetadata) (directory *os.File, result error) {
 	defer func() {
 		if result != nil {
+			if directory != nil {
+				directory.Close()
+				directory = nil
+			}
 			result = &Error{Code: CodeOutcomeUnknown, Message: fmt.Sprintf("directory %q ownership, permissions, or provenance could not be restored", path), Cause: result}
 		}
 	}()
 	want, ok := original.info.Sys().(*syscall.Stat_t)
 	if !ok {
-		return fmt.Errorf("captured directory ownership is unavailable")
+		return directory, fmt.Errorf("captured directory ownership is unavailable")
 	}
-	directory, err := root.OpenFile(path, os.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW, 0)
+	var err error
+	directory, err = root.OpenFile(path, os.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW, 0)
 	if err != nil {
-		return err
+		return directory, err
 	}
-	defer directory.Close()
 	info, err := directory.Stat()
 	if err != nil {
-		return err
+		return directory, err
 	}
 	if !info.IsDir() || !os.SameFile(info, recreated) {
-		return fmt.Errorf("recreated directory changed independently")
+		return directory, fmt.Errorf("recreated directory changed independently")
 	}
 	got, ok := info.Sys().(*syscall.Stat_t)
 	if !ok {
-		return fmt.Errorf("current directory ownership is unavailable")
+		return directory, fmt.Errorf("current directory ownership is unavailable")
 	}
 	if got.Uid != want.Uid || got.Gid != want.Gid {
 		if err = directory.Chown(int(want.Uid), int(want.Gid)); err != nil {
-			return err
+			return directory, err
 		}
 	}
 	mode := original.info.Mode() & (os.ModePerm | os.ModeSetuid | os.ModeSetgid | os.ModeSticky)
 	if err = directory.Chmod(mode); err != nil {
-		return err
+		return directory, err
 	}
 	info, err = directory.Stat()
 	if err != nil {
-		return err
+		return directory, err
 	}
 	got, ok = info.Sys().(*syscall.Stat_t)
 	if !ok || got.Uid != want.Uid || got.Gid != want.Gid || info.Mode()&(os.ModePerm|os.ModeSetuid|os.ModeSetgid|os.ModeSticky) != mode {
-		return fmt.Errorf("directory ownership or permission bits did not match the backup")
+		return directory, fmt.Errorf("directory ownership or permission bits did not match the backup")
 	}
 	metadata, err := checkoutDirectoryExtendedMetadata(directory)
 	if err != nil {
-		return err
+		return directory, err
 	}
 	if !checkoutDirectoryProvenanceEqual(metadata, original) {
-		return fmt.Errorf("recreated directory provenance differs from the backup")
+		return directory, fmt.Errorf("recreated directory provenance differs from the backup")
 	}
-	return nil
+	return directory, nil
 }
 
 // Captures do not preserve ACLs or extended attributes. Inspect the pinned
@@ -142,4 +148,33 @@ func checkoutDirectoryExtendedMetadata(directory *os.File) (metadata checkoutDir
 
 func checkoutDirectoryProvenanceEqual(left, right checkoutDirectoryMetadata) bool {
 	return left.hasProvenance == right.hasProvenance && bytes.Equal(left.provenance, right.provenance)
+}
+
+// Install through the still-open verified parent. Keep the original backup until
+// the root-visible ancestry is revalidated, so a moved parent cannot consume it.
+func (prepared *preparedCheckoutFiles) restoreBackupAt(record *preparedCheckoutFile, parent *os.File, ancestors []string) error {
+	source, err := prepared.root.OpenFile(filepath.Dir(record.backupTemp), os.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return err
+	}
+	defer source.Close()
+	temporary, err := checkoutTemporaryPath(record.backupTemp)
+	if err != nil {
+		return err
+	}
+	name := filepath.Base(temporary)
+	if err = unix.Linkat(int(source.Fd()), filepath.Base(record.backupTemp), int(source.Fd()), name, 0); err != nil {
+		return err
+	}
+	defer unix.Unlinkat(int(source.Fd()), name, 0)
+	if err = renameNoReplaceAt(source, name, parent, filepath.Base(record.path)); err != nil {
+		return err
+	}
+	for _, path := range ancestors {
+		info, err := prepared.root.Lstat(filepath.FromSlash(path))
+		if err != nil || !os.SameFile(info, prepared.recreatedDirs[path]) {
+			return &Error{Code: CodeOutcomeUnknown, Message: fmt.Sprintf("restored directory %q moved; recovery backup preserved at %q", path, record.backupTemp), Cause: err}
+		}
+	}
+	return unix.Unlinkat(int(source.Fd()), filepath.Base(record.backupTemp), 0)
 }

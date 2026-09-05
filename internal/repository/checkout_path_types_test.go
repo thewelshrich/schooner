@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,16 +12,28 @@ import (
 
 func checkoutPathTypeTransition(t *testing.T, directoryToFile bool) (string, CheckoutState, ExtractedCheckout) {
 	t.Helper()
+	return checkoutPathTypeTransitionAt(t, directoryToFile, "file.txt")
+}
+
+func checkoutPathTypeTransitionAt(t *testing.T, directoryToFile bool, relative string) (string, CheckoutState, ExtractedCheckout) {
+	t.Helper()
 	source := checkoutTestRepository(t)
+	if relative != "file.txt" {
+		if err := os.MkdirAll(filepath.Join(source, filepath.Dir(relative)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		runCheckoutGit(t, "-C", source, "mv", "file.txt", relative)
+		runCheckoutGit(t, "-C", source, "commit", "-m", "nest transition")
+	}
 	replace := func(directory bool) {
 		t.Helper()
-		runCheckoutGit(t, "-C", source, "rm", "-r", "file.txt")
-		path := filepath.Join(source, "file.txt")
+		runCheckoutGit(t, "-C", source, "rm", "-r", relative)
+		path := filepath.Join(source, relative)
 		if directory {
 			path = filepath.Join(path, "nested", "child")
-			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-				t.Fatal(err)
-			}
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
 		}
 		writeCheckoutFile(t, path, "replacement\n", 0o644)
 		runCheckoutGit(t, "-C", source, "add", ".")
@@ -490,5 +503,54 @@ func TestCheckoutUnknownRecoveryDoesNotInstallBackup(t *testing.T) {
 	}
 	if entries, err := os.ReadDir(recoveryStaging); err != nil || len(entries) != 0 {
 		t.Fatalf("unknown recovery extracted payload: %v, %v", entries, err)
+	}
+}
+
+func TestCheckoutTransitionRollbackWithExistingIncomingLeaf(t *testing.T) {
+	for _, path := range []string{"file.txt", "outer/file.txt"} {
+		for _, directoryToFile := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/directory-to-file=%t", path, directoryToFile), func(t *testing.T) {
+				target, before, incoming := checkoutPathTypeTransitionAt(t, directoryToFile, path)
+				// An ordinary changed leaf must still replace its matching incoming value
+				// during rollback; only newly restored parents use no-replace installation.
+				content := []byte("ignored.env\n# incoming\n")
+				if err := os.WriteFile(filepath.Join(incoming.Directory, "files", ".gitignore"), content, 0o644); err != nil {
+					t.Fatal(err)
+				}
+				for i := range incoming.State.Files {
+					if incoming.State.Files[i].Path == ".gitignore" {
+						incoming.State.Files[i].Size = int64(len(content))
+						incoming.State.Files[i].SHA256 = fmt.Sprintf("%x", sha256.Sum256(content))
+					}
+				}
+				root, err := os.OpenRoot(target)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer root.Close()
+				prepared, err := prepareCheckoutFiles(root, before, incoming)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer prepared.Release()
+				if err = prepared.Apply(); err != nil {
+					t.Fatal(err)
+				}
+				if data, err := os.ReadFile(filepath.Join(target, ".gitignore")); err != nil || string(data) != string(content) {
+					t.Fatal("ordinary incoming leaf not installed")
+				}
+				if err = prepared.Rollback(); err != nil {
+					t.Fatal(err)
+				}
+				prepared.Release()
+				after, err := ObserveCheckout(t.Context(), target)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if after.RevalidationDigest != before.RevalidationDigest {
+					t.Fatal("rollback did not restore the original paths and leaves")
+				}
+			})
+		}
 	}
 }
