@@ -934,11 +934,8 @@ func (m *Manager) resolveAccount(ctx context.Context, allowAuthorization bool, b
 		}
 		return m.authorizeAfterConfirmation(ctx, account, beforeAuthorization)
 	}
-	if token.VerifyAccount {
-		return m.verifyRefreshedToken(ctx, account, token, "")
-	}
 	warning := ""
-	if account.Status == "action_required" && persisted {
+	if account.Status == "action_required" && persisted && !token.VerifyAccount {
 		account.Status = "connected"
 		account.UpdatedAt = m.now().UTC()
 		if err = m.store.SaveSourceAccount(ctx, account); err != nil {
@@ -947,6 +944,9 @@ func (m *Manager) resolveAccount(ctx context.Context, allowAuthorization bool, b
 		warning = "Recovered an interrupted operating-system credential-store checkpoint."
 	}
 	if token.AccessExpiresAt.IsZero() || token.AccessExpiresAt.After(m.now().UTC().Add(30*time.Second)) {
+		if token.VerifyAccount {
+			return m.verifyRefreshedToken(ctx, account, token, warning, allowAuthorization, beforeAuthorization)
+		}
 		remote := RemoteAccount{ID: account.ExternalID, Login: account.Login}
 		if !validRemoteAccount(remote) {
 			return Token{}, RemoteAccount{}, "", NewError("conflict", "stored GitHub account metadata is invalid", nil)
@@ -982,7 +982,7 @@ func (m *Manager) resolveAccount(ctx context.Context, allowAuthorization bool, b
 			if persistErr != nil {
 				return Token{}, RemoteAccount{}, "", persistErr
 			}
-			return m.verifyRefreshedToken(ctx, account, refreshed, appendWarning(warning, persistWarning))
+			return m.verifyRefreshedToken(ctx, account, refreshed, appendWarning(warning, persistWarning), allowAuthorization, beforeAuthorization)
 		}
 		if ErrorCode(refreshErr) != "authentication_required" {
 			return Token{}, RemoteAccount{}, "", refreshErr
@@ -995,9 +995,12 @@ func (m *Manager) resolveAccount(ctx context.Context, allowAuthorization bool, b
 }
 
 // verifyRefreshedToken also resumes a rotation interrupted before identity verification.
-func (m *Manager) verifyRefreshedToken(ctx context.Context, account Account, token Token, warning string) (Token, RemoteAccount, string, error) {
+func (m *Manager) verifyRefreshedToken(ctx context.Context, account Account, token Token, warning string, allowAuthorization bool, beforeAuthorization func(context.Context, RemoteAccount) error) (Token, RemoteAccount, string, error) {
 	remote, err := m.github.Account(ctx, token.AccessToken)
 	if err != nil {
+		if ErrorCode(err) == "authentication_required" && allowAuthorization {
+			return m.authorizeAfterConfirmation(ctx, account, beforeAuthorization)
+		}
 		return Token{}, RemoteAccount{}, "", err
 	}
 	if !validRemoteAccount(remote) || remote.ID != account.ExternalID {

@@ -667,6 +667,69 @@ func TestRefreshedCredentialSurvivesAccountLookupFailure(t *testing.T) {
 	}
 }
 
+func TestPendingCredentialRecoveryAfterRestart(t *testing.T) {
+	for _, scenario := range []string{"expired", "expired-mismatch", "reauthorize", "reauthorize-mismatch", "noninteractive"} {
+		t.Run(scenario, func(t *testing.T) {
+			manager, store, secrets, github, target := testManager(t)
+			github.token.AccessExpiresAt = time.Now().Add(-time.Minute)
+			if _, err := manager.Connect(t.Context(), ConnectRequest{Target: target, AllowAuthorization: true}); err != nil {
+				t.Fatal(err)
+			}
+			github.refreshToken = Token{AccessToken: "access-two", RefreshToken: "refresh-two", AccessExpiresAt: time.Now().Add(time.Hour), RefreshExpiresAt: time.Now().Add(24 * time.Hour)}
+			github.accountErrOnce = errors.New("account lookup unavailable")
+			if _, _, _, err := manager.resolveAccount(t.Context(), false, nil); err == nil {
+				t.Fatal("expected interrupted verification")
+			}
+			manager, err := NewManager(store, secrets, github, t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			expired := strings.HasPrefix(scenario, "expired")
+			if expired {
+				later := time.Now().Add(2 * time.Hour)
+				manager.now = func() time.Time { return later }
+				github.refreshToken = Token{AccessToken: "access-three", RefreshToken: "refresh-three", AccessExpiresAt: later.Add(time.Hour), RefreshExpiresAt: later.Add(24 * time.Hour)}
+			} else {
+				github.accountErrOnce = authenticationRequired("access revoked")
+				github.token.AccessExpiresAt = time.Now().Add(time.Hour)
+			}
+			mismatch := strings.HasSuffix(scenario, "mismatch")
+			if mismatch {
+				github.account = RemoteAccount{ID: "99", Login: "other"}
+			}
+			confirmations := 0
+			token, remote, _, err := manager.resolveAccount(t.Context(), !expired && scenario != "noninteractive", func(_ context.Context, account RemoteAccount) error {
+				confirmations++
+				if account.ID != "42" {
+					t.Fatal("confirmation lost retained account")
+				}
+				return nil
+			})
+			switch {
+			case mismatch:
+				if ErrorCode(err) != "conflict" || token.AccessToken != "" || store.account.ExternalID != "42" || store.account.Status != "action_required" {
+					t.Fatalf("mismatch err=%v status=%s", err, store.account.Status)
+				}
+			case scenario == "noninteractive":
+				if ErrorCode(err) != "authentication_required" || token.AccessToken != "" || github.authorizeCalls != 1 || confirmations != 0 {
+					t.Fatalf("noninteractive err=%v authorizations=%d", err, github.authorizeCalls)
+				}
+			default:
+				if err != nil || token.VerifyAccount || remote.ID != "42" || store.account.Status != "connected" {
+					t.Fatalf("recovery err=%v status=%s", err, store.account.Status)
+				}
+			}
+			if expired {
+				if github.refreshCalls != 2 || github.lastRefreshToken != "refresh-two" || github.lastAccountToken != "access-three" || github.authorizeCalls != 1 {
+					t.Fatal("expired pending access did not use its retained refresh token")
+				}
+			} else if scenario != "noninteractive" && (github.authorizeCalls != 2 || confirmations != 1) {
+				t.Fatalf("authorizations=%d confirmations=%d", github.authorizeCalls, confirmations)
+			}
+		})
+	}
+}
+
 func TestRefreshedCredentialSurvivesCheckpointFailure(t *testing.T) {
 	for _, failure := range []string{"reference", "secret", "final"} {
 		t.Run(failure, func(t *testing.T) {
@@ -1007,6 +1070,8 @@ type fakeGitHub struct {
 	authorizeRelease       chan struct{}
 	authorizeCalls         int
 	refreshCalls           int
+	lastRefreshToken       string
+	lastAccountToken       string
 	listCalls              int
 	accountCalls           int
 	createCalls            int
@@ -1023,7 +1088,8 @@ func (f *fakeGitHub) Authorize(context.Context) (Token, error) {
 	}
 	return f.token, nil
 }
-func (f *fakeGitHub) Refresh(context.Context, string) (Token, error) {
+func (f *fakeGitHub) Refresh(_ context.Context, token string) (Token, error) {
+	f.lastRefreshToken = token
 	f.refreshCalls++
 	if f.refreshErr != nil {
 		return Token{}, f.refreshErr
@@ -1033,7 +1099,8 @@ func (f *fakeGitHub) Refresh(context.Context, string) (Token, error) {
 	}
 	return f.token, nil
 }
-func (f *fakeGitHub) Account(context.Context, string) (RemoteAccount, error) {
+func (f *fakeGitHub) Account(_ context.Context, token string) (RemoteAccount, error) {
+	f.lastAccountToken = token
 	f.accountCalls++
 	if f.accountErrOnce != nil {
 		err := f.accountErrOnce
