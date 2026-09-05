@@ -791,10 +791,17 @@ func checkoutFileForTransition(root *os.Root, relative string, tracked, director
 	return CheckoutFile{}, false, err
 }
 
+// Directory metadata is local to the prepared transaction, never the capture format.
+type checkoutDirectoryMetadata struct {
+	info          os.FileInfo
+	provenance    []byte
+	hasProvenance bool
+}
+
 // pinReplacedCheckoutDirectories records the directory identities that an
 // incoming leaf replaces, before outgoing files are removed.
-func pinReplacedCheckoutDirectories(root *os.Root, destinationFiles, incomingFiles map[string]CheckoutFile) (map[string]os.FileInfo, error) {
-	directories := make(map[string]os.FileInfo)
+func pinReplacedCheckoutDirectories(root *os.Root, destinationFiles, incomingFiles map[string]CheckoutFile) (map[string]checkoutDirectoryMetadata, error) {
+	directories := make(map[string]checkoutDirectoryMetadata)
 	for oldPath := range destinationFiles {
 		var parents []string
 		for parent := filepath.ToSlash(filepath.Dir(oldPath)); parent != "."; parent = filepath.ToSlash(filepath.Dir(parent)) {
@@ -817,11 +824,12 @@ func pinReplacedCheckoutDirectories(root *os.Root, destinationFiles, incomingFil
 					break
 				}
 				if _, pinned := directories[dir]; !pinned {
-					if err = checkCheckoutDirectoryPermissions(root, filepath.FromSlash(dir), info); err != nil {
+					metadata, err := checkCheckoutDirectoryPermissions(root, filepath.FromSlash(dir), info)
+					if err != nil {
 						return nil, err
 					}
+					directories[dir] = metadata
 				}
-				directories[dir] = info
 			}
 			break
 		}
@@ -861,11 +869,15 @@ func (prepared *preparedCheckoutFiles) removeReplacedDirectories(path string) er
 	paths := prepared.directoryRemovals[path]
 	for _, dir := range paths {
 		info, err := prepared.root.Lstat(filepath.FromSlash(dir))
-		if err != nil || !os.SameFile(info, prepared.removedDirs[dir]) {
+		if err != nil || !os.SameFile(info, prepared.removedDirs[dir].info) {
 			return &Error{Code: CodeConflict, Message: fmt.Sprintf("destination directory %q changed during workspace application", dir), Cause: err}
 		}
-		if err = checkCheckoutDirectoryPermissions(prepared.root, filepath.FromSlash(dir), info); err != nil {
+		metadata, err := checkCheckoutDirectoryPermissions(prepared.root, filepath.FromSlash(dir), prepared.removedDirs[dir].info)
+		if err != nil {
 			return err
+		}
+		if !checkoutDirectoryProvenanceEqual(metadata, prepared.removedDirs[dir]) {
+			return &Error{Code: CodeOutcomeUnknown, Message: fmt.Sprintf("directory %q provenance changed during workspace application", dir)}
 		}
 		// Remove only an empty directory; any concurrent file blocks replacement.
 		if err = prepared.root.Remove(filepath.FromSlash(dir)); err != nil {
@@ -893,7 +905,7 @@ type preparedCheckoutFiles struct {
 	root              *os.Root
 	entries           []preparedCheckoutFile
 	createdDirs       []string
-	removedDirs       map[string]os.FileInfo
+	removedDirs       map[string]checkoutDirectoryMetadata
 	directoryRemovals map[string][]string
 	recreatedDirs     map[string]os.FileInfo
 	mutated           bool
@@ -1218,7 +1230,7 @@ func (prepared *preparedCheckoutFiles) Rollback() (rollbackErr error) {
 		}
 		var parents []string
 		for dir := filepath.ToSlash(filepath.Dir(record.path)); dir != "."; dir = filepath.ToSlash(filepath.Dir(dir)) {
-			if prepared.recreatedDirs[dir] != nil && prepared.removedDirs[dir] != nil {
+			if prepared.recreatedDirs[dir] != nil && prepared.removedDirs[dir].info != nil {
 				parents = append(parents, dir)
 			}
 		}

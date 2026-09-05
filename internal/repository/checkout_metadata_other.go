@@ -7,10 +7,14 @@ import (
 	"os"
 )
 
-func restoreCheckoutDirectoryMetadata(root *os.Root, path string, recreated, original os.FileInfo) error {
+func restoreCheckoutDirectoryMetadata(root *os.Root, path string, recreated os.FileInfo, original checkoutDirectoryMetadata) error {
 	return &Error{Code: CodeOutcomeUnknown, Message: fmt.Sprintf("directory %q ownership cannot be restored on this platform", path)}
 }
 
-func checkCheckoutDirectoryPermissions(root *os.Root, path string, expected os.FileInfo) error {
-	return &Error{Code: CodeConflict, Message: fmt.Sprintf("directory %q extended permissions cannot be inspected on this platform", path)}
+func checkCheckoutDirectoryPermissions(root *os.Root, path string, expected os.FileInfo) (checkoutDirectoryMetadata, error) {
+	return checkoutDirectoryMetadata{}, &Error{Code: CodeConflict, Message: fmt.Sprintf("directory %q extended permissions cannot be inspected on this platform", path)}
+}
+
+func checkoutDirectoryProvenanceEqual(left, right checkoutDirectoryMetadata) bool {
+	return !left.hasProvenance && !right.hasProvenance
 }
