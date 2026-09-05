@@ -142,3 +142,19 @@ func makeCheckoutDirectoryNoFollow(root *os.Root, path string, mode os.FileMode)
 	defer parent.Close()
 	return unix.Mkdirat(int(parent.Fd()), filepath.Base(path), uint32(mode.Perm()))
 }
+
+func verifyCheckoutDirectoryIdentity(root *os.Root, path string, expected os.FileInfo) error {
+	directory, err := openCheckoutDirectoryNoFollow(root, filepath.FromSlash(path))
+	if err != nil {
+		return err
+	}
+	defer directory.Close()
+	info, err := directory.Stat()
+	if err != nil {
+		return err
+	}
+	if !os.SameFile(info, expected) {
+		return fmt.Errorf("directory identity changed")
+	}
+	return nil
+}

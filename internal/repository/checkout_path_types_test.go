@@ -827,3 +827,105 @@ func TestCheckoutTransitionWithAbsentTrackedDescendants(t *testing.T) {
 		})
 	}
 }
+
+func TestCheckoutExternalRecoveryPreservesChangedLeaf(t *testing.T) {
+	t.Parallel()
+	for _, kind := range []string{"file", "symlink", "unchanged"} {
+		t.Run(kind, func(t *testing.T) {
+			root, err := os.OpenRoot(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer root.Close()
+			writeCheckoutFile(t, filepath.Join(root.Name(), "incoming"), "incoming", 0o600)
+			expected, _, err := checkoutFileOnRoot(root, "incoming")
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Replace the leaf after the external-restore validation, before removal.
+			if kind != "unchanged" {
+				if err = root.Remove("incoming"); err != nil {
+					t.Fatal(err)
+				}
+				if kind == "symlink" {
+					err = root.Symlink("private-target", "incoming")
+				} else {
+					err = os.WriteFile(filepath.Join(root.Name(), "incoming"), []byte("concurrent edit"), 0o600)
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			info, err := root.Lstat("incoming")
+			if err != nil {
+				t.Fatal(err)
+			}
+			changed, _, err := checkoutFileOnRoot(root, "incoming")
+			if err != nil {
+				t.Fatal(err)
+			}
+			prepared := preparedCheckoutFiles{root: root}
+			err = prepared.removeRecoveryFile("incoming", expected)
+			if kind == "unchanged" {
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err = root.Lstat("incoming"); !os.IsNotExist(err) {
+					t.Fatal("expected incoming leaf remains")
+				}
+			} else {
+				if ErrorCode(err) != CodeConflict {
+					t.Fatalf("recovery deletion = %v", err)
+				}
+				after, err := root.Lstat("incoming")
+				if err != nil || !os.SameFile(info, after) {
+					t.Fatal("concurrent identity lost")
+				}
+				current, present, err := checkoutFileOnRoot(root, "incoming")
+				if err != nil || !present || !checkoutFileContentEqual(current, changed) {
+					t.Fatal("concurrent content lost")
+				}
+			}
+		})
+	}
+}
+
+func TestCheckoutIgnorePageExcludesUnrelatedRules(t *testing.T) {
+	t.Parallel()
+	target := checkoutTestRepository(t)
+	for _, dir := range []string{"src/one", "src/two", "other"} {
+		if err := os.MkdirAll(filepath.Join(target, dir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeCheckoutFile(t, filepath.Join(target, dir, ".gitignore"), "ignored\n", 0o600)
+	}
+	writeCheckoutFile(t, filepath.Join(target, "src/.gitignore"), "ignored\n", 0o600)
+	writeCheckoutFile(t, filepath.Join(target, "src/blocker"), "outgoing", 0o600)
+	runCheckoutGit(t, "-C", target, "add", ".")
+	root, err := os.OpenRoot(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	for _, leaf := range []string{"src/one/new", "src/blocker/new"} {
+		paths, _, err := checkoutIgnorePaths(root, []CheckoutFile{{Path: leaf, Kind: "file"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		args := append([]string{"-C", target, "--literal-pathspecs", "ls-files", "-z", "--cached", "--"}, paths...)
+		output := parseNULPaths(runCheckoutGit(t, args...))
+		for _, unrelated := range []string{"src/two/.gitignore", "other/.gitignore"} {
+			if slices.Contains(output, unrelated) {
+				t.Fatalf("page enumerated unrelated rule %s", unrelated)
+			}
+		}
+		for _, required := range []string{".gitignore", "src/.gitignore"} {
+			if !slices.Contains(output, required) {
+				t.Fatalf("page omitted ancestor rule %s", required)
+			}
+		}
+		if leaf == "src/blocker/new" && !slices.Contains(output, "src/blocker") {
+			t.Fatal("page omitted non-directory blocker")
+		}
+	}
+}

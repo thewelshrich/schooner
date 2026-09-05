@@ -31,7 +31,7 @@ func restoreCheckoutDirectoryMetadata(root *os.Root, path string, recreated os.F
 		return directory, fmt.Errorf("captured directory ownership is unavailable")
 	}
 	var err error
-	directory, err = root.OpenFile(path, os.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW, 0)
+	directory, err = openCheckoutDirectoryNoFollow(root, path)
 	if err != nil {
 		return directory, err
 	}
@@ -70,6 +70,9 @@ func restoreCheckoutDirectoryMetadata(root *os.Root, path string, recreated os.F
 	if !checkoutDirectoryProvenanceEqual(metadata, original) {
 		return directory, fmt.Errorf("recreated directory provenance differs from the backup")
 	}
+	if err = verifyCheckoutDirectoryIdentity(root, path, recreated); err != nil {
+		return directory, err
+	}
 	return directory, nil
 }
 
@@ -81,7 +84,7 @@ func checkCheckoutDirectoryPermissions(root *os.Root, path string, expected os.F
 			result = &Error{Code: CodeConflict, Message: fmt.Sprintf("directory %q extended permissions or attributes cannot be safely preserved", path), Cause: result}
 		}
 	}()
-	directory, err := root.OpenFile(path, os.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW, 0)
+	directory, err := openCheckoutDirectoryNoFollow(root, path)
 	if err != nil {
 		return metadata, err
 	}
@@ -186,8 +189,8 @@ func (prepared *preparedCheckoutFiles) restoreBackupAt(record *preparedCheckoutF
 		return err
 	}
 	for _, path := range ancestors {
-		info, err := prepared.root.Lstat(filepath.FromSlash(path))
-		if err != nil || !os.SameFile(info, prepared.recreatedDirs[path]) {
+		err := verifyCheckoutDirectoryIdentity(prepared.root, path, prepared.recreatedDirs[path])
+		if err != nil {
 			return &Error{Code: CodeOutcomeUnknown, Message: fmt.Sprintf("restored directory %q moved; recovery backup preserved at %q", path, record.backupTemp), Cause: err}
 		}
 	}

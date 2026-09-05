@@ -671,3 +671,61 @@ func TestCheckoutRestoredBackupRejectsRetainedWriter(t *testing.T) {
 		t.Fatal("backup released after failed installed verification")
 	}
 }
+
+func TestCheckoutEmptyDirectoryRecoveryRejectsAncestorSwap(t *testing.T) {
+	t.Parallel()
+	for _, afterMetadata := range []bool{false, true} {
+		t.Run(fmt.Sprintf("after-metadata=%t", afterMetadata), func(t *testing.T) {
+			target := t.TempDir()
+			if err := os.MkdirAll(filepath.Join(target, "outer/inner"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			root, err := os.OpenRoot(target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer root.Close()
+			originalInfo, err := root.Lstat("outer/inner")
+			if err != nil {
+				t.Fatal(err)
+			}
+			original, err := checkCheckoutDirectoryPermissions(root, "outer/inner", originalInfo)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = os.Chmod(filepath.Join(target, "outer/inner"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			recreated, err := root.Lstat("outer/inner")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if afterMetadata {
+				directory, err := restoreCheckoutDirectoryMetadata(root, "outer/inner", recreated, original)
+				if err != nil {
+					t.Fatal(err)
+				}
+				directory.Close()
+			}
+			if err = root.Rename("outer", "moved"); err != nil {
+				t.Fatal(err)
+			}
+			if err = root.Symlink("moved", "outer"); err != nil {
+				t.Fatal(err)
+			}
+			if !afterMetadata {
+				if _, err = restoreCheckoutDirectoryMetadata(root, "outer/inner", recreated, original); ErrorCode(err) != CodeOutcomeUnknown {
+					t.Fatalf("metadata through symlink = %v", err)
+				}
+				info, err := root.Lstat("moved/inner")
+				if err != nil || info.Mode().Perm() != 0o755 {
+					t.Fatal("metadata applied through replaced ancestry")
+				}
+			}
+			prepared := preparedCheckoutFiles{root: root, removedDirs: map[string]checkoutDirectoryMetadata{"outer/inner": original}, recreatedDirs: map[string]os.FileInfo{"outer/inner": recreated}}
+			if err = prepared.verifyRestoredDirectoryAncestry(); ErrorCode(err) != CodeOutcomeUnknown {
+				t.Fatalf("empty directory final verification = %v", err)
+			}
+		})
+	}
+}

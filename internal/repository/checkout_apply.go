@@ -652,7 +652,7 @@ func RestoreCheckoutAfterFailedApply(ctx context.Context, target string, backup,
 		if !checkoutFileContentEqual(current, incomingFiles[path]) {
 			return CheckoutState{}, &Error{Code: CodeConflict, Message: fmt.Sprintf("destination path %q changed independently while workspace application was being rolled back", path)}
 		}
-		if err = root.Remove(filepath.FromSlash(path)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err = cleanup.removeRecoveryFile(path, incomingFiles[path]); err != nil {
 			return CheckoutState{}, err
 		}
 	}
@@ -1170,6 +1170,18 @@ func (prepared *preparedCheckoutFiles) displaceAndVerify(record *preparedCheckou
 	return &Error{Code: CodeOutcomeUnknown, Message: fmt.Sprintf("destination path %q changed during workspace application; preserved displaced content at %q", record.path, filepath.ToSlash(displaced)), Cause: errors.Join(inspectErr, restoreErr)}
 }
 
+// Revalidate the displaced leaf, rather than unlinking a name checked earlier.
+func (prepared *preparedCheckoutFiles) removeRecoveryFile(path string, expected CheckoutFile) error {
+	record := preparedCheckoutFile{path: path, stagingBase: path, previous: &expected}
+	if err := prepared.displaceAndVerify(&record); err != nil {
+		return err
+	}
+	if err := prepared.removeDisplaced(&record); err != nil {
+		return &Error{Code: CodeOutcomeUnknown, Message: fmt.Sprintf("recovery leaf retained at %q", record.displacedTemp), Cause: err}
+	}
+	return nil
+}
+
 func (prepared *preparedCheckoutFiles) removeDisplaced(record *preparedCheckoutFile) error {
 	if record.displacedTemp == "" {
 		return nil
@@ -1374,6 +1386,19 @@ func (prepared *preparedCheckoutFiles) restoreRemovedEmptyDirectories() error {
 			return err
 		}
 		directory.Close()
+	}
+	return prepared.verifyRestoredDirectoryAncestry()
+}
+
+func (prepared *preparedCheckoutFiles) verifyRestoredDirectoryAncestry() error {
+	for path, metadata := range prepared.removedDirs {
+		expected := metadata.info
+		if recreated := prepared.recreatedDirs[path]; recreated != nil {
+			expected = recreated
+		}
+		if err := verifyCheckoutDirectoryIdentity(prepared.root, path, expected); err != nil {
+			return &Error{Code: CodeOutcomeUnknown, Message: fmt.Sprintf("restored directory ancestry changed at %q; recovery material must be retained", path), Cause: err}
+		}
 	}
 	return nil
 }
@@ -2002,6 +2027,45 @@ func preflightIncomingGitSemantics(ctx context.Context, target string, incomingF
 	return nil
 }
 
+// Each page needs only its ancestor ignore files and actual non-directory blockers.
+func checkoutIgnorePaths(root *os.Root, files []CheckoutFile) ([]string, map[string]bool, error) {
+	var untracked []CheckoutFile
+	leaves := make(map[string]bool)
+	paths := []string{".gitignore"}
+	seen := map[string]bool{".gitignore": true}
+	add := func(path string) {
+		if !seen[path] {
+			paths = append(paths, path)
+			seen[path] = true
+		}
+	}
+	for _, entry := range files {
+		if entry.Tracked || entry.Kind == "absent" {
+			continue
+		}
+		if err := validateCheckoutPath(entry.Path); err != nil {
+			return nil, nil, err
+		}
+		untracked = append(untracked, entry)
+		leaves[entry.Path] = true
+		for parent := filepath.Dir(entry.Path); parent != "."; parent = filepath.Dir(parent) {
+			add(filepath.ToSlash(filepath.Join(parent, ".gitignore")))
+		}
+	}
+	candidates, err := checkoutPreflightPaths(root, untracked)
+	if err != nil {
+		return nil, nil, err
+	}
+	blockers := make(map[string]bool)
+	for _, path := range candidates {
+		if !leaves[path] {
+			blockers[path] = false
+			add(path)
+		}
+	}
+	return paths, blockers, nil
+}
+
 // destinationIgnoreWorktree omits versioned ignore files while retaining local
 // .gitignore files. Git still reads the destination's config and info/exclude.
 func destinationIgnoreWorktree(ctx context.Context, target string, files []CheckoutFile) (string, error) {
@@ -2010,26 +2074,11 @@ func destinationIgnoreWorktree(ctx context.Context, target string, files []Check
 		return "", err
 	}
 	defer root.Close()
-	var untracked []CheckoutFile
-	leaves := make(map[string]bool)
-	for _, entry := range files {
-		if !entry.Tracked && entry.Kind != "absent" {
-			untracked = append(untracked, entry)
-			leaves[entry.Path] = true
-		}
-	}
-	paths, err := checkoutPreflightPaths(root, untracked)
+	paths, blockers, err := checkoutIgnorePaths(root, files)
 	if err != nil {
 		return "", err
 	}
-	arguments := []string{"ls-files", "-z", "--cached", "--", ".gitignore", ":(glob)**/.gitignore"}
-	blockers := make(map[string]bool)
-	for _, path := range paths {
-		if !leaves[path] {
-			blockers[path] = false
-			arguments = append(arguments, ":(literal)"+path)
-		}
-	}
+	arguments := append([]string{"--literal-pathspecs", "ls-files", "-z", "--cached", "--"}, paths...)
 	trackedOutput, err := git(ctx, commandRunner{}, target, arguments...)
 	if err != nil {
 		return "", err
