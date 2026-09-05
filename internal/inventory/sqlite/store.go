@@ -269,19 +269,19 @@ func (s *Store) SaveLocalLink(ctx context.Context, value link.LocalLink) error {
 }
 
 func (s *Store) BeginAdd(ctx context.Context, op box.AddOperation) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO add_operations(name, ssh_destination, worktree_root, checkpoint, remote_identity, updated_at)
-		VALUES(?, ?, ?, ?, ?, ?)
+	result, err := s.db.ExecContext(ctx, `INSERT INTO add_operations(name, ssh_destination, worktree_root, checkpoint, remote_identity, updated_at)
+		SELECT ?, ?, ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM boxes WHERE name=?)
 		ON CONFLICT(name) DO UPDATE SET ssh_destination=excluded.ssh_destination, worktree_root=excluded.worktree_root, updated_at=excluded.updated_at
-		WHERE add_operations.ssh_destination=excluded.ssh_destination AND add_operations.worktree_root=excluded.worktree_root`, op.Name, op.SSHDestination, op.WorktreeRoot, op.Checkpoint, op.RemoteIdentity, formatTime(op.UpdatedAt))
+		WHERE add_operations.ssh_destination=excluded.ssh_destination AND add_operations.worktree_root=excluded.worktree_root`, op.Name, op.SSHDestination, op.WorktreeRoot, op.Checkpoint, op.RemoteIdentity, formatTime(op.UpdatedAt), op.Name)
 	if err != nil {
 		return fmt.Errorf("record add operation: %w", err)
 	}
-	var destination, root string
-	if err = s.db.QueryRowContext(ctx, `SELECT ssh_destination, worktree_root FROM add_operations WHERE name=?`, op.Name).Scan(&destination, &root); err != nil {
-		return err
+	reserved, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("confirm add reservation: %w", err)
 	}
-	if destination != op.SSHDestination || root != op.WorktreeRoot {
-		return &box.Error{Code: "conflict", Message: fmt.Sprintf("an interrupted add for %q uses different connection details", op.Name)}
+	if reserved == 0 {
+		return &box.Error{Code: "conflict", Message: fmt.Sprintf("box name %q is already registered or reserved with different connection details", op.Name)}
 	}
 	return nil
 }
