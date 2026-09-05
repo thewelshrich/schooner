@@ -369,7 +369,10 @@ func (s *Store) Remove(ctx context.Context, name string) (box.Record, error) {
 	if err != nil {
 		return box.Record{}, err
 	}
-	if _, err = tx.ExecContext(ctx, `DELETE FROM add_operations WHERE name=?`, name); err == nil {
+	if _, err = tx.ExecContext(ctx, `DELETE FROM add_operations WHERE name=?`, name); err == nil && record.Acquisition == "provisioned" {
+		_, err = tx.ExecContext(ctx, `DELETE FROM provision_operations WHERE name=? AND resource_id=? AND correlation_id=? AND credential_profile=?`, name, record.ProviderResourceID, record.ProviderCorrelationID, record.CredentialProfile)
+	}
+	if err == nil {
 		_, err = tx.ExecContext(ctx, `DELETE FROM boxes WHERE name=?`, name)
 	}
 	if err != nil {

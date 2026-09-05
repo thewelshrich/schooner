@@ -53,6 +53,7 @@ type Store interface {
 	CheckpointDestroy(context.Context, DestroyOperation) error
 	CompleteDestroy(context.Context, string) error
 	FindByName(context.Context, string) (box.Record, error)
+	LastObservation(context.Context, string) (box.Observation, error)
 }
 
 type CredentialResolver interface {
@@ -167,6 +168,23 @@ func (s *Service) Provision(ctx context.Context, request ProvisionRequest) (Prov
 	operation, err = s.store.BeginProvision(ctx, operation)
 	if err != nil {
 		return ProvisionResult{}, err
+	}
+	// Box preparation commits before the provisioning checkpoint is removed.
+	// Resume that local completion without repeating provider or remote work.
+	if record, findErr := s.store.FindByName(ctx, operation.Name); findErr == nil {
+		if record.Acquisition != "provisioned" || record.Provider != string(provider.DigitalOcean) || operation.ResourceID == "" || record.ProviderResourceID != operation.ResourceID || record.ProviderCorrelationID != operation.CorrelationID || record.CredentialProfile != string(operation.Profile) {
+			return ProvisionResult{}, box.NewError("conflict", "box name is already in use by a different provisioning operation", nil)
+		}
+		observation, observationErr := s.store.LastObservation(ctx, record.ID)
+		if observationErr != nil {
+			return ProvisionResult{}, observationErr
+		}
+		if err = s.store.CompleteProvision(ctx, operation.Name); err != nil {
+			return ProvisionResult{}, err
+		}
+		return ProvisionResult{AddResult: box.AddResult{Box: record, Capabilities: observation.Capabilities}, Resource: provider.ResourceRef{Provider: provider.DigitalOcean, ResourceID: record.ProviderResourceID, CorrelationID: record.ProviderCorrelationID, Profile: operation.Profile}}, nil
+	} else if !box.IsNotFound(findErr) {
+		return ProvisionResult{}, findErr
 	}
 	operation.Checkpoint = "provider_request_pending"
 	operation.UpdatedAt = s.now().UTC()
